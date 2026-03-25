@@ -205,8 +205,19 @@ impl App {
             }
             CoreAction::InsertText(text) => {
                 self.queue_insert_edit_jump_line();
+                let t0 = std::time::Instant::now();
                 self.editor.active_buffer_mut().insert_text(&text);
+                let insert_elapsed = t0.elapsed();
                 self.editor.mark_highlights_dirty();
+                if insert_elapsed.as_millis() > 10 {
+                    debug_log!(
+                        &self.config,
+                        "insert_text: {} chars, {} bytes, took {:?}",
+                        text.chars().count(),
+                        text.len(),
+                        insert_elapsed
+                    );
+                }
             }
             CoreAction::ChangeMode(m) => {
                 let old_mode = self.editor.mode;

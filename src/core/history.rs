@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use crate::core::buffer::EditEvent;
 
 /// A single reversible edit operation.
@@ -6,9 +8,9 @@ pub struct EditRecord {
     /// Character offset where the edit starts.
     pub char_offset: usize,
     /// Text that was removed (empty for pure insertion).
-    pub old_text: String,
+    pub old_text: Rc<str>,
     /// Text that was inserted (empty for pure deletion).
-    pub new_text: String,
+    pub new_text: Rc<str>,
     /// EditEvent for tree-sitter (forward direction).
     #[allow(dead_code)]
     pub edit_event: EditEvent,
@@ -164,8 +166,8 @@ mod tests {
     fn dummy_record(new_text: &str) -> EditRecord {
         EditRecord {
             char_offset: 0,
-            old_text: String::new(),
-            new_text: new_text.into(),
+            old_text: Rc::from(""),
+            new_text: Rc::from(new_text),
             edit_event: dummy_edit_event(),
         }
     }
@@ -183,8 +185,8 @@ mod tests {
         h.record(
             EditRecord {
                 char_offset: 0,
-                old_text: String::new(),
-                new_text: "a".into(),
+                old_text: Rc::from(""),
+                new_text: Rc::from("a"),
                 edit_event: dummy_edit_event(),
             },
             &[0],

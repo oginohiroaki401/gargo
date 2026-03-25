@@ -3,7 +3,8 @@ use std::process::Command;
 
 /// Resolve a project root by probing `start` first, then falling back to CWD.
 /// Uses the first ancestor directory containing a `.git` marker (dir or file).
-/// If no marker is found from either probe path, returns CWD.
+/// If `start` is provided and no git root is found from that path, returns the
+/// provided directory (or file parent). If `start` is absent, falls back to CWD.
 pub fn find_project_root(start: Option<&Path>) -> PathBuf {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     find_project_root_with_cwd(start, &cwd)
@@ -16,6 +17,7 @@ fn find_project_root_with_cwd(start: Option<&Path>, cwd: &Path) -> PathBuf {
         } else {
             cwd.join(start_path)
         };
+        let candidate = std::fs::canonicalize(&candidate).unwrap_or(candidate);
         let probe_dir = if candidate.is_dir() {
             candidate.clone()
         } else {
@@ -28,6 +30,8 @@ fn find_project_root_with_cwd(start: Option<&Path>, cwd: &Path) -> PathBuf {
         if let Some(root) = find_git_root_from(&probe_dir) {
             return root;
         }
+
+        return probe_dir;
     }
 
     if let Some(root) = find_git_root_from(cwd) {
@@ -176,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    fn find_project_root_with_non_git_arg_falls_back_to_cwd_search() {
+    fn find_project_root_with_non_git_arg_returns_explicit_directory() {
         let tmp = tempdir().unwrap();
         let repo = tmp.path().join("cwd-repo");
         let cwd = repo.join("subdir");
@@ -188,8 +192,8 @@ mod tests {
 
         let root_with_arg = find_project_root_with_cwd(Some(&non_git_arg), &cwd);
         let root_without_arg = find_project_root_with_cwd(None, &cwd);
-        assert_eq!(root_with_arg, root_without_arg);
-        assert_eq!(root_with_arg, repo);
+        assert_eq!(root_with_arg, non_git_arg);
+        assert_eq!(root_without_arg, repo);
     }
 
     #[test]
@@ -208,15 +212,43 @@ mod tests {
     }
 
     #[test]
-    fn find_project_root_returns_cwd_when_no_git_in_arg_or_cwd_chain() {
+    fn find_project_root_returns_explicit_file_parent_when_no_git_in_arg_chain() {
+        let tmp = tempdir().unwrap();
+        let repo = tmp.path().join("cwd-repo");
+        let cwd = repo.join("subdir");
+        let outside = tmp.path().join("outside").join("a");
+        let file = outside.join("note.txt");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(&file, "hello").unwrap();
+        init_git_repo(&repo);
+
+        let root = find_project_root_with_cwd(Some(&file), &cwd);
+        assert_eq!(root, outside);
+    }
+
+    #[test]
+    fn find_project_root_resolves_relative_path_before_git_search() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let repo_a = workspace.join("repo-a");
+        let repo_b = workspace.join("repo-b");
+        let cwd = repo_a.join("nested");
+        let target = repo_b.join("child");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        init_git_repo(&repo_a);
+        init_git_repo(&repo_b);
+
+        let root = find_project_root_with_cwd(Some(Path::new("../../repo-b/child")), &cwd);
+        assert_eq!(root, repo_b);
+    }
+
+    #[test]
+    fn find_project_root_returns_cwd_when_no_git_in_cwd_chain() {
         let tmp = tempdir().unwrap();
         let cwd = tmp.path().join("cwd").join("subdir");
-        let non_git_arg = tmp.path().join("outside").join("a").join("b");
         std::fs::create_dir_all(&cwd).unwrap();
-        std::fs::create_dir_all(&non_git_arg).unwrap();
-
-        let root = find_project_root_with_cwd(Some(&non_git_arg), &cwd);
-        assert_eq!(root, cwd);
 
         let root_no_arg = find_project_root_with_cwd(None, &cwd);
         assert_eq!(root_no_arg, cwd);

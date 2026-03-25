@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use super::*;
 
 impl Document {
@@ -37,8 +39,8 @@ impl Document {
             self.history.record(
                 EditRecord {
                     char_offset: *pos,
-                    old_text: String::new(),
-                    new_text: c.to_string(),
+                    old_text: Rc::from(""),
+                    new_text: Rc::from(c.to_string()),
                     edit_event,
                 },
                 &cursors_before,
@@ -73,7 +75,11 @@ impl Document {
         }
         let text = Self::normalize_newlines_for_insert(text);
         let text = text.as_ref();
-        let char_count = text.chars().count();
+        let char_count = if text.is_ascii() {
+            text.len()
+        } else {
+            text.chars().count()
+        };
 
         // Multi-cursor insert: process from highest to lowest position
         let mut positions: Vec<usize> = self.cursors.clone();
@@ -84,6 +90,9 @@ impl Document {
         // Begin transaction to group all multi-cursor edits together
         // Only commit if we started the transaction (not if one was already open externally)
         let started_transaction = self.history.begin_transaction(&cursors_before);
+
+        let empty_rc: Rc<str> = Rc::from("");
+        let text_rc: Rc<str> = Rc::from(text);
 
         for pos in &positions {
             let byte_pos = self.rope.char_to_byte(*pos);
@@ -108,8 +117,8 @@ impl Document {
             self.history.record(
                 EditRecord {
                     char_offset: *pos,
-                    old_text: String::new(),
-                    new_text: text.to_string(),
+                    old_text: empty_rc.clone(),
+                    new_text: text_rc.clone(),
                     edit_event,
                 },
                 &cursors_before,
@@ -186,8 +195,8 @@ impl Document {
             self.history.record(
                 EditRecord {
                     char_offset: *pos,
-                    old_text: ch.to_string(),
-                    new_text: String::new(),
+                    old_text: Rc::from(ch.to_string()),
+                    new_text: Rc::from(""),
                     edit_event,
                 },
                 &cursors_before,
@@ -258,8 +267,8 @@ impl Document {
             self.history.record(
                 EditRecord {
                     char_offset: delete_pos,
-                    old_text: ch.to_string(),
-                    new_text: String::new(),
+                    old_text: Rc::from(ch.to_string()),
+                    new_text: Rc::from(""),
                     edit_event,
                 },
                 &cursors_before,
@@ -321,8 +330,8 @@ impl Document {
                 self.history.record(
                     EditRecord {
                         char_offset: self.cursors[0],
-                        old_text: "\n".to_string(),
-                        new_text: String::new(),
+                        old_text: Rc::from("\n"),
+                        new_text: Rc::from(""),
                         edit_event,
                     },
                     &cursors_before,
@@ -354,8 +363,8 @@ impl Document {
             self.history.record(
                 EditRecord {
                     char_offset: self.cursors[0],
-                    old_text: deleted,
-                    new_text: String::new(),
+                    old_text: Rc::from(deleted),
+                    new_text: Rc::from(""),
                     edit_event,
                 },
                 &cursors_before,
@@ -532,8 +541,8 @@ impl Document {
         self.history.record(
             EditRecord {
                 char_offset: start,
-                old_text: deleted.clone(),
-                new_text: String::new(),
+                old_text: Rc::from(deleted.as_str()),
+                new_text: Rc::from(""),
                 edit_event,
             },
             &cursors_before,
@@ -560,7 +569,11 @@ impl Document {
         let col_byte = byte_pos - line_byte_start;
 
         self.rope.insert(pos, text);
-        let char_count = text.chars().count();
+        let char_count = if text.is_ascii() {
+            text.len()
+        } else {
+            text.chars().count()
+        };
         self.cursors[0] = pos + char_count;
         self.sync_selection_head();
         self.dirty = true;
@@ -580,8 +593,8 @@ impl Document {
         self.history.record(
             EditRecord {
                 char_offset: pos,
-                old_text: String::new(),
-                new_text: text.to_string(),
+                old_text: Rc::from(""),
+                new_text: Rc::from(text),
                 edit_event,
             },
             &cursors_before,

@@ -327,10 +327,12 @@ impl App {
             return;
         };
         if self.is_multi_repo() {
-            let _ = runtime.command_tx.send(GitRuntimeCommand::RefreshMultiStatus {
-                repos: self.discovered_repos.clone(),
-                high_priority,
-            });
+            let _ = runtime
+                .command_tx
+                .send(GitRuntimeCommand::RefreshMultiStatus {
+                    repos: self.discovered_repos.clone(),
+                    high_priority,
+                });
         } else {
             let _ = runtime.command_tx.send(GitRuntimeCommand::RefreshStatus {
                 project_root: self.active_buffer_repo_root(),
@@ -2744,6 +2746,24 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
     }
 
+    struct WorkingDirGuard {
+        original: PathBuf,
+    }
+
+    impl WorkingDirGuard {
+        fn set(path: &Path) -> Self {
+            let original = std::env::current_dir().expect("read current dir");
+            std::env::set_current_dir(path).expect("switch current dir");
+            Self { original }
+        }
+    }
+
+    impl Drop for WorkingDirGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.original);
+        }
+    }
+
     fn test_app_with_text(text: &str) -> App {
         let mut editor = Editor::new();
         editor.active_buffer_mut().insert_text(text);
@@ -2959,6 +2979,26 @@ mod tests {
         let editor = Editor::open(&file_path.to_string_lossy());
         let app = App::new(editor, Config::default(), Some(file_path.as_path()));
         assert!(!app.is_home_screen_active());
+    }
+
+    #[test]
+    fn startup_relative_directory_uses_explicit_path_chain_for_project_root() {
+        let _guard = env_lock();
+        let temp = tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let cwd_repo = workspace.join("cwd-repo");
+        let target_dir = workspace.join("outside").join("nested");
+        fs::create_dir_all(cwd_repo.join(".git")).unwrap();
+        fs::create_dir_all(&target_dir).unwrap();
+
+        let _wd = WorkingDirGuard::set(&cwd_repo);
+        let app = App::new(
+            Editor::new(),
+            Config::default(),
+            Some(Path::new("../outside/nested")),
+        );
+
+        assert_eq!(app.project_root, fs::canonicalize(&target_dir).unwrap());
     }
 
     #[test]

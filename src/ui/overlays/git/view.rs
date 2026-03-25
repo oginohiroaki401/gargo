@@ -297,16 +297,9 @@ impl GitView {
         }
     }
 
-    pub fn apply_multi_index_snapshots(
-        &mut self,
-        snapshots: Vec<(PathBuf, GitViewIndexSnapshot)>,
-    ) {
+    pub fn apply_multi_index_snapshots(&mut self, snapshots: Vec<(PathBuf, GitViewIndexSnapshot)>) {
         for (repo_root, snapshot) in snapshots {
-            if let Some(section) = self
-                .repos
-                .iter_mut()
-                .find(|s| s.project_root == repo_root)
-            {
+            if let Some(section) = self.repos.iter_mut().find(|s| s.project_root == repo_root) {
                 section.branch = snapshot.branch;
                 section.changed = snapshot.changed;
                 section.staged = snapshot.staged;
@@ -472,8 +465,7 @@ impl GitView {
                     staged,
                 } if *ri == repo_idx => {
                     if *staged {
-                        let file_idx =
-                            section.staged.iter().position(|e| e.path == *path)?;
+                        let file_idx = section.staged.iter().position(|e| e.path == *path)?;
                         let staged_offset = if section.changed.is_empty() {
                             0
                         } else {
@@ -481,8 +473,7 @@ impl GitView {
                         };
                         return Some(base + staged_offset + 1 + file_idx);
                     } else {
-                        let file_idx =
-                            section.changed.iter().position(|e| e.path == *path)?;
+                        let file_idx = section.changed.iter().position(|e| e.path == *path)?;
                         return Some(base + 1 + file_idx);
                     }
                 }
@@ -1434,10 +1425,7 @@ impl GitView {
             if multi {
                 let row_idx = display_items.len();
                 display_items.push(DisplayItem::RepoHeader(
-                    format!(
-                        "\u{e0a0} {} ({})",
-                        section.display_name, section.branch
-                    ),
+                    format!("\u{e0a0} {} ({})", section.display_name, section.branch),
                     row_idx == self.selected,
                 ));
             }
@@ -1899,7 +1887,10 @@ mod tests {
     #[test]
     fn navigation_moves_across_headers_and_files() {
         let mut view = test_view();
-        assert_eq!(view.selected_target(), Some(SelectionTarget::ChangedHeader(0)));
+        assert_eq!(
+            view.selected_target(),
+            Some(SelectionTarget::ChangedHeader(0))
+        );
         view.handle_key(key(KeyCode::Char('j')));
         assert_eq!(
             view.selected_target(),
@@ -1911,7 +1902,10 @@ mod tests {
             Some(SelectionTarget::ChangedFile(0, 1))
         );
         view.handle_key(key(KeyCode::Char('j')));
-        assert_eq!(view.selected_target(), Some(SelectionTarget::StagedHeader(0)));
+        assert_eq!(
+            view.selected_target(),
+            Some(SelectionTarget::StagedHeader(0))
+        );
     }
 
     #[test]
@@ -1930,7 +1924,10 @@ mod tests {
         let changed = view.repos[0].changed.clone();
         let staged = view.repos[0].staged.clone();
         view.apply_file_entries(0, changed, staged);
-        assert_eq!(view.selected_target(), Some(SelectionTarget::StagedHeader(0)));
+        assert_eq!(
+            view.selected_target(),
+            Some(SelectionTarget::StagedHeader(0))
+        );
     }
 
     #[test]

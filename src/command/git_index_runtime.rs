@@ -157,8 +157,7 @@ impl GitIndexRuntimeWorker {
                     .map(|repo| {
                         let branch =
                             git::git_branch_in(&repo).unwrap_or_else(|_| "???".to_string());
-                        let (changed, staged) =
-                            git::git_status_files_in(&repo).unwrap_or_default();
+                        let (changed, staged) = git::git_status_files_in(&repo).unwrap_or_default();
                         let snapshot = GitIndexSnapshot {
                             branch,
                             changed,

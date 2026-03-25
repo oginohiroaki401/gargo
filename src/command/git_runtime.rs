@@ -197,8 +197,7 @@ impl GitRuntimeWorker {
                         pending.due = pending.due.min(due);
                     }
                     None => {
-                        self.pending_multi_status =
-                            Some(PendingMultiStatusUpdate { repos, due });
+                        self.pending_multi_status = Some(PendingMultiStatusUpdate { repos, due });
                     }
                 }
             }

@@ -1693,7 +1693,9 @@ fn dedent_after_select_line_multibyte_no_panic() {
 
     let (sel_start, sel_end) = doc.selection_range().unwrap();
     let first_line = doc.rope.char_to_line(sel_start);
-    let last_line = doc.rope.char_to_line(if sel_end > 0 { sel_end - 1 } else { 0 });
+    let last_line = doc
+        .rope
+        .char_to_line(if sel_end > 0 { sel_end - 1 } else { 0 });
     let anchor = doc.selection_anchor().unwrap();
     let cursor = doc.cursors[0];
     // .min(last_line) is the fix — without it, cursor_line overflows per_line_removed

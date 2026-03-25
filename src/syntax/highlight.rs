@@ -210,7 +210,16 @@ impl HighlightManager {
             }
         }
 
+        let t0 = std::time::Instant::now();
         bh.tree = parse_rope(&mut bh.parser, rope, bh.tree.as_ref());
+        let parse_elapsed = t0.elapsed();
+        if parse_elapsed.as_millis() > 10 {
+            eprintln!(
+                "[gargo] tree-sitter parse: {} bytes, took {:?}",
+                rope.len_bytes(),
+                parse_elapsed
+            );
+        }
         *bh.visible_cache.get_mut() = None;
     }
 

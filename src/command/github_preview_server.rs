@@ -1231,9 +1231,7 @@ async fn handle_file_display(
                         render_code_with_line_ids(&text)
                     )
                 }
-                Err(_) => {
-                    r#"<div class="error">Binary file - cannot display</div>"#.to_string()
-                }
+                Err(_) => r#"<div class="error">Binary file - cannot display</div>"#.to_string(),
             }
         }
     };

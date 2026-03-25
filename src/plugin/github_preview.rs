@@ -154,12 +154,12 @@ impl GithubPreviewPlugin {
             self.last_pushed_cursor_line = cursor_line;
             self.last_content_push_at = Some(Instant::now());
             if let Some(handle) = &self.handle {
-                let _ = handle.command_tx.send(
-                    GithubPreviewCommand::UpdateBufferContent {
+                let _ = handle
+                    .command_tx
+                    .send(GithubPreviewCommand::UpdateBufferContent {
                         content,
                         cursor_line,
-                    },
-                );
+                    });
             }
         } else if cursor_line != self.last_pushed_cursor_line {
             // Only cursor moved — send lightweight scroll event

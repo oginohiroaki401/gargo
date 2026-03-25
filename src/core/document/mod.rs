@@ -145,7 +145,7 @@ impl Document {
         if text.is_empty() {
             return (start_line, start_col_byte);
         }
-        let newline_count = text.chars().filter(|&c| c == '\n').count();
+        let newline_count = text.as_bytes().iter().filter(|&&b| b == b'\n').count();
         if newline_count == 0 {
             (start_line, start_col_byte + text.len())
         } else {
