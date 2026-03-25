@@ -1757,7 +1757,12 @@ impl App {
                     }
                     Event::Resize(_, _) => break, // Resize → re-render immediately
                     Event::Paste(text) => {
-                        debug_log!(&self.config, "Paste event: {:?}", text);
+                        debug_log!(
+                            &self.config,
+                            "Paste event: len={} preview={:?}",
+                            text.len(),
+                            &text[..text.len().min(200)]
+                        );
                         // Forward paste to palette if it's open
                         if let Some(palette) = self.compositor.palette_mut() {
                             debug_log!(&self.config, "Paste: forwarding to palette");

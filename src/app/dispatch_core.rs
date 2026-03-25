@@ -212,8 +212,7 @@ impl App {
                 if insert_elapsed.as_millis() > 10 {
                     debug_log!(
                         &self.config,
-                        "insert_text: {} chars, {} bytes, took {:?}",
-                        text.chars().count(),
+                        "insert_text: {} bytes, took {:?}",
                         text.len(),
                         insert_elapsed
                     );
