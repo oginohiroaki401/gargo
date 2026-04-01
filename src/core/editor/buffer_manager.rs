@@ -1,6 +1,13 @@
 use super::*;
 
 impl Editor {
+    /// Clear stale search matches and cache when the active buffer changes.
+    fn on_buffer_switch(&mut self) {
+        self.search.matches.clear();
+        self.search.current_match = None;
+        self.search.invalidate_cache();
+    }
+
     pub fn active_buffer(&self) -> &Document {
         &self.documents[self.active_index]
     }
@@ -46,6 +53,7 @@ impl Editor {
         let doc = Document::new_scratch(id);
         self.documents.push(doc);
         self.active_index = self.documents.len() - 1;
+        self.on_buffer_switch();
         self.set_history_index_to_active();
         id
     }
@@ -57,6 +65,7 @@ impl Editor {
                 && fp.to_str() == Some(path)
             {
                 self.active_index = i;
+                self.on_buffer_switch();
                 self.push_active_to_mru();
                 return;
             }
@@ -74,12 +83,14 @@ impl Editor {
 
         self.documents.push(doc);
         self.active_index = self.documents.len() - 1;
+        self.on_buffer_switch();
         self.push_active_to_mru();
     }
 
     pub fn next_buffer(&mut self) {
         if self.documents.len() > 1 {
             self.active_index = (self.active_index + 1) % self.documents.len();
+            self.on_buffer_switch();
         }
     }
 
@@ -90,12 +101,14 @@ impl Editor {
             } else {
                 self.active_index -= 1;
             }
+            self.on_buffer_switch();
         }
     }
 
     pub fn switch_to_index(&mut self, index: usize) -> bool {
         if index < self.documents.len() {
             self.active_index = index;
+            self.on_buffer_switch();
             self.push_active_to_mru();
             true
         } else {
@@ -106,6 +119,7 @@ impl Editor {
     pub fn switch_to_buffer(&mut self, id: BufferId) -> bool {
         if let Some(idx) = self.documents.iter().position(|d| d.id == id) {
             self.active_index = idx;
+            self.on_buffer_switch();
             self.push_active_to_mru();
             true
         } else {
@@ -140,6 +154,7 @@ impl Editor {
                 self.active_index = self.documents.len() - 1;
             }
         }
+        self.on_buffer_switch();
         self.set_history_index_to_active();
     }
 
@@ -187,6 +202,7 @@ impl Editor {
         let target_id = self.buffer_history[target_idx];
         if let Some(doc_idx) = self.documents.iter().position(|d| d.id == target_id) {
             self.active_index = doc_idx;
+            self.on_buffer_switch();
             self.buffer_history_index = Some(target_idx);
             true
         } else {
@@ -214,6 +230,7 @@ impl Editor {
         let target_id = self.buffer_history[target_idx];
         if let Some(doc_idx) = self.documents.iter().position(|d| d.id == target_id) {
             self.active_index = doc_idx;
+            self.on_buffer_switch();
             self.buffer_history_index = Some(target_idx);
             true
         } else {
