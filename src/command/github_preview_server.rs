@@ -520,6 +520,49 @@ const LIVE_SYNC_SCRIPT: &str = r#"<script>
 })();
 </script>"#;
 
+const PREVIEW_RELOAD_SCRIPT: &str = r#"<script>
+(() => {
+  const POLL_INTERVAL_MS = 600;
+  let lastSeenVersion = 0;
+  let pollInFlight = false;
+
+  const pollEvents = async () => {
+    if (pollInFlight) return;
+    pollInFlight = true;
+    try {
+      const response = await fetch(`/events?since=${lastSeenVersion}`, { cache: 'no-store' });
+      if (!response.ok) return;
+      const body = await response.json();
+      if (!body.event) return;
+      if (typeof body.event.version === 'number') {
+        lastSeenVersion = Math.max(lastSeenVersion, body.event.version);
+      }
+      if (body.event.kind === 'refresh') {
+        window.location.reload();
+      }
+    } catch (_) {
+    } finally {
+      pollInFlight = false;
+    }
+  };
+
+  window.setInterval(pollEvents, POLL_INTERVAL_MS);
+  pollEvents();
+})();
+</script>"#;
+
+fn inject_preview_reload_script(html: &str) -> String {
+    if let Some(pos) = html.rfind("</body>") {
+        let mut result = String::with_capacity(html.len() + PREVIEW_RELOAD_SCRIPT.len());
+        result.push_str(&html[..pos]);
+        result.push_str(PREVIEW_RELOAD_SCRIPT);
+        result.push_str(&html[pos..]);
+        result
+    } else {
+        format!("{}{}", html, PREVIEW_RELOAD_SCRIPT)
+    }
+}
+
 /// HTML template for directory listing
 const DIRECTORY_TEMPLATE: &str = r#"<!DOCTYPE html>
 <html>
@@ -915,6 +958,7 @@ async fn run_server(
         .route("/events", get(handle_events))
         .route("/tree/{*path}", get(handle_tree))
         .route("/blob/{*path}", get(handle_blob))
+        .route("/preview/{*path}", get(handle_preview))
         .with_state(state)
         .layer(CorsLayer::permissive());
 
@@ -1011,6 +1055,57 @@ async fn handle_blob(
     maybe_emit_detached_event(&state, &path);
 
     handle_file_display(&full_path, &path, &repo_root, buffer_content.as_deref()).await
+}
+
+/// Handle HTML preview (render HTML as-is in the browser)
+async fn handle_preview(
+    State(state): State<Arc<Mutex<PreviewServerState>>>,
+    AxumPath(path): AxumPath<String>,
+) -> impl IntoResponse {
+    let (repo_root, buffer_content) = {
+        let st = state.lock().unwrap();
+        let bc = if st
+            .active_rel_path
+            .as_deref()
+            .map(|a| normalize_rel_path_for_compare(a))
+            == Some(normalize_rel_path_for_compare(&path))
+        {
+            st.buffer_content.clone()
+        } else {
+            None
+        };
+        (st.repo_root.clone(), bc)
+    };
+
+    let full_path = repo_root.join(&path);
+
+    // Security: ensure path is within repo
+    if !full_path.starts_with(&repo_root) {
+        return Html(render_error("Invalid path"));
+    }
+
+    // Only allow HTML files
+    let filename = full_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    if !filename.ends_with(".html") && !filename.ends_with(".htm") {
+        return Html(render_error("Preview is only available for HTML files"));
+    }
+
+    let html_content = if let Some(text) = buffer_content {
+        text
+    } else {
+        match tokio::fs::read(&full_path).await {
+            Ok(content) => match String::from_utf8(content) {
+                Ok(text) => text,
+                Err(_) => return Html(render_error("File is not valid UTF-8")),
+            },
+            Err(e) => return Html(render_error(&format!("Failed to read file: {}", e))),
+        }
+    };
+
+    Html(inject_preview_reload_script(&html_content))
 }
 
 fn normalize_rel_path_for_compare(path: &str) -> String {
@@ -1166,7 +1261,7 @@ async fn handle_directory_listing(
     }
 
     let github_url = github_url_for_path(repo_root, display_path, true).await;
-    let breadcrumb = render_breadcrumb(display_path, true, github_url.as_deref());
+    let breadcrumb = render_breadcrumb(display_path, true, github_url.as_deref(), None);
     let title = if display_path == "." {
         "Repository Root".to_string()
     } else {
@@ -1237,7 +1332,13 @@ async fn handle_file_display(
     };
 
     let github_url = github_url_for_path(repo_root, display_path, false).await;
-    let breadcrumb = render_breadcrumb(display_path, false, github_url.as_deref());
+    let is_html_file = filename.ends_with(".html") || filename.ends_with(".htm");
+    let preview_path = if is_html_file {
+        Some(display_path)
+    } else {
+        None
+    };
+    let breadcrumb = render_breadcrumb(display_path, false, github_url.as_deref(), preview_path);
     let root_path = repo_root.display().to_string();
 
     let html = FILE_TEMPLATE
@@ -1367,7 +1468,12 @@ fn detect_language(filename: &str) -> &str {
 }
 
 /// Render breadcrumb navigation
-fn render_breadcrumb(path: &str, is_tree: bool, github_url: Option<&str>) -> String {
+fn render_breadcrumb(
+    path: &str,
+    is_tree: bool,
+    github_url: Option<&str>,
+    preview_path: Option<&str>,
+) -> String {
     let mut crumbs = vec![r#"<a class="crumb-pill" href="/">Root</a>"#.to_string()];
 
     if let Some(url) = github_url {
@@ -1377,6 +1483,13 @@ fn render_breadcrumb(path: &str, is_tree: bool, github_url: Option<&str>) -> Str
         ));
     } else {
         crumbs.push(r#"<span class="crumb-pill crumb-pill-muted">GitHub</span>"#.to_string());
+    }
+
+    if let Some(preview) = preview_path {
+        crumbs.push(format!(
+            r#"<a class="crumb-pill" href="/preview/{}" target="_blank" rel="noopener noreferrer">Preview</a>"#,
+            html_escape(preview)
+        ));
     }
 
     if path != "." {
