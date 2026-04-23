@@ -1177,6 +1177,73 @@ fn delete_selected_line_removes_line_and_lf() {
 }
 
 #[test]
+fn select_word_at_middle_of_word() {
+    let mut doc = doc_from_str("hello world\n");
+    doc.select_word_at(2);
+    assert_eq!(doc.selection_range(), Some((0, 5)));
+    assert_eq!(doc.selection_text(), Some("hello".to_string()));
+}
+
+#[test]
+fn select_word_at_start_of_word() {
+    let mut doc = doc_from_str("hello world\n");
+    doc.select_word_at(6);
+    assert_eq!(doc.selection_range(), Some((6, 11)));
+    assert_eq!(doc.selection_text(), Some("world".to_string()));
+}
+
+#[test]
+fn select_word_at_whitespace_selects_run() {
+    let mut doc = doc_from_str("foo   bar\n");
+    doc.select_word_at(4);
+    assert_eq!(doc.selection_text(), Some("   ".to_string()));
+}
+
+#[test]
+fn select_word_at_punctuation_run() {
+    let mut doc = doc_from_str("foo::bar\n");
+    doc.select_word_at(3);
+    assert_eq!(doc.selection_text(), Some("::".to_string()));
+}
+
+#[test]
+fn select_word_at_does_not_cross_newline() {
+    let mut doc = doc_from_str("foo\nbar\n");
+    doc.select_word_at(2);
+    assert_eq!(doc.selection_text(), Some("foo".to_string()));
+}
+
+#[test]
+fn select_word_at_on_newline_is_noop() {
+    let mut doc = doc_from_str("foo\nbar\n");
+    doc.select_word_at(3); // the '\n' itself
+    assert_eq!(doc.selection_range(), None);
+}
+
+#[test]
+fn select_word_at_empty_doc_is_noop() {
+    let mut doc = doc_from_str("");
+    doc.select_word_at(0);
+    assert_eq!(doc.selection_range(), None);
+}
+
+#[test]
+fn select_word_at_past_eof_snaps_to_last_char() {
+    let mut doc = doc_from_str("hello");
+    doc.select_word_at(99);
+    assert_eq!(doc.selection_text(), Some("hello".to_string()));
+}
+
+#[test]
+fn select_word_at_multibyte() {
+    // Each Japanese char is one rope char
+    let mut doc = doc_from_str("吾輩は猫である\n");
+    doc.select_word_at(2); // on 'は'
+    // is_alphanumeric is true for Japanese — whole run becomes one word
+    assert_eq!(doc.selection_text(), Some("吾輩は猫である".to_string()));
+}
+
+#[test]
 fn extend_line_selection_down() {
     let mut doc = doc_from_str("aaa\nbbb\nccc\n");
     doc.select_line(); // selects line 0

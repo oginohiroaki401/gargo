@@ -7,6 +7,14 @@ pub enum Action {
     Core(CoreAction),
     Ui(UiAction),
     App(AppAction),
+    /// A left-click landed inside a buffer pane; coordinates are in terminal
+    /// cells. The dispatcher converts to a doc position and applies cursor →
+    /// word → line → block escalation based on click history.
+    BufferClick {
+        buffer_id: usize,
+        screen_col: u16,
+        screen_row: u16,
+    },
     Noop,
 }
 

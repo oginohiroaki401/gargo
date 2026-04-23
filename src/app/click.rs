@@ -1,0 +1,363 @@
+use super::*;
+
+use crate::core::buffer::BufferId;
+use crate::core::document::Document;
+use crate::ui::framework::window_manager::PaneRect;
+use crate::ui::text::{char_display_width, slice_display_window};
+use crate::ui::views::text_view::reserved_left_gutter_width;
+use std::time::{Duration, Instant};
+
+const MULTI_CLICK_WINDOW: Duration = Duration::from_millis(400);
+const MULTI_CLICK_RADIUS_CHARS: usize = 1;
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ClickHistory {
+    last_time: Instant,
+    last_buffer: BufferId,
+    last_pos: usize,
+    count: u8,
+}
+
+impl ClickHistory {
+    pub(crate) fn new() -> Self {
+        // Sentinel time guarantees the first real click registers as count=1
+        // (now - last_time will exceed any sane window).
+        Self {
+            last_time: Instant::now() - Duration::from_secs(3600),
+            last_buffer: 0,
+            last_pos: 0,
+            count: 0,
+        }
+    }
+}
+
+/// Result of mapping a screen click to a document position.
+struct ClickTarget {
+    line: usize,
+    char_pos: usize,
+    /// True when the click landed in the gutter; cursor goes to column 0,
+    /// no escalation occurs.
+    on_gutter: bool,
+}
+
+impl App {
+    pub(super) fn handle_buffer_click(
+        &mut self,
+        buffer_id: BufferId,
+        screen_col: u16,
+        screen_row: u16,
+    ) {
+        let cols = self.last_term_cols;
+        let rows = self.last_term_rows;
+        let Some(pane) = self.compositor.pane_at(screen_col, screen_row, cols, rows) else {
+            return;
+        };
+        if pane.buffer_id != buffer_id {
+            return;
+        }
+
+        // Focus the clicked pane / buffer if it's not already active.
+        let switched = self.editor.active_buffer().id != buffer_id;
+        if switched && !self.editor.switch_to_buffer(buffer_id) {
+            return;
+        }
+
+        let Some(target) = screen_to_doc_pos(
+            self.editor.active_buffer(),
+            pane.rect,
+            screen_col,
+            screen_row,
+            self.config.show_line_number,
+            self.config.line_number_width,
+        ) else {
+            return;
+        };
+
+        let now = Instant::now();
+        let history = self.click_history;
+        let within_window = now.duration_since(history.last_time) <= MULTI_CLICK_WINDOW;
+        let within_radius = history.last_buffer == buffer_id
+            && target.char_pos.abs_diff(history.last_pos) <= MULTI_CLICK_RADIUS_CHARS;
+
+        // Switching buffers always restarts the count; clicks on the gutter
+        // are positional only, so they also reset the chain.
+        let new_count = if switched || target.on_gutter {
+            1
+        } else if within_window && within_radius {
+            history.count.saturating_add(1).min(4)
+        } else {
+            1
+        };
+
+        let doc = self.editor.active_buffer_mut();
+        doc.clear_anchor();
+
+        if target.on_gutter {
+            doc.set_cursor_line_char(target.line, 0);
+        } else {
+            match new_count {
+                1 => {
+                    set_cursor_to_pos(doc, target.char_pos);
+                }
+                2 => {
+                    set_cursor_to_pos(doc, target.char_pos);
+                    doc.select_word_at(target.char_pos);
+                }
+                3 => {
+                    set_cursor_to_pos(doc, target.char_pos);
+                    doc.select_line();
+                }
+                _ => {
+                    set_cursor_to_pos(doc, target.char_pos);
+                    if !self.try_select_markdown_block(buffer_id, target.char_pos) {
+                        // Fall back to keeping the line selection from count=3.
+                        let doc = self.editor.active_buffer_mut();
+                        doc.select_line();
+                    }
+                }
+            }
+        }
+
+        self.click_history = ClickHistory {
+            last_time: now,
+            last_buffer: buffer_id,
+            last_pos: target.char_pos,
+            count: new_count,
+        };
+    }
+
+    /// Walk the cached tree-sitter tree and select the smallest enclosing
+    /// markdown block (block_quote / fenced or indented code block).
+    /// Returns false when the buffer is not Markdown or no such block contains `pos`.
+    fn try_select_markdown_block(&mut self, buffer_id: BufferId, pos: usize) -> bool {
+        if self.editor.active_language_name() != Some("Markdown") {
+            return false;
+        }
+        // Make sure incremental edits are applied before walking the tree.
+        self.editor.update_highlights_if_dirty();
+        let Some(tree) = self.editor.highlight_manager.tree(buffer_id) else {
+            return false;
+        };
+        let doc = self.editor.active_buffer();
+        let byte = doc.rope.char_to_byte(pos.min(doc.rope.len_chars()));
+        let Some(start_node) = tree
+            .root_node()
+            .descendant_for_byte_range(byte, byte)
+        else {
+            return false;
+        };
+
+        let mut node = start_node;
+        loop {
+            match node.kind() {
+                "block_quote" | "fenced_code_block" | "indented_code_block" => {
+                    let start_byte = node.start_byte();
+                    let end_byte = node.end_byte();
+                    let doc = self.editor.active_buffer_mut();
+                    let s = doc.rope.byte_to_char(start_byte);
+                    let e = doc.rope.byte_to_char(end_byte.min(doc.rope.len_bytes()));
+                    if s >= e {
+                        return false;
+                    }
+                    doc.selection =
+                        Some(crate::core::document::Selection::tail_on_forward(s, e));
+                    doc.cursors[0] = e;
+                    return true;
+                }
+                _ => {}
+            }
+            match node.parent() {
+                Some(parent) => node = parent,
+                None => return false,
+            }
+        }
+    }
+}
+
+fn set_cursor_to_pos(doc: &mut Document, pos: usize) {
+    let line = doc.rope.char_to_line(pos.min(doc.rope.len_chars()));
+    let line_start = doc.rope.line_to_char(line);
+    let col = pos.saturating_sub(line_start);
+    doc.set_cursor_line_char(line, col);
+}
+
+/// Inverse of `text_view::cursor_for_buffer`. Maps a terminal cell at
+/// `(screen_col, screen_row)` inside `pane` to a document `(line, char_pos)`.
+/// Returns None if the click is outside the pane.
+fn screen_to_doc_pos(
+    doc: &Document,
+    pane: PaneRect,
+    screen_col: u16,
+    screen_row: u16,
+    show_line_number: bool,
+    line_number_width: usize,
+) -> Option<ClickTarget> {
+    let col = usize::from(screen_col);
+    let row = usize::from(screen_row);
+    if col < pane.x || col >= pane.x + pane.width {
+        return None;
+    }
+    if row < pane.y || row >= pane.y + pane.height {
+        return None;
+    }
+
+    let total_lines = doc.rope.len_lines();
+    let gutter_w = reserved_left_gutter_width(total_lines, show_line_number, line_number_width);
+
+    let row_in_pane = row - pane.y;
+    let raw_line = doc.scroll_offset.saturating_add(row_in_pane);
+    let line = if total_lines == 0 {
+        0
+    } else {
+        raw_line.min(total_lines - 1)
+    };
+
+    let col_in_pane = col - pane.x;
+    if col_in_pane < gutter_w {
+        let line_start = if total_lines == 0 {
+            0
+        } else {
+            doc.rope.line_to_char(line)
+        };
+        return Some(ClickTarget {
+            line,
+            char_pos: line_start,
+            on_gutter: true,
+        });
+    }
+    let col_in_content = col_in_pane - gutter_w;
+
+    let line_str = if total_lines == 0 {
+        String::new()
+    } else {
+        doc.rope.line(line).to_string()
+    };
+    let line_display = line_str.trim_end_matches('\n');
+
+    let available = pane.width.saturating_sub(gutter_w);
+    let horizontal = slice_display_window(line_display, doc.horizontal_scroll_offset, available);
+    let view_start_col = horizontal.start_col;
+    let target_display_col = view_start_col + col_in_content;
+
+    // Walk display columns to find the char index containing target_display_col.
+    let mut col_acc = 0usize;
+    let mut char_idx = 0usize;
+    let mut found = false;
+    for ch in line_display.chars() {
+        let ch_w = char_display_width(ch);
+        if col_acc + ch_w > target_display_col {
+            found = true;
+            break;
+        }
+        col_acc += ch_w;
+        char_idx += 1;
+    }
+    if !found {
+        // Click is past EOL — snap to one-past-last-char.
+        char_idx = line_display.chars().count();
+    }
+
+    let line_start = if total_lines == 0 {
+        0
+    } else {
+        doc.rope.line_to_char(line)
+    };
+    Some(ClickTarget {
+        line,
+        char_pos: line_start + char_idx,
+        on_gutter: false,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::document::Document;
+    use ropey::Rope;
+
+    fn doc_from(s: &str) -> Document {
+        let mut doc = Document::new_scratch(1);
+        doc.rope = Rope::from_str(s);
+        doc
+    }
+
+    fn pane(width: usize, height: usize) -> PaneRect {
+        PaneRect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn screen_to_doc_pos_basic_ascii_no_line_numbers() {
+        let doc = doc_from("hello world\nbye\n");
+        // gutter_w = 1 (no line numbers, just git lane). Screen col 7 →
+        // content col 6 → display col 6 → 'w' at char index 6.
+        let target = screen_to_doc_pos(&doc, pane(40, 10), 7, 0, false, 4).unwrap();
+        assert_eq!(target.line, 0);
+        assert_eq!(target.char_pos, 6); // 'w' in "world"
+        assert!(!target.on_gutter);
+    }
+
+    #[test]
+    fn screen_to_doc_pos_handles_tabs() {
+        let doc = doc_from("a\tb\n");
+        // gutter_w=1; click at screen col 6 means content col 5 — past tab into 'b'
+        let target = screen_to_doc_pos(&doc, pane(40, 10), 6, 0, false, 4).unwrap();
+        assert_eq!(target.char_pos, 2); // 'b'
+    }
+
+    #[test]
+    fn screen_to_doc_pos_past_eol_snaps_to_last() {
+        let doc = doc_from("hi\n");
+        let target = screen_to_doc_pos(&doc, pane(40, 10), 30, 0, false, 4).unwrap();
+        assert_eq!(target.char_pos, 2); // one past last char ('i')
+    }
+
+    #[test]
+    fn screen_to_doc_pos_gutter_click() {
+        let doc = doc_from("alpha\nbeta\n");
+        // line numbers on → gutter occupies cols 0..(>1)
+        let target = screen_to_doc_pos(&doc, pane(40, 10), 0, 1, true, 4).unwrap();
+        assert!(target.on_gutter);
+        assert_eq!(target.line, 1);
+        assert_eq!(target.char_pos, 6); // start of "beta"
+    }
+
+    #[test]
+    fn screen_to_doc_pos_outside_pane_returns_none() {
+        let doc = doc_from("x\n");
+        assert!(screen_to_doc_pos(&doc, pane(10, 5), 20, 2, false, 4).is_none());
+        assert!(screen_to_doc_pos(&doc, pane(10, 5), 5, 8, false, 4).is_none());
+    }
+
+    #[test]
+    fn screen_to_doc_pos_horizontal_scroll() {
+        let mut doc = doc_from("0123456789abcdef\n");
+        doc.horizontal_scroll_offset = 5;
+        // gutter_w=1; click at screen col 1 → content col 0 → display col 5 → '5'
+        let target = screen_to_doc_pos(&doc, pane(40, 10), 1, 0, false, 4).unwrap();
+        assert_eq!(target.char_pos, 5);
+    }
+
+    #[test]
+    fn screen_to_doc_pos_cjk_fullwidth() {
+        // Each CJK char is 2 display columns wide.
+        let doc = doc_from("吾輩は猫\n");
+        // gutter_w=1; clicking at screen col 4 → content col 3 → display col 3 →
+        // first char width=2 ends at col 2, so col 3 is inside second char (輩).
+        let target = screen_to_doc_pos(&doc, pane(40, 10), 4, 0, false, 4).unwrap();
+        assert_eq!(target.char_pos, 1); // '輩'
+    }
+
+    #[test]
+    fn screen_to_doc_pos_row_past_last_line_clamps() {
+        let doc = doc_from("only\n");
+        // total_lines = 2 (one for "only\n", one for the trailing empty line).
+        // Row 9 is past the end → clamped to last line (1, the empty trailing).
+        let target = screen_to_doc_pos(&doc, pane(20, 10), 5, 9, false, 4).unwrap();
+        assert_eq!(target.line, 1);
+    }
+}

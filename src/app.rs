@@ -61,6 +61,8 @@ use crate::ui::views::text_view::reserved_left_gutter_width;
 use crate::upgrade::UpgradeCheckStatus;
 use serde::{Deserialize, Serialize};
 
+#[path = "app/click.rs"]
+mod click;
 #[path = "app/dispatch_app.rs"]
 mod dispatch_app;
 #[path = "app/dispatch_core.rs"]
@@ -153,6 +155,7 @@ pub struct App {
     home_screen_update_check_requested: bool,
     last_term_cols: usize,
     last_term_rows: usize,
+    click_history: click::ClickHistory,
 }
 
 impl App {
@@ -229,6 +232,7 @@ impl App {
             home_screen_update_check_requested: !home_screen_active || fresh_update_cache.is_some(),
             last_term_cols: 120,
             last_term_rows: 40,
+            click_history: click::ClickHistory::new(),
         };
         app.start_lazy_file_index_prefetch_if_possible();
         app.start_git_index_prefetch_if_possible();
@@ -1842,6 +1846,14 @@ impl App {
                 false
             }
             Action::App(action) => self.dispatch_app(action),
+            Action::BufferClick {
+                buffer_id,
+                screen_col,
+                screen_row,
+            } => {
+                self.handle_buffer_click(buffer_id, screen_col, screen_row);
+                false
+            }
             Action::Noop => false,
         };
 

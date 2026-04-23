@@ -402,7 +402,11 @@ fn mouse_drag_non_divider_does_not_resize_windows() {
         start_col,
         start_row,
     ));
-    assert!(matches!(down, EventResult::Ignored));
+    // Pane clicks now emit a BufferClick action — but never a divider drag.
+    assert!(matches!(
+        down,
+        EventResult::Action(crate::input::action::Action::BufferClick { .. })
+    ));
 
     let drag = comp.handle_mouse(&mouse_at(
         MouseEventKind::Drag(MouseButton::Left),

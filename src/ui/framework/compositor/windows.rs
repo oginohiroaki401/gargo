@@ -95,4 +95,23 @@ impl Compositor {
         self.window_manager.close_others();
         self.window_manager.focused_buffer_id()
     }
+
+    /// Returns the pane containing the given terminal coordinates, if any.
+    pub fn pane_at(
+        &self,
+        col: u16,
+        row: u16,
+        cols: usize,
+        rows: usize,
+    ) -> Option<crate::ui::framework::window_manager::PaneLayout> {
+        let area = self.editor_rect_for_dims(cols, rows)?;
+        let col = usize::from(col);
+        let row = usize::from(row);
+        self.window_manager.layout(area).panes.into_iter().find(|p| {
+            col >= p.rect.x
+                && col < p.rect.x + p.rect.width
+                && row >= p.rect.y
+                && row < p.rect.y + p.rect.height
+        })
+    }
 }

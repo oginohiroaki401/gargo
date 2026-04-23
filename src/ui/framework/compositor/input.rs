@@ -295,23 +295,38 @@ impl Compositor {
                 let Some(layout) = self.window_layout_for_event_dims(cols, rows) else {
                     return EventResult::Ignored;
                 };
-                let Some(divider) = Self::mouse_divider_at(&layout, mouse.column, mouse.row) else {
+                if let Some(divider) = Self::mouse_divider_at(&layout, mouse.column, mouse.row) {
+                    if let Some((primary_window_id, secondary_window_id)) =
+                        Self::mouse_windows_for_divider(&layout, divider, mouse.column, mouse.row)
+                    {
+                        self.mouse_drag = Some(MouseDividerDragState {
+                            primary_window_id,
+                            secondary_window_id,
+                            orientation: divider.orientation,
+                            last_col: mouse.column,
+                            last_row: mouse.row,
+                        });
+                        return EventResult::Consumed;
+                    }
                     return EventResult::Ignored;
-                };
-                let Some((primary_window_id, secondary_window_id)) =
-                    Self::mouse_windows_for_divider(&layout, divider, mouse.column, mouse.row)
-                else {
-                    return EventResult::Ignored;
-                };
+                }
 
-                self.mouse_drag = Some(MouseDividerDragState {
-                    primary_window_id,
-                    secondary_window_id,
-                    orientation: divider.orientation,
-                    last_col: mouse.column,
-                    last_row: mouse.row,
+                let col = usize::from(mouse.column);
+                let row = usize::from(mouse.row);
+                let pane = layout.panes.iter().find(|p| {
+                    col >= p.rect.x
+                        && col < p.rect.x + p.rect.width
+                        && row >= p.rect.y
+                        && row < p.rect.y + p.rect.height
                 });
-                EventResult::Consumed
+                match pane {
+                    Some(pane) => EventResult::Action(Action::BufferClick {
+                        buffer_id: pane.buffer_id,
+                        screen_col: mouse.column,
+                        screen_row: mouse.row,
+                    }),
+                    None => EventResult::Ignored,
+                }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
                 if self.has_modal_mouse_overlay() {
