@@ -1761,7 +1761,7 @@ impl App {
                             &self.config,
                             "Paste event: len={} preview={:?}",
                             text.len(),
-                            &text[..text.len().min(200)]
+                            text.chars().take(200).collect::<String>()
                         );
                         // Forward paste to palette if it's open
                         if let Some(palette) = self.compositor.palette_mut() {
