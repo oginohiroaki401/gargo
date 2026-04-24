@@ -272,15 +272,6 @@ impl Palette {
             })
     }
 
-    pub fn selected_create_file_path(&self) -> Option<String> {
-        self.candidates
-            .get(self.selected)
-            .and_then(|c| match &c.kind {
-                CandidateKind::CreateFile(path) => Some(path.clone()),
-                _ => None,
-            })
-    }
-
     pub fn selected_file_path(&self) -> Option<&str> {
         self.candidates
             .get(self.selected)
@@ -498,11 +489,7 @@ impl Palette {
                         }
                     },
                     PaletteMode::FileFinder => {
-                        if let Some(path) = self.selected_create_file_path() {
-                            EventResult::Action(Action::App(AppAction::Buffer(
-                                BufferAction::OpenProjectFile(path),
-                            )))
-                        } else if let Some(path) = self.selected_file_path() {
+                        if let Some(path) = self.selected_file_path() {
                             EventResult::Action(Action::App(AppAction::Buffer(
                                 BufferAction::OpenProjectFile(path.to_string()),
                             )))

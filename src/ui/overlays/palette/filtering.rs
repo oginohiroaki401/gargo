@@ -138,21 +138,6 @@ impl Palette {
 
         scored.sort_by(|a, b| b.score.cmp(&a.score));
 
-        // Prepend "Create new file" option when no exact match exists
-        let exact_match = file_entries.iter().any(|p| p == query);
-        if !exact_match {
-            scored.insert(
-                0,
-                ScoredCandidate {
-                    kind: CandidateKind::CreateFile(query.to_string()),
-                    label: format!("Create new file as {}", query),
-                    score: i32::MAX,
-                    match_positions: Vec::new(),
-                    preview_lines: Vec::new(),
-                },
-            );
-        }
-
         scored
     }
 
