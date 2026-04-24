@@ -1,35 +1,16 @@
 use super::*;
 
 use crate::core::buffer::BufferId;
-use crate::core::document::Document;
+use crate::core::document::{Document, Selection};
 use crate::ui::framework::window_manager::PaneRect;
 use crate::ui::text::{char_display_width, slice_display_window};
 use crate::ui::views::text_view::reserved_left_gutter_width;
 use std::time::{Duration, Instant};
 
+use super::expand::{expand_selection, ExpandChain};
+
 const MULTI_CLICK_WINDOW: Duration = Duration::from_millis(400);
 const MULTI_CLICK_RADIUS_CHARS: usize = 1;
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ClickHistory {
-    last_time: Instant,
-    last_buffer: BufferId,
-    last_pos: usize,
-    count: u8,
-}
-
-impl ClickHistory {
-    pub(crate) fn new() -> Self {
-        // Sentinel time guarantees the first real click registers as count=1
-        // (now - last_time will exceed any sane window).
-        Self {
-            last_time: Instant::now() - Duration::from_secs(3600),
-            last_buffer: 0,
-            last_pos: 0,
-            count: 0,
-        }
-    }
-}
 
 /// Result of mapping a screen click to a document position.
 struct ClickTarget {
@@ -74,102 +55,70 @@ impl App {
         };
 
         let now = Instant::now();
-        let history = self.click_history;
-        let within_window = now.duration_since(history.last_time) <= MULTI_CLICK_WINDOW;
-        let within_radius = history.last_buffer == buffer_id
-            && target.char_pos.abs_diff(history.last_pos) <= MULTI_CLICK_RADIUS_CHARS;
+        // Decide whether this click continues the current expand chain.
+        let continues_chain = !switched
+            && !target.on_gutter
+            && match self.expand_chain {
+                Some(chain) => {
+                    chain.buffer == buffer_id
+                        && now.duration_since(chain.last_click_time) <= MULTI_CLICK_WINDOW
+                        && target.char_pos.abs_diff(chain.last_click_pos)
+                            <= MULTI_CLICK_RADIUS_CHARS
+                }
+                None => false,
+            };
 
-        // Switching buffers always restarts the count; clicks on the gutter
-        // are positional only, so they also reset the chain.
-        let new_count = if switched || target.on_gutter {
-            1
-        } else if within_window && within_radius {
-            history.count.saturating_add(1).min(4)
-        } else {
-            1
-        };
-
-        let doc = self.editor.active_buffer_mut();
-        doc.clear_anchor();
-
-        if target.on_gutter {
-            doc.set_cursor_line_char(target.line, 0);
-        } else {
-            match new_count {
-                1 => {
-                    set_cursor_to_pos(doc, target.char_pos);
-                }
-                2 => {
-                    set_cursor_to_pos(doc, target.char_pos);
-                    doc.select_word_at(target.char_pos);
-                }
-                3 => {
-                    set_cursor_to_pos(doc, target.char_pos);
-                    doc.select_line();
-                }
-                _ => {
-                    set_cursor_to_pos(doc, target.char_pos);
-                    if !self.try_select_markdown_block(buffer_id, target.char_pos) {
-                        // Fall back to keeping the line selection from count=3.
-                        let doc = self.editor.active_buffer_mut();
-                        doc.select_line();
-                    }
-                }
+        if !continues_chain {
+            // Fresh chain: position cursor only, no selection.
+            let doc = self.editor.active_buffer_mut();
+            doc.clear_anchor();
+            if target.on_gutter {
+                doc.set_cursor_line_char(target.line, 0);
+            } else {
+                set_cursor_to_pos(doc, target.char_pos);
             }
+            // Gutter clicks don't seed a chain (subsequent clicks should still
+            // start fresh rather than escalating from a gutter origin).
+            self.expand_chain = if target.on_gutter {
+                None
+            } else {
+                Some(ExpandChain {
+                    buffer: buffer_id,
+                    origin: target.char_pos,
+                    last_range: None,
+                    expected_cursor: target.char_pos,
+                    last_click_time: now,
+                    last_click_pos: target.char_pos,
+                })
+            };
+            return;
         }
 
-        self.click_history = ClickHistory {
-            last_time: now,
-            last_buffer: buffer_id,
-            last_pos: target.char_pos,
-            count: new_count,
-        };
-    }
-
-    /// Walk the cached tree-sitter tree and select the smallest enclosing
-    /// markdown block (block_quote / fenced or indented code block).
-    /// Returns false when the buffer is not Markdown or no such block contains `pos`.
-    fn try_select_markdown_block(&mut self, buffer_id: BufferId, pos: usize) -> bool {
-        if self.editor.active_language_name() != Some("Markdown") {
-            return false;
-        }
-        // Make sure incremental edits are applied before walking the tree.
+        // Continue chain: ensure highlights are fresh (engine reads tree-sitter)
+        // then call the shared expand engine.
         self.editor.update_highlights_if_dirty();
-        let Some(tree) = self.editor.highlight_manager.tree(buffer_id) else {
-            return false;
-        };
-        let doc = self.editor.active_buffer();
-        let byte = doc.rope.char_to_byte(pos.min(doc.rope.len_chars()));
-        let Some(start_node) = tree
-            .root_node()
-            .descendant_for_byte_range(byte, byte)
-        else {
-            return false;
-        };
-
-        let mut node = start_node;
-        loop {
-            match node.kind() {
-                "block_quote" | "fenced_code_block" | "indented_code_block" => {
-                    let start_byte = node.start_byte();
-                    let end_byte = node.end_byte();
-                    let doc = self.editor.active_buffer_mut();
-                    let s = doc.rope.byte_to_char(start_byte);
-                    let e = doc.rope.byte_to_char(end_byte.min(doc.rope.len_bytes()));
-                    if s >= e {
-                        return false;
-                    }
-                    doc.selection =
-                        Some(crate::core::document::Selection::tail_on_forward(s, e));
-                    doc.cursors[0] = e;
-                    return true;
-                }
-                _ => {}
-            }
-            match node.parent() {
-                Some(parent) => node = parent,
-                None => return false,
-            }
+        let chain = self.expand_chain.expect("chain checked above");
+        let new_range =
+            expand_selection(&self.editor, buffer_id, chain.origin, chain.last_range);
+        if let Some((s, e)) = new_range {
+            let doc = self.editor.active_buffer_mut();
+            doc.selection = Some(Selection::tail_on_forward(s, e));
+            doc.cursors[0] = e;
+            self.expand_chain = Some(ExpandChain {
+                buffer: buffer_id,
+                origin: chain.origin,
+                last_range: Some((s, e)),
+                expected_cursor: e,
+                last_click_time: now,
+                last_click_pos: target.char_pos,
+            });
+        } else {
+            // No further expansion possible — keep current selection, refresh timing.
+            self.expand_chain = Some(ExpandChain {
+                last_click_time: now,
+                last_click_pos: target.char_pos,
+                ..chain
+            });
         }
     }
 }

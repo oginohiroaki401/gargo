@@ -398,6 +398,7 @@ fn resolve_visual(key: KeyEvent, state: &mut KeyState, is_recording: bool) -> Ac
         KeyCode::Char('x') => core(CoreAction::ExtendLineSelection),
         KeyCode::Char('d') => core(CoreAction::DeleteSelection),
         KeyCode::Char('y') => core(CoreAction::YankSelection),
+        KeyCode::Char('v') => core(CoreAction::VisualExpand),
         KeyCode::Char(';') => core(CoreAction::CollapseSelection),
         KeyCode::Char('>') => core(CoreAction::Indent),
         KeyCode::Char('<') => core(CoreAction::Dedent),

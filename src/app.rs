@@ -69,6 +69,8 @@ mod dispatch_app;
 mod dispatch_core;
 #[path = "app/event_loop.rs"]
 mod event_loop;
+#[path = "app/expand.rs"]
+mod expand;
 
 const DIRTY_CLOSE_WARNING: &str = "buffer is dirty. ctrl c to force close.";
 const CLOSE_ABORTED_MESSAGE: &str = "Close aborted";
@@ -155,7 +157,7 @@ pub struct App {
     home_screen_update_check_requested: bool,
     last_term_cols: usize,
     last_term_rows: usize,
-    click_history: click::ClickHistory,
+    expand_chain: Option<expand::ExpandChain>,
 }
 
 impl App {
@@ -232,7 +234,7 @@ impl App {
             home_screen_update_check_requested: !home_screen_active || fresh_update_cache.is_some(),
             last_term_cols: 120,
             last_term_rows: 40,
-            click_history: click::ClickHistory::new(),
+            expand_chain: None,
         };
         app.start_lazy_file_index_prefetch_if_possible();
         app.start_git_index_prefetch_if_possible();
@@ -4550,6 +4552,71 @@ mod tests {
 
         let buf = app.editor.active_buffer();
         assert_eq!(buf.cursors[0], buf.rope.len_chars());
+    }
+
+    #[test]
+    fn visual_v_first_press_does_not_extend_selection() {
+        // v in normal mode enters Visual; the selection is empty at that point.
+        // A subsequent v expands; before any subsequent v, the selection has no extent.
+        let mut app = test_app_with_text("hello world\n");
+        app.editor.active_buffer_mut().cursors[0] = 2;
+        app.dispatch(Action::Core(CoreAction::ChangeMode(mode::Mode::Visual)));
+        assert_eq!(app.editor.mode, mode::Mode::Visual);
+        let range = app.editor.active_buffer().selection_range();
+        assert!(matches!(range, Some((s, e)) if s == e));
+    }
+
+    #[test]
+    fn visual_v_chain_expands_word_then_line() {
+        let mut app = test_app_with_text("hello world\nbye\n");
+        app.editor.active_buffer_mut().cursors[0] = 2; // inside "hello"
+        app.dispatch(Action::Core(CoreAction::ChangeMode(mode::Mode::Visual)));
+
+        // 1st v in visual: word
+        app.dispatch(Action::Core(CoreAction::VisualExpand));
+        assert_eq!(app.editor.active_buffer().selection_range(), Some((0, 5)));
+
+        // 2nd v: no enclosing brackets, so → line
+        app.dispatch(Action::Core(CoreAction::VisualExpand));
+        assert_eq!(app.editor.active_buffer().selection_range(), Some((0, 12)));
+
+        // 3rd v: only "whole file" remains
+        app.dispatch(Action::Core(CoreAction::VisualExpand));
+        let len = app.editor.active_buffer().rope.len_chars();
+        assert_eq!(app.editor.active_buffer().selection_range(), Some((0, len)));
+    }
+
+    #[test]
+    fn visual_v_chain_grabs_brackets_when_present() {
+        let mut app = test_app_with_text("foo(bar baz qux)\n");
+        app.editor.active_buffer_mut().cursors[0] = 4; // inside "bar"
+        app.dispatch(Action::Core(CoreAction::ChangeMode(mode::Mode::Visual)));
+        app.dispatch(Action::Core(CoreAction::VisualExpand));
+        // word "bar"
+        assert_eq!(app.editor.active_buffer().selection_range(), Some((4, 7)));
+        app.dispatch(Action::Core(CoreAction::VisualExpand));
+        // bracket pair "(bar baz qux)"
+        assert_eq!(app.editor.active_buffer().selection_range(), Some((3, 16)));
+        app.dispatch(Action::Core(CoreAction::VisualExpand));
+        // line
+        assert_eq!(app.editor.active_buffer().selection_range(), Some((0, 17)));
+    }
+
+    #[test]
+    fn visual_v_resets_chain_after_cursor_movement() {
+        let mut app = test_app_with_text("alpha beta gamma\n");
+        app.editor.active_buffer_mut().cursors[0] = 1; // inside "alpha"
+        app.dispatch(Action::Core(CoreAction::ChangeMode(mode::Mode::Visual)));
+        app.dispatch(Action::Core(CoreAction::VisualExpand));
+        assert_eq!(app.editor.active_buffer().selection_range(), Some((0, 5))); // "alpha"
+
+        // User moves cursor (e.g. with l): selection extends, but chain anchor changes.
+        app.editor.active_buffer_mut().cursors[0] = 12; // inside "gamma"
+        app.editor.active_buffer_mut().selection = None;
+
+        // Next v should restart at the new cursor and select word "gamma".
+        app.dispatch(Action::Core(CoreAction::VisualExpand));
+        assert_eq!(app.editor.active_buffer().selection_range(), Some((11, 16)));
     }
 
     #[test]

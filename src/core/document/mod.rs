@@ -12,6 +12,7 @@ use crate::core::history::{EditRecord, History};
 mod cursor;
 mod display;
 mod editing;
+pub mod expand;
 mod file_io;
 mod movement;
 mod multi_cursor;

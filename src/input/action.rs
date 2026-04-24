@@ -88,6 +88,10 @@ pub enum CoreAction {
     YankSelection,
     Paste,
     CollapseSelection,
+    /// Expand the visual-mode selection one structural step (word → enclosing
+    /// brackets → line → markdown block → file), or restart the expand chain
+    /// at the current cursor when it has moved since the last step.
+    VisualExpand,
     Indent,
     Dedent,
     WrapSelection { open: char, close: char },

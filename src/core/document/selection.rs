@@ -64,37 +64,10 @@ impl Document {
     /// Newlines are hard boundaries so a click on EOL whitespace stays on its line.
     /// No-op when the document is empty or `pos` lands on a newline.
     pub fn select_word_at(&mut self, pos: usize) {
-        let len = self.rope.len_chars();
-        if len == 0 {
-            return;
+        if let Some((start, end)) = super::expand::word_range_at(&self.rope, pos) {
+            self.selection = Some(Selection::tail_on_forward(start, end));
+            self.cursors[0] = end;
         }
-        let pos = pos.min(len.saturating_sub(1));
-        let pivot = self.rope.char(pos);
-        if pivot == '\n' {
-            return;
-        }
-        let cls = char_class(pivot);
-        let mut start = pos;
-        while start > 0 {
-            let c = self.rope.char(start - 1);
-            if c == '\n' || char_class(c) != cls {
-                break;
-            }
-            start -= 1;
-        }
-        let mut end = pos;
-        while end < len {
-            let c = self.rope.char(end);
-            if c == '\n' || char_class(c) != cls {
-                break;
-            }
-            end += 1;
-        }
-        if start == end {
-            return;
-        }
-        self.selection = Some(Selection::tail_on_forward(start, end));
-        self.cursors[0] = end;
     }
 
     /// Select the current line as a linewise span:

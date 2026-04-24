@@ -309,6 +309,11 @@ impl Editor {
         self.language_names.get(&doc_id).copied()
     }
 
+    /// Get the detected language name for any document by id.
+    pub fn language_name_for(&self, doc_id: DocumentId) -> Option<&'static str> {
+        self.language_names.get(&doc_id).copied()
+    }
+
     /// Insert a newline with tree-sitter-based auto-indent.
     /// Falls back to copying the current line's indent when no tree/indent query is available.
     pub fn insert_newline_with_indent(&mut self, tab_width: usize) {

@@ -675,6 +675,9 @@ impl App {
             CoreAction::RemoveSecondaryCursors => {
                 self.editor.active_buffer_mut().remove_secondary_cursors();
             }
+            CoreAction::VisualExpand => {
+                self.handle_visual_expand();
+            }
             CoreAction::Noop => {}
         }
 
