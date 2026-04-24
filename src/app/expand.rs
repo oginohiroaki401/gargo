@@ -37,16 +37,21 @@ pub(crate) struct ExpandChain {
 /// Pick the smallest enclosing structural range that strictly grows beyond
 /// `current` (or any enclosing range when `current` is None).
 ///
-/// Candidates considered, smallest to largest:
-/// 1. word at `origin`
-/// 2. each enclosing `() / [] / {}` pair, innermost first
-/// 3. line containing `origin`
-/// 4. enclosing markdown `block_quote` / `fenced_code_block` / `indented_code_block`
-///    (only when the buffer's language is Markdown and a tree is parsed)
-/// 5. whole file (final fallback so the chain always has somewhere to go)
+/// The candidate set is the UNION of every structural level we know how to
+/// derive at `origin`:
+///   - the word at `origin`
+///   - every enclosing `() / [] / {}` pair (all depths)
+///   - the line containing `origin`
+///   - every enclosing tree-sitter AST node (all depths, for any language
+///     with a parser registered)
+///   - the whole file
 ///
-/// All candidates must contain `origin`; when `current` is Some, candidates
-/// must also fully contain `current` (selections only grow, never shrink).
+/// Which one gets picked at each step is decided dynamically: we filter to
+/// candidates that contain `origin` and strictly contain `current`, then take
+/// the smallest. Over successive calls the selection climbs the tightest
+/// available enclosure — "word or bracket or line or block, whichever is
+/// closest but broader" — rather than following a fixed word → bracket →
+/// line → block ladder.
 pub(crate) fn expand_selection(
     editor: &Editor,
     buffer_id: BufferId,
@@ -62,11 +67,7 @@ pub(crate) fn expand_selection(
     }
     candidates.extend(enclosing_brackets(rope, origin));
     candidates.push(line_range_at(rope, origin));
-    if editor.language_name_for(buffer_id) == Some("Markdown")
-        && let Some(r) = markdown_block_range(editor, buffer_id, origin)
-    {
-        candidates.push(r);
-    }
+    candidates.extend(ast_ancestor_ranges(editor, buffer_id, origin));
     candidates.push((0, rope.len_chars()));
 
     let cur_size = current.map(|(s, e)| e.saturating_sub(s)).unwrap_or(0);
@@ -137,30 +138,49 @@ impl App {
     }
 }
 
-fn markdown_block_range(
+/// Every enclosing tree-sitter AST node at `origin`, smallest first. Empty
+/// when the buffer has no parser registered (plain text, unknown language).
+///
+/// Each ancestor contributes a candidate, letting `expand_selection` step
+/// through the structural tree one level at a time regardless of language.
+/// The filter in `expand_selection` will only pick a node if it's the
+/// smallest candidate strictly larger than the current selection, so the
+/// selection walks the tree at whatever granularity the tree actually has.
+fn ast_ancestor_ranges(
     editor: &Editor,
     buffer_id: BufferId,
     origin: usize,
-) -> Option<(usize, usize)> {
-    let tree = editor.highlight_manager.tree(buffer_id)?;
-    let doc = editor.buffer_by_id(buffer_id)?;
+) -> Vec<(usize, usize)> {
+    let Some(tree) = editor.highlight_manager.tree(buffer_id) else {
+        return Vec::new();
+    };
+    let Some(doc) = editor.buffer_by_id(buffer_id) else {
+        return Vec::new();
+    };
     let pos = origin.min(doc.rope.len_chars());
     let byte = doc.rope.char_to_byte(pos);
-    let mut node = tree.root_node().descendant_for_byte_range(byte, byte)?;
+    let Some(mut node) = tree.root_node().descendant_for_byte_range(byte, byte) else {
+        return Vec::new();
+    };
+
+    let len_bytes = doc.rope.len_bytes();
+    let mut ranges = Vec::new();
     loop {
-        match node.kind() {
-            "block_quote" | "fenced_code_block" | "indented_code_block" => {
-                let s = doc.rope.byte_to_char(node.start_byte());
-                let e = doc.rope.byte_to_char(node.end_byte().min(doc.rope.len_bytes()));
-                if s >= e {
-                    return None;
-                }
-                return Some((s, e));
+        let start_byte = node.start_byte().min(len_bytes);
+        let end_byte = node.end_byte().min(len_bytes);
+        if start_byte < end_byte {
+            let s = doc.rope.byte_to_char(start_byte);
+            let e = doc.rope.byte_to_char(end_byte);
+            if s < e {
+                ranges.push((s, e));
             }
-            _ => {}
         }
-        node = node.parent()?;
+        match node.parent() {
+            Some(p) => node = p,
+            None => break,
+        }
     }
+    ranges
 }
 
 #[cfg(test)]
@@ -240,5 +260,50 @@ mod tests {
         let r = expand_selection(&e, id, 0, None);
         // Whole-file candidate is (0, 0) which has zero size — filtered out.
         assert!(r.is_none());
+    }
+
+    #[test]
+    fn ast_ancestors_empty_when_no_tree() {
+        // No language registered → no tree → no AST candidates, and the
+        // other candidate sources still work.
+        let e = editor_with("hello world\n");
+        let id = e.active_buffer().id;
+        assert!(ast_ancestor_ranges(&e, id, 3).is_empty());
+    }
+
+    #[test]
+    fn ast_ancestors_drive_dynamic_steps_on_rust_source() {
+        // With a tree-sitter parser attached, the AST ancestors participate
+        // in the same "smallest larger" pick as word/bracket/line. Each
+        // successive call must return a strictly larger enclosing range
+        // that contains the previous one — the core invariant of the
+        // dynamic ladder.
+        let mut e = Editor::new();
+        e.active_buffer_mut().insert_text("fn f() { let x = 1 + 2; }\n");
+        e.register_highlights_for_extension("rs");
+        e.update_highlights_if_dirty();
+        let id = e.active_buffer().id;
+
+        // Origin on 'x' (the binding name). Walk the ladder and assert that
+        // every step grows and fully contains the previous selection.
+        let origin = e
+            .active_buffer()
+            .rope
+            .to_string()
+            .find('x')
+            .expect("'x' is in the text");
+        let mut prev: Option<(usize, usize)> = None;
+        for _ in 0..6 {
+            let next = expand_selection(&e, id, origin, prev);
+            let Some((s, ne)) = next else { break };
+            if let Some((ps, pe)) = prev {
+                assert!(s <= ps && ne >= pe, "step must contain previous");
+                assert!((ne - s) > (pe - ps), "step must strictly grow");
+            }
+            prev = Some((s, ne));
+        }
+        // Final step must reach whole file.
+        let len = e.active_buffer().rope.len_chars();
+        assert_eq!(prev, Some((0, len)));
     }
 }
