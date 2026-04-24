@@ -128,6 +128,26 @@ impl Document {
         self.move_left();
     }
 
+    pub fn extend_up(&mut self) {
+        self.ensure_anchor_for_shift_extend();
+        self.move_up();
+    }
+
+    pub fn extend_down(&mut self) {
+        self.ensure_anchor_for_shift_extend();
+        self.move_down();
+    }
+
+    pub fn extend_to_line_start(&mut self) {
+        self.ensure_anchor_for_shift_extend();
+        self.move_to_line_start();
+    }
+
+    pub fn extend_to_line_end(&mut self) {
+        self.ensure_anchor_for_shift_extend();
+        self.move_to_line_end();
+    }
+
     pub fn extend_word_forward(&mut self) {
         self.ensure_anchor_for_extend();
         self.move_word_forward_impl(false);

@@ -50,6 +50,16 @@ fn shift_char_arrow_extend_action(code: KeyCode) -> Option<CoreAction> {
     match code {
         KeyCode::Left => Some(CoreAction::ExtendLeft),
         KeyCode::Right => Some(CoreAction::ExtendRight),
+        KeyCode::Up => Some(CoreAction::ExtendUp),
+        KeyCode::Down => Some(CoreAction::ExtendDown),
+        _ => None,
+    }
+}
+
+fn ctrl_shift_line_boundary_extend_action(code: KeyCode) -> Option<CoreAction> {
+    match code {
+        KeyCode::Char('a') | KeyCode::Char('A') => Some(CoreAction::ExtendToLineStart),
+        KeyCode::Char('e') | KeyCode::Char('E') => Some(CoreAction::ExtendToLineEnd),
         _ => None,
     }
 }
@@ -225,6 +235,16 @@ pub fn resolve(key: KeyEvent, state: &mut KeyState, mode: &Mode, is_recording: b
 
 fn resolve_insert(key: KeyEvent, state: &mut KeyState) -> Action {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
+        if key.modifiers.contains(KeyModifiers::SHIFT)
+            && let Some(action) = ctrl_shift_line_boundary_extend_action(key.code)
+        {
+            return core(action);
+        }
+        if key.modifiers.contains(KeyModifiers::SHIFT)
+            && let Some(action) = ctrl_shift_word_arrow_extend_action(key.code)
+        {
+            return core(action);
+        }
         if let Some(action) = ctrl_word_arrow_no_select_action(key.code) {
             return core(action);
         }
@@ -244,6 +264,11 @@ fn resolve_insert(key: KeyEvent, state: &mut KeyState) -> Action {
             _ => core(CoreAction::Noop),
         }
     } else {
+        if key.modifiers.contains(KeyModifiers::SHIFT)
+            && let Some(action) = shift_char_arrow_extend_action(key.code)
+        {
+            return core(action);
+        }
         match key.code {
             KeyCode::Esc => core(CoreAction::ChangeMode(Mode::Normal)),
             KeyCode::Right => core(CoreAction::MoveRight),
@@ -266,6 +291,11 @@ fn resolve_insert(key: KeyEvent, state: &mut KeyState) -> Action {
 
 fn resolve_normal(key: KeyEvent, state: &mut KeyState, is_recording: bool) -> Action {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
+        if key.modifiers.contains(KeyModifiers::SHIFT)
+            && let Some(action) = ctrl_shift_line_boundary_extend_action(key.code)
+        {
+            return core(action);
+        }
         if key.modifiers.contains(KeyModifiers::SHIFT)
             && let Some(action) = ctrl_shift_word_arrow_extend_action(key.code)
         {
@@ -354,6 +384,11 @@ fn resolve_normal(key: KeyEvent, state: &mut KeyState, is_recording: bool) -> Ac
 
 fn resolve_visual(key: KeyEvent, state: &mut KeyState, is_recording: bool) -> Action {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
+        if key.modifiers.contains(KeyModifiers::SHIFT)
+            && let Some(action) = ctrl_shift_line_boundary_extend_action(key.code)
+        {
+            return core(action);
+        }
         if key.modifiers.contains(KeyModifiers::SHIFT)
             && let Some(action) = ctrl_shift_word_arrow_extend_action(key.code)
         {
@@ -893,6 +928,65 @@ mod tests {
             assert_eq!(
                 resolve(ctrl_key(KeyCode::Right), &mut state, &mode, false),
                 core(CoreAction::MoveWordForwardNoSelect)
+            );
+            assert_eq!(state, KeyState::Normal);
+        }
+    }
+
+    #[test]
+    fn shift_up_down_extend_line_selection_in_all_modes() {
+        for mode in [Mode::Insert, Mode::Normal, Mode::Visual] {
+            let mut state = KeyState::Normal;
+            assert_eq!(
+                resolve(shift_key(KeyCode::Up), &mut state, &mode, false),
+                core(CoreAction::ExtendUp)
+            );
+            assert_eq!(state, KeyState::Normal);
+
+            assert_eq!(
+                resolve(shift_key(KeyCode::Down), &mut state, &mode, false),
+                core(CoreAction::ExtendDown)
+            );
+            assert_eq!(state, KeyState::Normal);
+        }
+    }
+
+    #[test]
+    fn shift_left_right_extend_char_selection_in_insert_mode() {
+        let mut state = KeyState::Normal;
+        assert_eq!(
+            resolve(shift_key(KeyCode::Left), &mut state, &Mode::Insert, false),
+            core(CoreAction::ExtendLeft)
+        );
+        assert_eq!(
+            resolve(shift_key(KeyCode::Right), &mut state, &Mode::Insert, false),
+            core(CoreAction::ExtendRight)
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_a_e_extend_to_line_boundary_in_all_modes() {
+        for mode in [Mode::Insert, Mode::Normal, Mode::Visual] {
+            let mut state = KeyState::Normal;
+            assert_eq!(
+                resolve(
+                    ctrl_shift_key(KeyCode::Char('a')),
+                    &mut state,
+                    &mode,
+                    false
+                ),
+                core(CoreAction::ExtendToLineStart)
+            );
+            assert_eq!(state, KeyState::Normal);
+
+            assert_eq!(
+                resolve(
+                    ctrl_shift_key(KeyCode::Char('e')),
+                    &mut state,
+                    &mode,
+                    false
+                ),
+                core(CoreAction::ExtendToLineEnd)
             );
             assert_eq!(state, KeyState::Normal);
         }

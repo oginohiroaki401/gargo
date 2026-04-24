@@ -325,6 +325,18 @@ impl App {
             CoreAction::ExtendLeft => {
                 self.editor.active_buffer_mut().extend_left();
             }
+            CoreAction::ExtendUp => {
+                self.editor.active_buffer_mut().extend_up();
+            }
+            CoreAction::ExtendDown => {
+                self.editor.active_buffer_mut().extend_down();
+            }
+            CoreAction::ExtendToLineStart => {
+                self.editor.active_buffer_mut().extend_to_line_start();
+            }
+            CoreAction::ExtendToLineEnd => {
+                self.editor.active_buffer_mut().extend_to_line_end();
+            }
             CoreAction::ExtendWordForwardShift => {
                 self.editor.active_buffer_mut().extend_word_forward_shift();
             }
