@@ -130,6 +130,14 @@ impl LanguageRegistry {
                 extensions: &["php", "phtml"],
             },
             LanguageDef {
+                name: "HTML",
+                language_fn: tree_sitter_html::LANGUAGE,
+                highlight_query: tree_sitter_html::HIGHLIGHTS_QUERY,
+                indent_query: None,
+                tags_query: None,
+                extensions: &["html", "htm"],
+            },
+            LanguageDef {
                 name: "Markdown",
                 language_fn: tree_sitter_md::LANGUAGE,
                 highlight_query: tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
@@ -200,6 +208,22 @@ mod tests {
         assert_eq!(lang.name, "PHP");
         let lang = reg.detect_by_extension("page.phtml").unwrap();
         assert_eq!(lang.name, "PHP");
+    }
+
+    #[test]
+    fn detect_html() {
+        let reg = LanguageRegistry::new();
+        let lang = reg.detect_by_extension("index.html").unwrap();
+        assert_eq!(lang.name, "HTML");
+        let lang = reg.detect_by_extension("page.htm").unwrap();
+        assert_eq!(lang.name, "HTML");
+    }
+
+    #[test]
+    fn detect_javascript() {
+        let reg = LanguageRegistry::new();
+        let lang = reg.detect_by_extension("app.js").unwrap();
+        assert_eq!(lang.name, "JavaScript");
     }
 
     #[test]
