@@ -167,6 +167,7 @@ pub fn resolve(key: KeyEvent, state: &mut KeyState, mode: &Mode, is_recording: b
             KeyCode::Char('j') => app(AppAction::Workspace(WorkspaceAction::OpenJumpListPicker)),
             KeyCode::Char('s') => app(AppAction::Workspace(WorkspaceAction::OpenSymbolPicker)),
             KeyCode::Char('p') => app(AppAction::Workspace(WorkspaceAction::OpenCommandPalette)),
+            KeyCode::Char('/') => app(AppAction::Workspace(WorkspaceAction::OpenGlobalSearch)),
             KeyCode::Char('g') => app(AppAction::Workspace(
                 WorkspaceAction::ToggleChangedFilesSidebar,
             )),
@@ -643,6 +644,17 @@ mod tests {
         assert_eq!(
             action,
             app(AppAction::Workspace(WorkspaceAction::OpenSymbolPicker))
+        );
+        assert_eq!(state, KeyState::Normal);
+    }
+
+    #[test]
+    fn space_slash_opens_global_search() {
+        let mut state = KeyState::Space;
+        let action = resolve(key('/'), &mut state, &Mode::Normal, false);
+        assert_eq!(
+            action,
+            app(AppAction::Workspace(WorkspaceAction::OpenGlobalSearch))
         );
         assert_eq!(state, KeyState::Normal);
     }
