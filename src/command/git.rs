@@ -523,6 +523,17 @@ fn git_unstage_in_impl(project_root: Option<&Path>, path: &str) -> Result<(), St
     Ok(())
 }
 
+fn open_url(url: &str) -> Result<(), String> {
+    let result = if cfg!(target_os = "macos") {
+        ProcessCommand::new("open").arg(url).spawn()
+    } else if cfg!(target_os = "windows") {
+        ProcessCommand::new("cmd").args(["/C", "start", "", url]).spawn()
+    } else {
+        ProcessCommand::new("xdg-open").arg(url).spawn()
+    };
+    result.map(|_| ()).map_err(|e| e.to_string())
+}
+
 fn remote_to_github_url(remote: &str) -> Option<String> {
     let remote = remote.trim();
     let url = if remote.starts_with("git@github.com:") {
@@ -721,6 +732,56 @@ pub fn register(registry: &mut CommandRegistry) {
             match copy_to_clipboard(&url) {
                 Ok(()) => CommandEffect::Message(format!("Copied: {}", url)),
                 Err(e) => CommandEffect::Message(format!("Copy failed: {}", e)),
+            }
+        }),
+    });
+
+    registry.register(CommandEntry {
+        id: "core.open_in_github_main".into(),
+        label: "Open in GitHub (master/main)".into(),
+        category: Some("Git".into()),
+        action: Box::new(|ctx| {
+            let file_path = match &ctx.editor().active_buffer().file_path {
+                Some(p) => p.clone(),
+                None => return CommandEffect::Message("No file path (scratch buffer)".into()),
+            };
+            let repo_root = repo_root_for_path(&file_path).ok();
+            let branch = match default_branch_for(repo_root.as_deref()) {
+                Ok(b) => b,
+                Err(e) => return CommandEffect::Message(e),
+            };
+            let url = match build_github_file_url(ctx.editor(), &branch) {
+                Ok(u) => u,
+                Err(e) => return CommandEffect::Message(e),
+            };
+            match open_url(&url) {
+                Ok(()) => CommandEffect::Message(format!("Opened: {}", url)),
+                Err(e) => CommandEffect::Message(format!("Open failed: {}", e)),
+            }
+        }),
+    });
+
+    registry.register(CommandEntry {
+        id: "core.open_in_github_branch".into(),
+        label: "Open in GitHub (current branch)".into(),
+        category: Some("Git".into()),
+        action: Box::new(|ctx| {
+            let file_path = match &ctx.editor().active_buffer().file_path {
+                Some(p) => p.clone(),
+                None => return CommandEffect::Message("No file path (scratch buffer)".into()),
+            };
+            let repo_root = repo_root_for_path(&file_path).ok();
+            let branch = match current_branch_for(repo_root.as_deref()) {
+                Ok(b) => b,
+                Err(e) => return CommandEffect::Message(e),
+            };
+            let url = match build_github_file_url(ctx.editor(), &branch) {
+                Ok(u) => u,
+                Err(e) => return CommandEffect::Message(e),
+            };
+            match open_url(&url) {
+                Ok(()) => CommandEffect::Message(format!("Opened: {}", url)),
+                Err(e) => CommandEffect::Message(format!("Open failed: {}", e)),
             }
         }),
     });
