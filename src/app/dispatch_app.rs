@@ -206,11 +206,10 @@ impl App {
                 ));
             }
             AppAction::Buffer(BufferAction::RefreshBuffer) => {
-                match self.editor.active_buffer_mut().reload_from_disk() {
+                match self.editor.reload_active_buffer_from_disk() {
                     Ok(msg) => {
                         debug_log!(&self.config, "refresh: ok");
                         self.editor.message = Some(msg);
-                        self.editor.mark_highlights_dirty();
                         self.emit_plugin_event(PluginEvent::BufferChanged {
                             doc_id: self.editor.active_buffer().id,
                         });

@@ -277,6 +277,19 @@ impl Editor {
         }
     }
 
+    /// Reload the active buffer from disk and rebuild syntax state from scratch.
+    /// `reload_from_disk` replaces the rope wholesale and clears `pending_edits`,
+    /// so the tree-sitter tree and the visible-span cache must be reset rather
+    /// than incrementally updated.
+    pub fn reload_active_buffer_from_disk(&mut self) -> Result<String, String> {
+        let result = self.documents[self.active_index].reload_from_disk();
+        if result.is_ok() {
+            self.refresh_active_buffer_language();
+            self.mark_highlights_dirty();
+        }
+        result
+    }
+
     /// Refresh highlight registration and language name for the active buffer's current file path.
     pub fn refresh_active_buffer_language(&mut self) {
         let doc_id = self.documents[self.active_index].id;

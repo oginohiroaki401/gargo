@@ -2105,7 +2105,7 @@ impl App {
         let path_str = commit_editmsg_path.to_string_lossy().to_string();
         self.flush_insert_transaction_if_active();
         self.editor.open_file(&path_str);
-        let _ = self.editor.active_buffer_mut().reload_from_disk();
+        let _ = self.editor.reload_active_buffer_from_disk();
         self.editor.active_buffer_mut().set_cursor_line_char(0, 0);
         let active_id = self.editor.active_buffer().id;
         self.git_commit_buffers.insert(

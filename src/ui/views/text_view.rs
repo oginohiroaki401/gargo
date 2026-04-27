@@ -686,11 +686,18 @@ pub fn render_highlighted_line_windowed(
             if next_span_idx < spans.len() {
                 boundary = boundary.min(spans[next_span_idx].start.min(end_byte));
             }
-            if boundary > absolute_byte_pos {
+            let mut local = if boundary > absolute_byte_pos {
                 boundary - start_byte
             } else {
                 byte_pos + display[byte_pos..].chars().next().unwrap().len_utf8()
+            };
+            // Spans may briefly be out of sync with `display` (e.g., right after a
+            // reload-from-disk before the tree is re-parsed). Snap forward so we
+            // never slice inside a multi-byte char.
+            while local < line_len && !display.is_char_boundary(local) {
+                local += 1;
             }
+            local
         };
 
         let run_start = byte_pos;
@@ -1303,6 +1310,24 @@ diff --git a/a.txt b/a.txt\n\
                 .style_for_capture("keyword")
                 .and_then(|style| style.fg)
         );
+    }
+
+    #[test]
+    fn highlighted_line_survives_spans_misaligned_with_multibyte_chars() {
+        // Regression: a stale span (e.g., from a tree not yet re-parsed after
+        // reload-from-disk) can land on a byte index that falls inside a
+        // multi-byte UTF-8 character. The renderer must clamp to a char
+        // boundary instead of panicking on string slicing.
+        let mut surface = Surface::new(20, 1);
+        let theme = Theme::dark();
+        // "実" occupies bytes 0..3; a span ending at byte 2 would slice mid-char.
+        let spans = vec![HighlightSpan {
+            start: 0,
+            end: 2,
+            capture_name: "string".to_string(),
+        }];
+
+        render_highlighted_line(&mut surface, 0, 0, "実a", &spans, 20, &theme);
     }
 
     #[test]
