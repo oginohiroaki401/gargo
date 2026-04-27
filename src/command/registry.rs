@@ -326,6 +326,51 @@ pub fn register_builtins(registry: &mut CommandRegistry) {
     });
 
     registry.register(CommandEntry {
+        id: "file.open_current_file".into(),
+        label: "Open Current File (System)".into(),
+        category: Some("File".into()),
+        action: Box::new(|ctx| match &ctx.editor().active_buffer().file_path {
+            Some(path) => {
+                let path_str = path.display().to_string();
+                let result = if cfg!(target_os = "macos") {
+                    ProcessCommand::new("open").arg(&path_str).spawn()
+                } else {
+                    ProcessCommand::new("xdg-open").arg(&path_str).spawn()
+                };
+                match result {
+                    Ok(_) => CommandEffect::Message(format!("Opened: {}", path_str)),
+                    Err(e) => CommandEffect::Message(format!("Open failed: {}", e)),
+                }
+            }
+            None => CommandEffect::Message("No file path (scratch buffer)".into()),
+        }),
+    });
+
+    registry.register(CommandEntry {
+        id: "file.reveal_in_finder".into(),
+        label: "Reveal Current File in Finder".into(),
+        category: Some("File".into()),
+        action: Box::new(|ctx| match &ctx.editor().active_buffer().file_path {
+            Some(path) => {
+                let path_str = path.display().to_string();
+                let result = if cfg!(target_os = "macos") {
+                    ProcessCommand::new("open")
+                        .args(["-R", &path_str])
+                        .spawn()
+                } else {
+                    let dir = path.parent().unwrap_or(path).display().to_string();
+                    ProcessCommand::new("xdg-open").arg(&dir).spawn()
+                };
+                match result {
+                    Ok(_) => CommandEffect::Message(format!("Revealed: {}", path_str)),
+                    Err(e) => CommandEffect::Message(format!("Reveal failed: {}", e)),
+                }
+            }
+            None => CommandEffect::Message("No file path (scratch buffer)".into()),
+        }),
+    });
+
+    registry.register(CommandEntry {
         id: "core.change_mode_insert".into(),
         label: "Enter Insert Mode".into(),
         category: Some("Mode".into()),
@@ -575,5 +620,7 @@ mod tests {
         let ids: Vec<&str> = registry.commands().iter().map(|c| c.id.as_str()).collect();
         assert!(ids.contains(&"file.copy_absolute_path"));
         assert!(ids.contains(&"file.copy_relative_path"));
+        assert!(ids.contains(&"file.open_current_file"));
+        assert!(ids.contains(&"file.reveal_in_finder"));
     }
 }
