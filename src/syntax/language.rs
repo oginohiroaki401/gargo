@@ -145,6 +145,54 @@ impl LanguageRegistry {
                 tags_query: Some(MARKDOWN_TAGS_QUERY),
                 extensions: &["md", "markdown"],
             },
+            LanguageDef {
+                name: "YAML",
+                language_fn: tree_sitter_yaml::LANGUAGE,
+                highlight_query: tree_sitter_yaml::HIGHLIGHTS_QUERY,
+                indent_query: None,
+                tags_query: None,
+                extensions: &["yml", "yaml"],
+            },
+            LanguageDef {
+                name: "XML",
+                language_fn: tree_sitter_xml::LANGUAGE_XML,
+                highlight_query: tree_sitter_xml::XML_HIGHLIGHT_QUERY,
+                indent_query: None,
+                tags_query: None,
+                extensions: &["xml", "svg", "xhtml", "xsd", "xsl"],
+            },
+            LanguageDef {
+                name: "CSS",
+                language_fn: tree_sitter_css::LANGUAGE,
+                highlight_query: tree_sitter_css::HIGHLIGHTS_QUERY,
+                indent_query: None,
+                tags_query: None,
+                extensions: &["css"],
+            },
+            LanguageDef {
+                name: "Bash",
+                language_fn: tree_sitter_bash::LANGUAGE,
+                highlight_query: tree_sitter_bash::HIGHLIGHT_QUERY,
+                indent_query: None,
+                tags_query: None,
+                extensions: &["sh", "bash", "zsh"],
+            },
+            LanguageDef {
+                name: "C++",
+                language_fn: tree_sitter_cpp::LANGUAGE,
+                highlight_query: tree_sitter_cpp::HIGHLIGHT_QUERY,
+                indent_query: None,
+                tags_query: Some(tree_sitter_cpp::TAGS_QUERY),
+                extensions: &["cpp", "cc", "cxx", "hpp", "hh", "hxx"],
+            },
+            LanguageDef {
+                name: "Ruby",
+                language_fn: tree_sitter_ruby::LANGUAGE,
+                highlight_query: tree_sitter_ruby::HIGHLIGHTS_QUERY,
+                indent_query: None,
+                tags_query: Some(tree_sitter_ruby::TAGS_QUERY),
+                extensions: &["rb"],
+            },
         ];
         Self { languages }
     }
@@ -233,5 +281,45 @@ mod tests {
         assert_eq!(lang.name, "Diff");
         let lang = reg.detect_by_extension("changes.patch").unwrap();
         assert_eq!(lang.name, "Diff");
+    }
+
+    #[test]
+    fn detect_yaml() {
+        let reg = LanguageRegistry::new();
+        assert_eq!(reg.detect_by_extension("config.yml").unwrap().name, "YAML");
+        assert_eq!(reg.detect_by_extension("ci.yaml").unwrap().name, "YAML");
+    }
+
+    #[test]
+    fn detect_xml() {
+        let reg = LanguageRegistry::new();
+        assert_eq!(reg.detect_by_extension("pom.xml").unwrap().name, "XML");
+        assert_eq!(reg.detect_by_extension("icon.svg").unwrap().name, "XML");
+    }
+
+    #[test]
+    fn detect_css() {
+        let reg = LanguageRegistry::new();
+        assert_eq!(reg.detect_by_extension("style.css").unwrap().name, "CSS");
+    }
+
+    #[test]
+    fn detect_bash() {
+        let reg = LanguageRegistry::new();
+        assert_eq!(reg.detect_by_extension("install.sh").unwrap().name, "Bash");
+        assert_eq!(reg.detect_by_extension("setup.bash").unwrap().name, "Bash");
+    }
+
+    #[test]
+    fn detect_cpp() {
+        let reg = LanguageRegistry::new();
+        assert_eq!(reg.detect_by_extension("main.cpp").unwrap().name, "C++");
+        assert_eq!(reg.detect_by_extension("util.hpp").unwrap().name, "C++");
+    }
+
+    #[test]
+    fn detect_ruby() {
+        let reg = LanguageRegistry::new();
+        assert_eq!(reg.detect_by_extension("app.rb").unwrap().name, "Ruby");
     }
 }
