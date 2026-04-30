@@ -1,19 +1,27 @@
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::command::git::{GitFileStatus, dir_git_status};
 use crate::input::action::{Action, AppAction, BufferAction, IntegrationAction, WorkspaceAction};
 use crate::input::chord::KeyState;
+use crate::syntax::highlight::{HighlightSpan, highlight_text};
+use crate::syntax::language::LanguageRegistry;
+use crate::syntax::theme::Theme;
 use crate::ui::framework::cell::CellStyle;
 use crate::ui::framework::component::EventResult;
 use crate::ui::framework::surface::Surface;
 use crate::ui::shared::file_browser::{is_valid_single_name, sort_by_name_case_insensitive};
 use crate::ui::shared::filtering::fuzzy_match;
-use crate::ui::text::truncate_to_width;
+use crate::ui::text::{slice_display_window, truncate_to_width};
 use crate::ui::text_input::delete_prev_word_input;
+use crate::ui::views::text_view::render_highlighted_line_windowed;
+
+const PREVIEW_MAX_LINES: usize = 500;
+const PREVIEW_HSCROLL_STEP: usize = 8;
 
 struct DirEntry {
     name: String,
@@ -26,6 +34,13 @@ struct DirEntry {
 enum ExplorerMode {
     AllFiles,
     ChangedOnly,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PreviewKind {
+    None,
+    File,
+    Dir,
 }
 
 pub struct Explorer {
@@ -45,6 +60,14 @@ pub struct Explorer {
     delete_confirm_active: bool,
     project_root: PathBuf,
     git_status_map: HashMap<String, GitFileStatus>,
+    // preview
+    preview_mode: bool,
+    preview_lines: Vec<String>,
+    preview_spans: HashMap<usize, Vec<HighlightSpan>>,
+    preview_path: Option<PathBuf>,
+    preview_kind: PreviewKind,
+    preview_scroll: usize,
+    preview_horizontal_scroll: usize,
 }
 
 impl Explorer {
@@ -87,9 +110,187 @@ impl Explorer {
             delete_confirm_active: false,
             project_root: project_root.to_path_buf(),
             git_status_map: git_status_map.clone(),
+            preview_mode: false,
+            preview_lines: Vec::new(),
+            preview_spans: HashMap::new(),
+            preview_path: None,
+            preview_kind: PreviewKind::None,
+            preview_scroll: 0,
+            preview_horizontal_scroll: 0,
         };
         explorer.read_directory();
         explorer
+    }
+
+    /// Enable or disable the preview pane. When enabled, the editor area shows
+    /// the file/dir under the cursor instead of the active buffer. The actual
+    /// open buffer is never modified.
+    pub fn set_preview_mode(&mut self, on: bool) {
+        if self.preview_mode == on {
+            return;
+        }
+        self.preview_mode = on;
+        if on {
+            self.update_preview();
+        } else {
+            self.clear_preview();
+        }
+    }
+
+    pub fn preview_mode_active(&self) -> bool {
+        self.preview_mode
+    }
+
+    fn clear_preview(&mut self) {
+        self.preview_lines.clear();
+        self.preview_spans.clear();
+        self.preview_path = None;
+        self.preview_kind = PreviewKind::None;
+        self.preview_scroll = 0;
+        self.preview_horizontal_scroll = 0;
+    }
+
+    fn update_preview(&mut self) {
+        if !self.preview_mode {
+            return;
+        }
+        let Some(&entry_idx) = self.visible_entries.get(self.selected) else {
+            self.preview_lines.clear();
+            self.preview_spans.clear();
+            self.preview_path = None;
+            self.preview_kind = PreviewKind::None;
+            return;
+        };
+        let entry = &self.entries[entry_idx];
+        if entry.is_repo_header {
+            self.preview_lines.clear();
+            self.preview_spans.clear();
+            self.preview_path = None;
+            self.preview_kind = PreviewKind::None;
+            return;
+        }
+        let path = self.current_dir.join(&entry.name);
+        if self.preview_path.as_ref() == Some(&path) {
+            return;
+        }
+
+        self.preview_scroll = 0;
+        self.preview_horizontal_scroll = 0;
+        self.preview_spans.clear();
+
+        if entry.is_dir {
+            self.preview_lines = build_dir_listing(&path);
+            self.preview_kind = PreviewKind::Dir;
+        } else {
+            let (lines, spans) = read_file_preview(&path);
+            self.preview_lines = lines;
+            self.preview_spans = spans;
+            self.preview_kind = PreviewKind::File;
+        }
+        self.preview_path = Some(path);
+    }
+
+    pub fn render_preview(
+        &mut self,
+        surface: &mut Surface,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+        theme: &Theme,
+    ) {
+        if width == 0 || height == 0 {
+            return;
+        }
+
+        let default_style = CellStyle::default();
+        let dim_style = CellStyle {
+            dim: true,
+            ..CellStyle::default()
+        };
+
+        // Title row.
+        let title = match (&self.preview_kind, self.preview_path.as_ref()) {
+            (PreviewKind::File, Some(p)) => {
+                let rel = p.strip_prefix(&self.project_root).unwrap_or(p);
+                format!("PREVIEW: {}", rel.to_string_lossy())
+            }
+            (PreviewKind::Dir, Some(p)) => {
+                let rel = p.strip_prefix(&self.project_root).unwrap_or(p);
+                format!("PREVIEW: {}/", rel.to_string_lossy())
+            }
+            _ => "PREVIEW".to_string(),
+        };
+        let (truncated_title, used) = truncate_to_width(&title, width);
+        surface.put_str(x, y, truncated_title, &dim_style);
+        if used < width {
+            surface.fill_region(x + used, y, width - used, ' ', &dim_style);
+        }
+
+        let body_h = height.saturating_sub(1);
+        if body_h == 0 {
+            return;
+        }
+        let body_y = y + 1;
+
+        // Clamp vertical scroll.
+        let max_vscroll = self.preview_lines.len().saturating_sub(body_h);
+        if self.preview_scroll > max_vscroll {
+            self.preview_scroll = max_vscroll;
+        }
+
+        let highlight_enabled = self.preview_kind == PreviewKind::File;
+
+        for row in 0..body_h {
+            let line_idx = self.preview_scroll + row;
+            let screen_row = body_y + row;
+            if line_idx < self.preview_lines.len() {
+                let line = &self.preview_lines[line_idx];
+                let window = slice_display_window(line, self.preview_horizontal_scroll, width);
+                if highlight_enabled
+                    && let Some(spans) = self.preview_spans.get(&line_idx)
+                {
+                    render_highlighted_line_windowed(
+                        surface,
+                        (screen_row, x),
+                        window.visible,
+                        spans,
+                        window.start_byte..window.end_byte,
+                        width,
+                        theme,
+                    );
+                    let pad = width.saturating_sub(window.used_width);
+                    if pad > 0 {
+                        surface.fill_region(
+                            x + window.used_width,
+                            screen_row,
+                            pad,
+                            ' ',
+                            &default_style,
+                        );
+                    }
+                } else {
+                    let style = if self.preview_kind == PreviewKind::Dir && line_idx == 0 {
+                        dim_style
+                    } else {
+                        default_style
+                    };
+                    surface.put_str(x, screen_row, window.visible, &style);
+                    let pad = width.saturating_sub(window.used_width);
+                    if pad > 0 {
+                        surface.fill_region(
+                            x + window.used_width,
+                            screen_row,
+                            pad,
+                            ' ',
+                            &default_style,
+                        );
+                    }
+                }
+            } else {
+                surface.fill_region(x, screen_row, width, ' ', &default_style);
+            }
+        }
     }
 
     fn read_directory(&mut self) {
@@ -262,6 +463,34 @@ impl Explorer {
             return self.handle_find_key(key);
         }
 
+        // Preview-pane scroll: only intercept Shift+J/K/H/L while preview is on,
+        // so other Shift-keys keep their default fallthrough behavior.
+        if self.preview_mode && key.modifiers.contains(KeyModifiers::SHIFT) {
+            match key.code {
+                KeyCode::Char('J') | KeyCode::Down => {
+                    self.preview_scroll = self.preview_scroll.saturating_add(1);
+                    return EventResult::Consumed;
+                }
+                KeyCode::Char('K') | KeyCode::Up => {
+                    self.preview_scroll = self.preview_scroll.saturating_sub(1);
+                    return EventResult::Consumed;
+                }
+                KeyCode::Char('L') | KeyCode::Right => {
+                    self.preview_horizontal_scroll = self
+                        .preview_horizontal_scroll
+                        .saturating_add(PREVIEW_HSCROLL_STEP);
+                    return EventResult::Consumed;
+                }
+                KeyCode::Char('H') | KeyCode::Left => {
+                    self.preview_horizontal_scroll = self
+                        .preview_horizontal_scroll
+                        .saturating_sub(PREVIEW_HSCROLL_STEP);
+                    return EventResult::Consumed;
+                }
+                _ => {}
+            }
+        }
+
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return match key.code {
                 KeyCode::Char('n') => {
@@ -309,6 +538,10 @@ impl Explorer {
             KeyCode::Char('r') => self.start_rename_prompt(),
             KeyCode::Char('a') => self.start_add_prompt(),
             KeyCode::Char('d') => self.start_delete_confirm(),
+            KeyCode::Char('p') => {
+                self.set_preview_mode(!self.preview_mode);
+                EventResult::Consumed
+            }
             KeyCode::Esc => EventResult::Action(Action::App(AppAction::Workspace(
                 WorkspaceAction::ToggleExplorer,
             ))),
@@ -535,6 +768,7 @@ impl Explorer {
         }
         if let Some((_, visible_idx)) = best {
             self.selected = visible_idx;
+            self.update_preview();
         }
     }
 
@@ -663,12 +897,14 @@ impl Explorer {
     fn move_down(&mut self) {
         if !self.visible_entries.is_empty() && self.selected + 1 < self.visible_entries.len() {
             self.selected += 1;
+            self.update_preview();
         }
     }
 
     fn move_up(&mut self) {
         if self.selected > 0 {
             self.selected -= 1;
+            self.update_preview();
         }
     }
 
@@ -686,6 +922,7 @@ impl Explorer {
             if let Some(name) = old_name {
                 self.select_by_name(&name);
             }
+            self.update_preview();
         }
     }
 
@@ -702,6 +939,7 @@ impl Explorer {
             let new_dir = self.current_dir.join(&entry.name);
             self.current_dir = new_dir;
             self.read_directory();
+            self.update_preview();
             EventResult::Consumed
         } else {
             let path = self.current_dir.join(&entry.name);
@@ -766,6 +1004,7 @@ impl Explorer {
         for (i, &idx) in self.visible_entries.iter().enumerate() {
             if self.entries[idx].name == name {
                 self.selected = i;
+                self.update_preview();
                 return;
             }
         }
@@ -798,8 +1037,12 @@ impl Explorer {
             ..CellStyle::default()
         };
 
-        // Header: show current directory path
-        let header = self.truncated_path_header(width);
+        // Header: show current directory path. Prefix "[P] " when preview is on.
+        let prefix = if self.preview_mode { "[P] " } else { "" };
+        let prefix_w = crate::ui::text::display_width(prefix);
+        let header_budget = width.saturating_sub(prefix_w);
+        let header_body = self.truncated_path_header(header_budget);
+        let header = format!("{}{}", prefix, header_body);
         surface.put_str(x, 0, &header, &dim_style);
         let header_w = crate::ui::text::display_width(&header);
         if header_w < width {
@@ -981,6 +1224,141 @@ impl Explorer {
         let cursor_x = x + crate::ui::text::display_width(&prompt);
         Some((cursor_x as u16, find_row as u16))
     }
+}
+
+fn read_file_preview(path: &Path) -> (Vec<String>, HashMap<usize, Vec<HighlightSpan>>) {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return (vec!["<binary or unreadable>".to_string()], HashMap::new()),
+    };
+    let lines: Vec<String> = content
+        .lines()
+        .take(PREVIEW_MAX_LINES)
+        .map(|l| l.to_string())
+        .collect();
+    let lang_registry = LanguageRegistry::new();
+    let path_str = path.to_string_lossy();
+    let spans = if let Some(lang_def) = lang_registry.detect_by_extension(&path_str) {
+        let preview_text: String = lines.join("\n");
+        highlight_text(&preview_text, lang_def)
+    } else {
+        HashMap::new()
+    };
+    (lines, spans)
+}
+
+fn build_dir_listing(path: &Path) -> Vec<String> {
+    let Ok(read_dir) = std::fs::read_dir(path) else {
+        return vec![format!("<cannot read {}>", path.display())];
+    };
+
+    struct Row {
+        name: String,
+        is_dir: bool,
+        size: u64,
+        mtime: Option<SystemTime>,
+    }
+
+    let mut dirs: Vec<Row> = Vec::new();
+    let mut files: Vec<Row> = Vec::new();
+    for entry in read_dir.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let metadata = entry.metadata().ok();
+        let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+        let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+        let mtime = metadata.as_ref().and_then(|m| m.modified().ok());
+        let row = Row {
+            name,
+            is_dir,
+            size,
+            mtime,
+        };
+        if is_dir {
+            dirs.push(row);
+        } else {
+            files.push(row);
+        }
+    }
+    sort_by_name_case_insensitive(&mut dirs, |r| &r.name);
+    sort_by_name_case_insensitive(&mut files, |r| &r.name);
+
+    let mut lines: Vec<String> = Vec::new();
+    let total = dirs.len() + files.len();
+    lines.push(format!("total: {} entries", total));
+    lines.push(String::new());
+    let mut emit = |row: &Row| {
+        let display_name = if row.is_dir {
+            format!("{}/", row.name)
+        } else {
+            row.name.clone()
+        };
+        let size = if row.is_dir {
+            "-".to_string()
+        } else {
+            format_size(row.size)
+        };
+        let mtime = row
+            .mtime
+            .map(format_mtime)
+            .unwrap_or_else(|| "-".to_string());
+        // size col 8, mtime col 17, gap, then name
+        lines.push(format!("{:>8}  {:<17}  {}", size, mtime, display_name));
+    };
+    for r in &dirs {
+        emit(r);
+    }
+    for r in &files {
+        emit(r);
+    }
+    lines
+}
+
+fn format_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    const TB: u64 = GB * 1024;
+    if bytes < KB {
+        format!("{}B", bytes)
+    } else if bytes < MB {
+        format!("{:.1}K", bytes as f64 / KB as f64)
+    } else if bytes < GB {
+        format!("{:.1}M", bytes as f64 / MB as f64)
+    } else if bytes < TB {
+        format!("{:.1}G", bytes as f64 / GB as f64)
+    } else {
+        format!("{:.1}T", bytes as f64 / TB as f64)
+    }
+}
+
+/// Format a SystemTime as "YYYY-MM-DD HH:MM" in UTC. No tz crate; uses
+/// Howard Hinnant's civil-from-days algorithm for the date split.
+fn format_mtime(t: SystemTime) -> String {
+    let secs = match t.duration_since(UNIX_EPOCH) {
+        Ok(d) => d.as_secs() as i64,
+        Err(e) => -(e.duration().as_secs() as i64),
+    };
+    let days = secs.div_euclid(86_400);
+    let secs_of_day = secs.rem_euclid(86_400) as u32;
+    let hour = secs_of_day / 3600;
+    let minute = (secs_of_day % 3600) / 60;
+
+    // Howard Hinnant: civil_from_days
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u32; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let year = if m <= 2 { y + 1 } else { y };
+
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}",
+        year, m, d, hour, minute
+    )
 }
 
 #[cfg(test)]

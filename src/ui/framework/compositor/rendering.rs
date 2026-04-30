@@ -29,6 +29,11 @@ impl Compositor {
 
         let layout = self.explorer_layout(cols);
         let is_fullscreen_explorer = layout.is_some() && cols < 80;
+        let preview_active = self
+            .explorer
+            .as_ref()
+            .map(|e| e.preview_mode_active())
+            .unwrap_or(false);
 
         // Render explorer if present
         if let (Some((ew, _border_col, _editor_x, _editor_w)), Some(explorer)) =
@@ -51,9 +56,20 @@ impl Compositor {
             }
         }
 
-        // Render editor panes unless explorer is fullscreen
+        // Render the editor area: either the file/dir preview (when the sidebar
+        // has preview mode on) or the normal window panes. Skip entirely when
+        // the explorer is fullscreen (no editor area exists).
         if !is_fullscreen_explorer {
-            self.render_windows(ctx);
+            if preview_active
+                && let (Some((_, _, editor_x, editor_w)), Some(explorer)) =
+                    (layout, &mut self.explorer)
+                && editor_w > 0
+            {
+                let editor_h = rows.saturating_sub(2);
+                explorer.render_preview(&mut self.current, editor_x, 0, editor_w, editor_h, ctx.theme);
+            } else {
+                self.render_windows(ctx);
+            }
         }
 
         // Status bar always renders full width
@@ -295,6 +311,9 @@ impl Compositor {
                 queue!(stdout, MoveTo(cx, cy))?;
                 queue!(stdout, SetCursorStyle::BlinkingBar)?;
                 queue!(stdout, cursor::Show)?;
+            } else if preview_active {
+                // Preview pane shows static content; no editable cursor.
+                queue!(stdout, cursor::Hide)?;
             } else if !is_fullscreen_explorer {
                 // Explorer is open but not in find mode: show focused pane cursor
                 if let Some((col, row, style)) = self.focused_window_cursor(ctx) {

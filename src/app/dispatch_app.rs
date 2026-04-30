@@ -437,45 +437,52 @@ impl App {
                 } else {
                     // Open explorer
                     self.queue_git_status_refresh(true);
+                    let initial_preview = self.active_buffer_is_blank();
                     let (dir, select) = self.resolve_explorer_open_target();
                     let mut explorer =
                         Explorer::new(dir, &self.project_root, &self.git_status_cache);
                     if let Some(name) = select {
                         explorer.select_by_name(&name);
                     }
+                    explorer.set_preview_mode(initial_preview);
                     self.compositor.open_explorer(explorer);
                 }
             }
             AppAction::Workspace(WorkspaceAction::ToggleChangedFilesSidebar) => {
                 self.queue_git_status_refresh(true);
+                let initial_preview = self.active_buffer_is_blank();
                 if let Some(explorer) = self.compositor.close_explorer() {
                     if !explorer.is_changed_only() {
                         self.last_explorer_dir = Some(explorer.current_dir().to_path_buf());
                         self.last_explorer_selected =
                             explorer.selected_name().map(|s| s.to_string());
-                        let explorer = Explorer::new_changed_only(
+                        let mut explorer = Explorer::new_changed_only(
                             self.project_root.clone(),
                             &self.project_root,
                             &self.git_status_cache,
                         );
+                        explorer.set_preview_mode(initial_preview);
                         self.compositor.open_explorer(explorer);
                     }
                 } else {
-                    let explorer = Explorer::new_changed_only(
+                    let mut explorer = Explorer::new_changed_only(
                         self.project_root.clone(),
                         &self.project_root,
                         &self.git_status_cache,
                     );
+                    explorer.set_preview_mode(initial_preview);
                     self.compositor.open_explorer(explorer);
                 }
             }
             AppAction::Workspace(WorkspaceAction::RevealInExplorer) => {
                 self.queue_git_status_refresh(true);
+                let initial_preview = self.active_buffer_is_blank();
                 let (dir, select) = self.resolve_reveal_target();
                 let mut explorer = Explorer::new(dir, &self.project_root, &self.git_status_cache);
                 if let Some(name) = select {
                     explorer.select_by_name(&name);
                 }
+                explorer.set_preview_mode(initial_preview);
                 self.compositor.open_explorer(explorer);
             }
             AppAction::Workspace(WorkspaceAction::OpenExplorerPopup) => {

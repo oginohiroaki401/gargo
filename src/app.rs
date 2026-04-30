@@ -311,6 +311,14 @@ impl App {
         }
     }
 
+    /// True when the active buffer has no associated file path (scratch) or
+    /// has no content. Used by the sidebar explorer to choose whether to
+    /// auto-enable preview mode on open.
+    pub(crate) fn active_buffer_is_blank(&self) -> bool {
+        let buf = self.editor.active_buffer();
+        buf.file_path.is_none() || buf.rope.len_chars() == 0
+    }
+
     /// Returns the git repo root for the active buffer, falling back to
     /// `self.project_root` when the buffer has no file path or isn't in a repo.
     fn active_buffer_repo_root(&self) -> PathBuf {
