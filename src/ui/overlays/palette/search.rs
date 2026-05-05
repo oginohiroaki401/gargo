@@ -49,11 +49,16 @@ impl Palette {
             return;
         }
 
-        let Some(ref rx) = self.global_search_result_rx else {
+        let mut batches: Vec<GlobalSearchBatch> = Vec::new();
+        if let Some(ref rx) = self.global_search_result_rx {
+            while let Ok(batch) = rx.try_recv() {
+                batches.push(batch);
+            }
+        } else {
             return;
-        };
+        }
 
-        while let Ok(batch) = rx.try_recv() {
+        for batch in batches {
             if batch.generation < self.global_search_latest_applied {
                 continue;
             }
@@ -65,6 +70,7 @@ impl Palette {
                 self.selected = 0;
                 self.preview_lines = vec![format!("Global search error: {error}")];
                 self.preview_spans.clear();
+                self.last_previewed_search_index = None;
                 continue;
             }
 
@@ -105,12 +111,8 @@ impl Palette {
             if self.selected >= self.candidates.len() {
                 self.selected = self.candidates.len().saturating_sub(1);
             }
-            self.preview_lines = self
-                .candidates
-                .get(self.selected)
-                .map(|c| c.preview_lines.clone())
-                .unwrap_or_default();
-            self.preview_spans.clear();
+            self.last_previewed_search_index = None;
+            self.update_global_search_preview();
         }
 
         if !self.global_search_dirty {

@@ -93,6 +93,7 @@ pub struct Palette {
     last_previewed_reference_index: Option<usize>,
     last_previewed_git_branch_index: Option<usize>,
     last_previewed_symbol_index: Option<usize>,
+    last_previewed_search_index: Option<usize>,
     jump_target_preview_line: Option<usize>,
     jump_target_char_col: Option<usize>,
     buffer_highlight_cache: HashMap<BufferId, HashMap<usize, Vec<HighlightSpan>>>,

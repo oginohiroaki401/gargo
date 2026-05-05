@@ -148,6 +148,18 @@ impl Palette {
             0
         };
 
+        let preview_row_offset = if let Some(target_line) = self.jump_target_preview_line {
+            if content_h > 0 && target_line >= content_h {
+                let centered = target_line.saturating_sub(content_h / 2);
+                let max_offset = self.preview_lines.len().saturating_sub(content_h);
+                centered.min(max_offset)
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
         for row in 0..h {
             if row == 0 {
                 surface.put_str(x, y + row, "\u{250c}", &default_style);
@@ -158,9 +170,9 @@ impl Palette {
                 surface.fill_region(x + 1, y + row, inner_w, '\u{2500}', &default_style);
                 surface.put_str(x + 1 + inner_w, y + row, "\u{2518}", &default_style);
             } else if has_preview {
-                let line_idx = row - 1;
+                let line_idx = (row - 1) + preview_row_offset;
                 surface.put_str(x, y + row, "\u{2502}", &default_style);
-                if line_idx < content_h && line_idx < self.preview_lines.len() {
+                if (row - 1) < content_h && line_idx < self.preview_lines.len() {
                     let line = &self.preview_lines[line_idx];
                     let window = slice_preview_display_window(line, preview_start_col, inner_w);
                     if let Some(spans) = self.preview_spans.get(&line_idx) {

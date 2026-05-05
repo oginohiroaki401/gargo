@@ -9,11 +9,7 @@ impl Palette {
         self.jump_target_char_col = None;
         if self.mode == PaletteMode::GlobalSearch {
             self.pump_global_search();
-            self.preview_lines = self
-                .candidates
-                .get(self.selected)
-                .map(|c| c.preview_lines.clone())
-                .unwrap_or_default();
+            self.update_global_search_preview();
             return;
         }
         if self.mode == PaletteMode::GotoLine {
@@ -174,6 +170,132 @@ impl Palette {
         if count > 0 {
             debug_log!(config, "preview: scheduled {} nearby previews", count);
         }
+    }
+
+    pub(super) fn update_global_search_preview(&mut self) {
+        let entry_idx = match self.candidates.get(self.selected).map(|c| &c.kind) {
+            Some(CandidateKind::SearchResult(idx)) => *idx,
+            _ => {
+                self.preview_lines.clear();
+                self.preview_spans.clear();
+                self.jump_target_preview_line = None;
+                self.jump_target_char_col = None;
+                self.last_previewed_search_index = None;
+                return;
+            }
+        };
+
+        if self.last_previewed_search_index == Some(entry_idx) {
+            return;
+        }
+
+        let Some(entry) = self.global_search_entries.get(entry_idx).cloned() else {
+            self.preview_lines.clear();
+            self.preview_spans.clear();
+            self.jump_target_preview_line = None;
+            self.jump_target_char_col = None;
+            self.last_previewed_search_index = None;
+            return;
+        };
+
+        self.preview_spans.clear();
+        self.jump_target_preview_line = None;
+        self.jump_target_char_col = None;
+
+        let header = entry.preview_lines.first().cloned().unwrap_or_default();
+        let is_files_entry = header.starts_with("[files]");
+        let is_unsaved_entry = header.starts_with("[unsaved]");
+
+        let content_opt: Option<String> = if is_unsaved_entry {
+            self.global_search_unsaved_buffers
+                .iter()
+                .find(|buf| buf.path.to_string_lossy() == entry.rel_path)
+                .map(|buf| buf.content.clone())
+        } else {
+            let path = PathBuf::from(&entry.rel_path);
+            let full = if path.is_absolute() {
+                path
+            } else {
+                self.project_root.join(&path)
+            };
+            std::fs::read_to_string(&full).ok()
+        };
+
+        let Some(content) = content_opt else {
+            self.preview_lines = entry.preview_lines.clone();
+            self.last_previewed_search_index = Some(entry_idx);
+            return;
+        };
+
+        let lines: Vec<&str> = content.lines().collect();
+        if lines.is_empty() {
+            self.preview_lines = entry.preview_lines.clone();
+            self.last_previewed_search_index = Some(entry_idx);
+            return;
+        }
+
+        const PREVIEW_HALF_WINDOW: usize = 80;
+        const FILES_PREVIEW_LINES: usize = 200;
+
+        let (start, end) = if is_files_entry {
+            (0, FILES_PREVIEW_LINES.min(lines.len()))
+        } else {
+            let s = entry.line.saturating_sub(PREVIEW_HALF_WINDOW);
+            let e = (entry.line + PREVIEW_HALF_WINDOW + 1).min(lines.len());
+            (s, e)
+        };
+
+        let mut preview = Vec::with_capacity(end.saturating_sub(start) + 1);
+        preview.push(header);
+        for (offset, line) in lines[start..end].iter().enumerate() {
+            preview.push(format!("{:>5} | {}", start + offset + 1, line));
+        }
+
+        if !is_files_entry && entry.line >= start && entry.line < end {
+            self.jump_target_preview_line = Some(1 + (entry.line - start));
+            self.jump_target_char_col = Some(entry.char_col);
+        }
+
+        self.preview_lines = preview;
+
+        let lang_registry = self
+            .lang_registry_owned
+            .get_or_insert_with(LanguageRegistry::new);
+        if let Some(lang_def) = lang_registry.detect_by_extension(&entry.rel_path) {
+            let mut code_lines = Vec::new();
+            let mut line_map: Vec<(usize, usize)> = Vec::new();
+            for (preview_idx, line) in self.preview_lines.iter().enumerate().skip(1) {
+                if let Some((_, code)) = split_numbered_preview_line(line) {
+                    let prefix_len = line.len().saturating_sub(code.len());
+                    code_lines.push(code.to_string());
+                    line_map.push((preview_idx, prefix_len));
+                } else {
+                    code_lines.push(line.clone());
+                    line_map.push((preview_idx, 0));
+                }
+            }
+            if !code_lines.is_empty() {
+                let preview_text = code_lines.join("\n");
+                let raw_spans = highlight_text(&preview_text, lang_def);
+                for (line_idx, spans) in raw_spans {
+                    if let Some((preview_idx, prefix_len)) = line_map.get(line_idx).copied() {
+                        self.preview_spans.insert(
+                            preview_idx,
+                            spans
+                                .into_iter()
+                                .map(|span| HighlightSpan {
+                                    start: span.start + prefix_len,
+                                    end: span.end + prefix_len,
+                                    capture_name: span.capture_name,
+                                })
+                                .collect(),
+                        );
+                    }
+                }
+            }
+        }
+
+        self.last_previewed_search_index = Some(entry_idx);
     }
 
     pub(super) fn update_buffer_preview(&mut self) {
