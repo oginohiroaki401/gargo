@@ -7,6 +7,7 @@ impl Palette {
         self.preview_spans.clear();
         self.jump_target_preview_line = None;
         self.jump_target_char_col = None;
+        self.pending_image_data = None;
         if self.mode == PaletteMode::GlobalSearch {
             self.pump_global_search();
             self.update_global_search_preview();
@@ -65,6 +66,11 @@ impl Palette {
             })
         {
             let rel_path = rel_path.clone();
+            let full_path = self.project_root.join(&rel_path);
+
+            if self.try_set_image_preview(&full_path) {
+                return;
+            }
 
             // Check cache first (includes background-generated results)
             if let Some(cached) = self.preview_cache.get(&rel_path) {
@@ -79,9 +85,6 @@ impl Palette {
                 self.schedule_nearby_previews(config);
                 return;
             }
-
-            // Sync fallback: generate preview on main thread for current selection
-            let full_path = self.project_root.join(&rel_path);
 
             let t_read = Instant::now();
             if let Ok(content) = std::fs::read_to_string(&full_path) {
@@ -126,6 +129,41 @@ impl Palette {
 
         // Schedule nearby previews for background generation
         self.schedule_nearby_previews(config);
+    }
+
+    /// Try to render `full_path` as an image preview. Returns true if the
+    /// path is an image and was loaded successfully (or cached). When true,
+    /// `pending_image_data` is set; preview text/span state is cleared.
+    pub(super) fn try_set_image_preview(&mut self, full_path: &Path) -> bool {
+        if !crate::ui::image::is_image_path(full_path) {
+            return false;
+        }
+        let supported = crate::ui::image::supports_kitty_graphics();
+        crate::ui::image::debug_log(&format!(
+            "palette: try_set_image_preview path={:?} kitty_supported={}",
+            full_path, supported
+        ));
+        if !supported {
+            return false;
+        }
+        let key: PathBuf = full_path.to_path_buf();
+        if let Some(arc) = self.image_preview_cache.get(&key) {
+            self.pending_image_data = Some((key, arc.clone()));
+            self.preview_lines.clear();
+            self.preview_spans.clear();
+            return true;
+        }
+        match crate::ui::image::load_and_encode(full_path, 1024) {
+            Some(img) => {
+                let arc = Arc::new(img);
+                self.image_preview_cache.insert(key.clone(), arc.clone());
+                self.pending_image_data = Some((key, arc));
+                self.preview_lines.clear();
+                self.preview_spans.clear();
+                true
+            }
+            None => false,
+        }
     }
 
     pub(super) fn drain_preview_results(&mut self) {
@@ -205,6 +243,19 @@ impl Palette {
         let header = entry.preview_lines.first().cloned().unwrap_or_default();
         let is_files_entry = header.starts_with("[files]");
         let is_unsaved_entry = header.starts_with("[unsaved]");
+
+        if !is_unsaved_entry {
+            let path = PathBuf::from(&entry.rel_path);
+            let full = if path.is_absolute() {
+                path
+            } else {
+                self.project_root.join(&path)
+            };
+            if self.try_set_image_preview(&full) {
+                self.last_previewed_search_index = Some(entry_idx);
+                return;
+            }
+        }
 
         let content_opt: Option<String> = if is_unsaved_entry {
             self.global_search_unsaved_buffers

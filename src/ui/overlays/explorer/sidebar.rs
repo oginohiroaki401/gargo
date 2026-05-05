@@ -68,6 +68,9 @@ pub struct Explorer {
     preview_kind: PreviewKind,
     preview_scroll: usize,
     preview_horizontal_scroll: usize,
+    preview_image: Option<(PathBuf, std::sync::Arc<crate::ui::image::EncodedImage>)>,
+    preview_image_cache: HashMap<PathBuf, std::sync::Arc<crate::ui::image::EncodedImage>>,
+    pending_image_request: Option<crate::ui::image::ImageRenderRequest>,
 }
 
 impl Explorer {
@@ -117,6 +120,9 @@ impl Explorer {
             preview_kind: PreviewKind::None,
             preview_scroll: 0,
             preview_horizontal_scroll: 0,
+            preview_image: None,
+            preview_image_cache: HashMap::new(),
+            pending_image_request: None,
         };
         explorer.read_directory();
         explorer
@@ -148,6 +154,45 @@ impl Explorer {
         self.preview_kind = PreviewKind::None;
         self.preview_scroll = 0;
         self.preview_horizontal_scroll = 0;
+        self.preview_image = None;
+    }
+
+    pub fn take_pending_image_request(&mut self) -> Option<crate::ui::image::ImageRenderRequest> {
+        self.pending_image_request.take()
+    }
+
+    fn try_load_preview_image(&mut self, path: &Path) -> bool {
+        if !crate::ui::image::is_image_path(path) {
+            return false;
+        }
+        let supported = crate::ui::image::supports_kitty_graphics();
+        crate::ui::image::debug_log(&format!(
+            "explorer: try_load_preview_image path={:?} kitty_supported={}",
+            path, supported
+        ));
+        if !supported {
+            return false;
+        }
+        let key = path.to_path_buf();
+        if let Some(cached) = self.preview_image_cache.get(&key) {
+            self.preview_image = Some((key, cached.clone()));
+            self.preview_lines.clear();
+            self.preview_spans.clear();
+            self.preview_kind = PreviewKind::File;
+            return true;
+        }
+        match crate::ui::image::load_and_encode(path, 1024) {
+            Some(img) => {
+                let arc = std::sync::Arc::new(img);
+                self.preview_image_cache.insert(key.clone(), arc.clone());
+                self.preview_image = Some((key, arc));
+                self.preview_lines.clear();
+                self.preview_spans.clear();
+                self.preview_kind = PreviewKind::File;
+                true
+            }
+            None => false,
+        }
     }
 
     fn update_preview(&mut self) {
@@ -159,6 +204,7 @@ impl Explorer {
             self.preview_spans.clear();
             self.preview_path = None;
             self.preview_kind = PreviewKind::None;
+            self.preview_image = None;
             return;
         };
         let entry = &self.entries[entry_idx];
@@ -167,6 +213,7 @@ impl Explorer {
             self.preview_spans.clear();
             self.preview_path = None;
             self.preview_kind = PreviewKind::None;
+            self.preview_image = None;
             return;
         }
         let path = self.current_dir.join(&entry.name);
@@ -177,10 +224,13 @@ impl Explorer {
         self.preview_scroll = 0;
         self.preview_horizontal_scroll = 0;
         self.preview_spans.clear();
+        self.preview_image = None;
 
         if entry.is_dir {
             self.preview_lines = build_dir_listing(&path);
             self.preview_kind = PreviewKind::Dir;
+        } else if self.try_load_preview_image(&path) {
+            // Image preview state set above.
         } else {
             let (lines, spans) = read_file_preview(&path);
             self.preview_lines = lines;
@@ -199,6 +249,7 @@ impl Explorer {
         height: usize,
         theme: &Theme,
     ) {
+        self.pending_image_request = None;
         if width == 0 || height == 0 {
             return;
         }
@@ -232,6 +283,21 @@ impl Explorer {
             return;
         }
         let body_y = y + 1;
+
+        if let Some((path, data)) = self.preview_image.clone() {
+            for row in 0..body_h {
+                surface.fill_region(x, body_y + row, width, ' ', &default_style);
+            }
+            self.pending_image_request = Some(crate::ui::image::ImageRenderRequest {
+                key: path,
+                col: x as u16,
+                row: body_y as u16,
+                cell_cols: width as u16,
+                cell_rows: body_h as u16,
+                data,
+            });
+            return;
+        }
 
         // Clamp vertical scroll.
         let max_vscroll = self.preview_lines.len().saturating_sub(body_h);

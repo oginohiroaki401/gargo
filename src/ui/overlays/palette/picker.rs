@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -27,6 +27,7 @@ use crate::syntax::theme::Theme;
 use crate::ui::framework::cell::CellStyle;
 use crate::ui::framework::component::EventResult;
 use crate::ui::framework::surface::Surface;
+use crate::ui::image::{EncodedImage, ImageRenderRequest};
 use crate::ui::shared::filtering::{fuzzy_match, fzf_style_match};
 use crate::ui::text::{display_width, truncate_to_width};
 use crate::ui::text_input::TextInput;
@@ -112,9 +113,16 @@ pub struct Palette {
     active_doc_lines: Vec<String>,
     is_unified: bool,
     caller_label: Option<String>,
+    image_preview_cache: HashMap<PathBuf, Arc<EncodedImage>>,
+    pending_image_data: Option<(PathBuf, Arc<EncodedImage>)>,
+    pending_image_request: Option<ImageRenderRequest>,
 }
 
 impl Palette {
+    pub fn take_pending_image_request(&mut self) -> Option<ImageRenderRequest> {
+        self.pending_image_request.take()
+    }
+
     pub fn set_git_status_map(&mut self, git_status_map: &HashMap<String, GitFileStatus>) {
         self.git_status_map = git_status_map.clone();
     }

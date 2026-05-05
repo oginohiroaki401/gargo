@@ -73,6 +73,9 @@ impl Palette {
             active_doc_lines,
             is_unified: true,
             caller_label: None,
+            image_preview_cache: HashMap::new(),
+            pending_image_data: None,
+            pending_image_request: None,
         }
     }
 
@@ -133,6 +136,9 @@ impl Palette {
             active_doc_lines: Vec::new(),
             is_unified: false,
             caller_label: None,
+            image_preview_cache: HashMap::new(),
+            pending_image_data: None,
+            pending_image_request: None,
         };
         palette.update_buffer_preview();
         palette
@@ -206,6 +212,9 @@ impl Palette {
             active_doc_lines: Vec::new(),
             is_unified: false,
             caller_label: None,
+            image_preview_cache: HashMap::new(),
+            pending_image_data: None,
+            pending_image_request: None,
         };
         palette.update_jump_preview();
         palette
@@ -282,6 +291,9 @@ impl Palette {
             active_doc_lines: Vec::new(),
             is_unified: false,
             caller_label: Some(caller_label),
+            image_preview_cache: HashMap::new(),
+            pending_image_data: None,
+            pending_image_request: None,
         };
         palette.update_reference_preview();
         palette
@@ -357,6 +369,9 @@ impl Palette {
             active_doc_lines: Vec::new(),
             is_unified: false,
             caller_label: Some("Git Branches".to_string()),
+            image_preview_cache: HashMap::new(),
+            pending_image_data: None,
+            pending_image_request: None,
         };
         palette.update_git_branch_preview();
         palette
@@ -432,6 +447,9 @@ impl Palette {
             active_doc_lines: Vec::new(),
             is_unified: false,
             caller_label: Some("Compare Branch".to_string()),
+            image_preview_cache: HashMap::new(),
+            pending_image_data: None,
+            pending_image_request: None,
         };
         palette.update_git_branch_preview();
         palette
@@ -505,6 +523,9 @@ impl Palette {
             active_doc_lines: Vec::new(),
             is_unified: false,
             caller_label: None,
+            image_preview_cache: HashMap::new(),
+            pending_image_data: None,
+            pending_image_request: None,
         };
         palette.update_symbol_preview();
         palette
@@ -578,6 +599,9 @@ impl Palette {
             active_doc_lines: Vec::new(),
             is_unified: false,
             caller_label: None,
+            image_preview_cache: HashMap::new(),
+            pending_image_data: None,
+            pending_image_request: None,
         };
         palette.update_symbol_preview();
         palette
@@ -654,6 +678,9 @@ impl Palette {
             active_doc_lines: Vec::new(),
             is_unified: false,
             caller_label: None,
+            image_preview_cache: HashMap::new(),
+            pending_image_data: None,
+            pending_image_request: None,
         }
     }
 }

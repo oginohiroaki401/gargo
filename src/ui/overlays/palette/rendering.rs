@@ -4,6 +4,7 @@ impl Palette {
     /// Render the palette overlay onto a Surface. Returns (cursor_x, cursor_y) for the input field.
     pub fn render_overlay(&mut self, surface: &mut Surface, theme: &Theme) -> (u16, u16) {
         self.pump_global_search();
+        self.pending_image_request = None;
 
         let cols = surface.width;
         let rows = surface.height;
@@ -24,6 +25,21 @@ impl Palette {
 
             self.render_left_panel(surface, left_x, offset_y, left_w, popup_h);
             self.render_right_panel(surface, right_x, offset_y, right_w, popup_h, theme);
+
+            if let Some((path, data)) = self.pending_image_data.clone() {
+                let inner_w = right_w.saturating_sub(2);
+                let content_h = popup_h.saturating_sub(2);
+                if inner_w > 0 && content_h > 0 {
+                    self.pending_image_request = Some(ImageRenderRequest {
+                        key: path,
+                        col: (right_x + 1) as u16,
+                        row: (offset_y + 1) as u16,
+                        cell_cols: inner_w as u16,
+                        cell_rows: content_h as u16,
+                        data,
+                    });
+                }
+            }
         } else {
             left_w = popup_w;
             self.render_left_panel(surface, left_x, offset_y, left_w, popup_h);
@@ -130,8 +146,28 @@ impl Palette {
     ) {
         let inner_w = w.saturating_sub(2);
         let content_h = h.saturating_sub(2);
-        let has_preview = !self.preview_lines.is_empty();
+        let image_active = self.pending_image_data.is_some();
+        let has_preview = !self.preview_lines.is_empty() && !image_active;
         let default_style = CellStyle::default();
+
+        if image_active {
+            for row in 0..h {
+                if row == 0 {
+                    surface.put_str(x, y + row, "\u{250c}", &default_style);
+                    surface.fill_region(x + 1, y + row, inner_w, '\u{2500}', &default_style);
+                    surface.put_str(x + 1 + inner_w, y + row, "\u{2510}", &default_style);
+                } else if row == h - 1 {
+                    surface.put_str(x, y + row, "\u{2514}", &default_style);
+                    surface.fill_region(x + 1, y + row, inner_w, '\u{2500}', &default_style);
+                    surface.put_str(x + 1 + inner_w, y + row, "\u{2518}", &default_style);
+                } else {
+                    surface.put_str(x, y + row, "\u{2502}", &default_style);
+                    surface.fill_region(x + 1, y + row, inner_w, ' ', &default_style);
+                    surface.put_str(x + 1 + inner_w, y + row, "\u{2502}", &default_style);
+                }
+            }
+            return;
+        }
         let dim_style = CellStyle {
             dim: true,
             ..CellStyle::default()

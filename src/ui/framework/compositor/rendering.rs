@@ -22,6 +22,10 @@ impl Compositor {
             // After clear, the terminal screen is all blank, matching the all-default
             // `previous` buffer — so cells the diff skips are already blank on screen.
             queue!(stdout, terminal::Clear(ClearType::All))?;
+            if self.displayed_image.is_some() {
+                let _ = crate::ui::image::clear_kitty_images(stdout);
+                self.displayed_image = None;
+            }
         }
 
         // Clear current buffer
@@ -59,6 +63,7 @@ impl Compositor {
         // Render the editor area: either the file/dir preview (when the sidebar
         // has preview mode on) or the normal window panes. Skip entirely when
         // the explorer is fullscreen (no editor area exists).
+        let mut explorer_image_request: Option<crate::ui::image::ImageRenderRequest> = None;
         if !is_fullscreen_explorer {
             if preview_active
                 && let (Some((_, _, editor_x, editor_w)), Some(explorer)) =
@@ -67,6 +72,7 @@ impl Compositor {
             {
                 let editor_h = rows.saturating_sub(2);
                 explorer.render_preview(&mut self.current, editor_x, 0, editor_w, editor_h, ctx.theme);
+                explorer_image_request = explorer.take_pending_image_request();
             } else {
                 self.render_windows(ctx);
             }
@@ -276,9 +282,12 @@ impl Compositor {
 
         if let Some(ref mut palette) = self.palette {
             let (cx, cy) = palette.render_overlay(&mut self.current, ctx.theme);
+            let image_request = palette.take_pending_image_request();
 
             // Draw diff between previous and current
             draw_diff(&self.previous, &self.current, stdout)?;
+
+            self.update_image_overlay(stdout, image_request)?;
 
             queue!(stdout, MoveTo(cx, cy))?;
             queue!(stdout, SetCursorStyle::BlinkingBar)?;
@@ -289,6 +298,7 @@ impl Compositor {
             std::mem::swap(&mut self.current, &mut self.previous);
             return Ok(());
         }
+
 
         if let Some(ref hover) = self.markdown_link_hover
             && let Some((cursor_x, cursor_y, _)) = self.focused_window_cursor(ctx)
@@ -303,6 +313,8 @@ impl Compositor {
 
         // Draw diff between previous and current
         draw_diff(&self.previous, &self.current, stdout)?;
+
+        self.update_image_overlay(stdout, explorer_image_request)?;
 
         // Handle cursor: explorer find mode cursor takes priority when explorer is present
         if let Some(ref explorer) = self.explorer {
@@ -397,6 +409,39 @@ impl Compositor {
                 }
             }
         }
+    }
+
+    fn update_image_overlay(
+        &mut self,
+        stdout: &mut impl Write,
+        request: Option<crate::ui::image::ImageRenderRequest>,
+    ) -> io::Result<()> {
+        match (request, self.displayed_image.clone()) {
+            (None, Some(_)) => {
+                crate::ui::image::clear_kitty_images(stdout)?;
+                self.displayed_image = None;
+            }
+            (Some(req), Some(prev)) if prev.key == req.key => {
+                // Same image already on screen; leave it in place.
+            }
+            (Some(req), prev) => {
+                if prev.is_some() {
+                    crate::ui::image::clear_kitty_images(stdout)?;
+                }
+                crate::ui::image::emit_kitty_image(
+                    stdout,
+                    1,
+                    req.col,
+                    req.row,
+                    req.cell_cols,
+                    req.cell_rows,
+                    &req.data,
+                )?;
+                self.displayed_image = Some(super::DisplayedImage { key: req.key });
+            }
+            (None, None) => {}
+        }
+        Ok(())
     }
 
     fn focused_window_cursor(&self, ctx: &RenderContext) -> Option<(u16, u16, SetCursorStyle)> {

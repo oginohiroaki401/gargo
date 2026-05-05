@@ -100,6 +100,12 @@ pub struct Compositor {
     window_manager: WindowManager,
     current: Surface,
     previous: Surface,
+    displayed_image: Option<DisplayedImage>,
+}
+
+#[derive(Debug, Clone)]
+struct DisplayedImage {
+    key: std::path::PathBuf,
 }
 
 impl Default for Compositor {
@@ -133,6 +139,7 @@ impl Compositor {
             window_manager: WindowManager::new(1),
             current: Surface::new(0, 0),
             previous: Surface::new(0, 0),
+            displayed_image: None,
         }
     }
 

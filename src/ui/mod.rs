@@ -1,5 +1,6 @@
 pub mod diff;
 pub mod framework;
+pub mod image;
 pub mod overlays;
 pub mod shared;
 pub mod text;
