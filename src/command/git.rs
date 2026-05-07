@@ -638,6 +638,8 @@ pub fn repo_root_for_path(path: &Path) -> Result<PathBuf, String> {
 
 fn git_output_in(project_root: Option<&Path>, args: &[&str]) -> Result<String, String> {
     let mut cmd = ProcessCommand::new("git");
+    // Disable C-style octal quoting of non-ASCII paths in git output.
+    cmd.args(["-c", "core.quotepath=off"]);
     cmd.args(args);
     if let Some(root) = project_root {
         cmd.current_dir(root);

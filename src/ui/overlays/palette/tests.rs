@@ -60,6 +60,76 @@ fn fuzzy_match_consecutive_beats_sparse() {
 }
 
 #[test]
+fn file_picker_renders_japanese_filename_correctly() {
+    use crate::syntax::theme::Theme;
+    use crate::ui::framework::surface::Surface;
+
+    let registry = CommandRegistry::new();
+    let lang_registry = LanguageRegistry::new();
+    let config = Config::default();
+    let mut palette = Palette::new(
+        vec!["テスト.md".to_string(), "english.txt".to_string()],
+        Path::new(""),
+        &HashMap::new(),
+        None,
+        vec![],
+        vec![],
+    );
+    palette.input.text = "テス".into();
+    palette.update_candidates(&registry, &lang_registry, &config);
+    assert!(!palette.candidates.is_empty(), "expected file matches");
+
+    let mut surface = Surface::new(120, 30);
+    let theme = Theme::dark();
+    let _ = palette.render_overlay(&mut surface, &theme);
+
+    // Find a row containing the Japanese filename.
+    let mut japanese_row: Option<usize> = None;
+    for y in 0..surface.height {
+        let row_text: String = (0..surface.width)
+            .map(|x| {
+                let s = surface.get(x, y).symbol.as_str();
+                if s.is_empty() { String::new() } else { s.to_string() }
+            })
+            .collect();
+        if row_text.contains("テスト.md") {
+            japanese_row = Some(y);
+            break;
+        }
+    }
+    let japanese_row = japanese_row.expect("Japanese filename should appear in surface");
+
+    // Each wide char (テ, ス, ト) must occupy 2 cells: a "main" cell with the
+    // glyph followed by a "continuation" cell with empty symbol. If any
+    // continuation cell still holds a stray character, the rendered text drifts.
+    let mut col = 0;
+    let mut found_text = String::new();
+    while col < surface.width {
+        let s = surface.get(col, japanese_row).symbol.as_str();
+        if s.is_empty() {
+            col += 1;
+            continue;
+        }
+        found_text.push_str(s);
+        let ch = s.chars().next().unwrap();
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1).max(1);
+        if w == 2 {
+            // Continuation must be empty.
+            assert_eq!(
+                surface.get(col + 1, japanese_row).symbol.as_str(),
+                "",
+                "wide char at col {} ({:?}) must have empty continuation but has {:?}",
+                col,
+                ch,
+                surface.get(col + 1, japanese_row).symbol
+            );
+        }
+        col += w;
+    }
+    assert!(found_text.contains("テスト.md"), "rendered row {:?}", found_text);
+}
+
+#[test]
 fn fuzzy_match_order_matters() {
     let result = fuzzy_match("Quit Editor", "qe");
     assert!(result.is_some());

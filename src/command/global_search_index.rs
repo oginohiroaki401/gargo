@@ -307,7 +307,14 @@ fn insert_postings(conn: &Connection, file_id: i64, path: &Path) -> rusqlite::Re
 
 fn collect_repo_files(root: &Path) -> Vec<String> {
     let output = Command::new("git")
-        .args(["ls-files", "--cached", "--others", "--exclude-standard"])
+        .args([
+            "-c",
+            "core.quotepath=off",
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ])
         .current_dir(root)
         .output();
     let Ok(output) = output else {

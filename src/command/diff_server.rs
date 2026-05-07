@@ -810,6 +810,7 @@ fn html_escape(text: &str) -> String {
 
 async fn git_output_in_repo(repo_root: &Path, args: &[&str]) -> Result<String, String> {
     let mut cmd = tokio::process::Command::new("git");
+    cmd.args(["-c", "core.quotepath=off"]);
     cmd.args(args);
     cmd.current_dir(repo_root);
     git_output_from_command(cmd, &[], &format!("git {}", args.join(" "))).await

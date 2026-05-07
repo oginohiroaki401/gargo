@@ -99,7 +99,14 @@ fn has_git_marker(dir: &Path) -> bool {
 
 fn collect_files_git(root: &Path) -> Option<Vec<String>> {
     let output = Command::new("git")
-        .args(["ls-files", "--cached", "--others", "--exclude-standard"])
+        .args([
+            "-c",
+            "core.quotepath=off",
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ])
         .current_dir(root)
         .output()
         .ok()?;
@@ -289,6 +296,33 @@ mod tests {
         assert!(files.contains(&"tracked.txt".to_string()));
         assert!(files.contains(&"untracked.txt".to_string()));
         assert!(!files.contains(&"ignored.txt".to_string()));
+    }
+
+    #[test]
+    fn collect_files_returns_japanese_filenames_unquoted() {
+        let tmp = tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_git_repo(&repo);
+
+        // Filename with Japanese chars; without `core.quotepath=off` git would
+        // emit them as `"\346\227\245..."` C-style octal escapes.
+        let jp_name = "日本語.txt";
+        std::fs::write(repo.join(jp_name), "hello").unwrap();
+        let output = Command::new("git")
+            .args(["add", "--all"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+
+        let files = collect_files(&repo);
+        assert!(
+            files.contains(&jp_name.to_string()),
+            "expected {:?} in {:?}",
+            jp_name,
+            files
+        );
     }
 
     #[test]
