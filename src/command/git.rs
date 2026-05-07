@@ -22,6 +22,8 @@ pub struct GitFileEntry {
     pub path: String,
     pub status_char: char,
     pub staged: bool,
+    pub additions: usize,
+    pub deletions: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -171,6 +173,8 @@ fn git_status_files_in_impl(
                 path: path.clone(),
                 status_char: index_status,
                 staged: true,
+                additions: 0,
+                deletions: 0,
             });
         }
         // Worktree (unstaged) changes
@@ -183,10 +187,82 @@ fn git_status_files_in_impl(
                     worktree_status
                 },
                 staged: false,
+                additions: 0,
+                deletions: 0,
             });
         }
     }
+
+    let unstaged_stats = numstat_map(project_root, false);
+    let staged_stats = numstat_map(project_root, true);
+    for entry in changed.iter_mut() {
+        if entry.status_char == '?' {
+            entry.additions = count_file_lines(project_root, &entry.path);
+            entry.deletions = 0;
+        } else if let Some(&(adds, dels)) = unstaged_stats.get(&entry.path) {
+            entry.additions = adds;
+            entry.deletions = dels;
+        }
+    }
+    for entry in staged.iter_mut() {
+        if let Some(&(adds, dels)) = staged_stats.get(&entry.path) {
+            entry.additions = adds;
+            entry.deletions = dels;
+        }
+    }
     Ok((changed, staged))
+}
+
+fn numstat_map(
+    project_root: Option<&Path>,
+    cached: bool,
+) -> HashMap<String, (usize, usize)> {
+    let args: &[&str] = if cached {
+        &["diff", "--cached", "--numstat"]
+    } else {
+        &["diff", "--numstat"]
+    };
+    let raw = match git_output_in(project_root, args) {
+        Ok(s) => s,
+        Err(_) => return HashMap::new(),
+    };
+    let mut map = HashMap::new();
+    for line in raw.lines() {
+        let mut parts = line.splitn(3, '\t');
+        let adds = parts.next().unwrap_or("0");
+        let dels = parts.next().unwrap_or("0");
+        let path = match parts.next() {
+            Some(p) => p,
+            None => continue,
+        };
+        let adds = adds.parse::<usize>().unwrap_or(0);
+        let dels = dels.parse::<usize>().unwrap_or(0);
+        map.insert(path.to_string(), (adds, dels));
+    }
+    map
+}
+
+fn count_file_lines(project_root: Option<&Path>, rel_path: &str) -> usize {
+    let abs = match project_root {
+        Some(root) => root.join(rel_path),
+        None => match std::env::current_dir() {
+            Ok(cwd) => cwd.join(rel_path),
+            Err(_) => return 0,
+        },
+    };
+    let bytes = match std::fs::read(&abs) {
+        Ok(b) => b,
+        Err(_) => return 0,
+    };
+    if bytes.is_empty() {
+        return 0;
+    }
+    let nl_count = bytes.iter().filter(|b| **b == b'\n').count();
+    if bytes.last() == Some(&b'\n') {
+        nl_count
+    } else {
+        nl_count + 1
+    }
 }
 
 pub fn git_diff(path: &str, staged: bool) -> Result<String, String> {

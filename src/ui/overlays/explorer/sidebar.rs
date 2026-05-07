@@ -28,6 +28,7 @@ struct DirEntry {
     is_dir: bool,
     git_status: Option<GitFileStatus>,
     is_repo_header: bool,
+    diff_stats: Option<(usize, usize)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -419,6 +420,7 @@ impl Explorer {
                         is_dir: true,
                         git_status,
                         is_repo_header: false,
+                        diff_stats: None,
                     });
                 } else {
                     files.push(DirEntry {
@@ -426,6 +428,7 @@ impl Explorer {
                         is_dir: false,
                         git_status,
                         is_repo_header: false,
+                        diff_stats: None,
                     });
                 }
             }
@@ -465,6 +468,10 @@ impl Explorer {
 
         let is_multi_repo = !repo_groups.is_empty() && ungrouped.is_empty();
 
+        // Build a (path → (additions, deletions)) lookup for the project root.
+        // Aggregates staged + unstaged numstat for each path.
+        let stats_lookup = collect_diff_stats(&self.project_root);
+
         if is_multi_repo {
             for (repo_name, mut files) in repo_groups {
                 // Insert repo header
@@ -473,14 +480,29 @@ impl Explorer {
                     is_dir: true,
                     git_status: None,
                     is_repo_header: true,
+                    diff_stats: None,
                 });
+                let repo_root = self.project_root.join(&repo_name);
+                let repo_stats = collect_diff_stats(&repo_root);
                 sort_by_name_case_insensitive(&mut files, |(path, _)| path);
                 for (path, status) in files {
+                    let sub_path = path
+                        .strip_prefix(&format!("{}/", repo_name))
+                        .unwrap_or(&path)
+                        .to_string();
+                    let stats = repo_stats.get(&sub_path).copied().or_else(|| {
+                        if status == GitFileStatus::Untracked {
+                            Some((count_file_lines(&repo_root.join(&sub_path)), 0))
+                        } else {
+                            None
+                        }
+                    });
                     self.entries.push(DirEntry {
                         name: path,
                         is_dir: false,
                         git_status: Some(status),
                         is_repo_header: false,
+                        diff_stats: stats,
                     });
                 }
             }
@@ -492,11 +514,19 @@ impl Explorer {
             }
             sort_by_name_case_insensitive(&mut all_files, |(path, _)| path);
             for (path, status) in all_files {
+                let stats = stats_lookup.get(&path).copied().or_else(|| {
+                    if status == GitFileStatus::Untracked {
+                        Some((count_file_lines(&self.project_root.join(&path)), 0))
+                    } else {
+                        None
+                    }
+                });
                 self.entries.push(DirEntry {
                     name: path,
                     is_dir: false,
                     git_status: Some(status),
                     is_repo_header: false,
+                    diff_stats: stats,
                 });
             }
         }
@@ -1135,75 +1165,159 @@ impl Explorer {
             height.saturating_sub(1) // header only
         };
 
-        // Adjust scroll offset to keep selected visible
-        if self.selected < self.scroll_offset {
-            self.scroll_offset = self.selected;
+        // Build a render plan. In changed-only mode, each file expands into
+        // two display rows (the entry itself + a "+adds -dels" stats row).
+        enum RenderRow {
+            Entry { vis_idx: usize },
+            Stats { vis_idx: usize, additions: usize, deletions: usize },
         }
-        if self.selected >= self.scroll_offset + content_height {
-            self.scroll_offset = self
-                .selected
-                .saturating_sub(content_height.saturating_sub(1));
+        let mut plan: Vec<RenderRow> = Vec::new();
+        let mut entry_to_primary: Vec<usize> = Vec::with_capacity(self.visible_entries.len());
+        for (vis_idx, &entry_idx) in self.visible_entries.iter().enumerate() {
+            entry_to_primary.push(plan.len());
+            plan.push(RenderRow::Entry { vis_idx });
+            if self.mode == ExplorerMode::ChangedOnly {
+                let entry = &self.entries[entry_idx];
+                if !entry.is_repo_header && !entry.is_dir {
+                    let (adds, dels) = entry.diff_stats.unwrap_or((0, 0));
+                    plan.push(RenderRow::Stats {
+                        vis_idx,
+                        additions: adds,
+                        deletions: dels,
+                    });
+                }
+            }
+        }
+
+        // Adjust scroll offset (which counts display rows) to keep the selected
+        // entry — and its trailing stats row — visible.
+        let sel_primary = entry_to_primary
+            .get(self.selected)
+            .copied()
+            .unwrap_or(0);
+        let sel_end = entry_to_primary
+            .get(self.selected + 1)
+            .copied()
+            .map(|next| next.saturating_sub(1))
+            .unwrap_or_else(|| plan.len().saturating_sub(1));
+        if sel_primary < self.scroll_offset {
+            self.scroll_offset = sel_primary;
+        }
+        if sel_end >= self.scroll_offset + content_height {
+            self.scroll_offset = sel_end.saturating_sub(content_height.saturating_sub(1));
         }
 
         // Draw entries
         for row in 0..content_height {
-            let vis_idx = self.scroll_offset + row;
+            let plan_idx = self.scroll_offset + row;
             let screen_row = content_start_row + row;
             if screen_row >= height {
                 break;
             }
 
-            if vis_idx < self.visible_entries.len() {
-                let entry_idx = self.visible_entries[vis_idx];
-                let entry = &self.entries[entry_idx];
-                let is_selected = vis_idx == self.selected;
+            let Some(render_row) = plan.get(plan_idx) else {
+                surface.fill_region(x, screen_row, width, ' ', &default_style);
+                continue;
+            };
 
-                let prefix = if is_selected { "> " } else { "  " };
-                let display = if entry.is_repo_header {
-                    format!("{}\u{e0a0} {}/", prefix, entry.name)
-                } else if self.mode == ExplorerMode::ChangedOnly {
-                    let status = entry.git_status.map_or(' ', |s| s.indicator());
-                    format!("{}[{}] {}", prefix, status, entry.name)
-                } else {
-                    let suffix = if entry.is_dir { "/" } else { "" };
-                    format!("{}{}{}", prefix, entry.name, suffix)
-                };
+            match render_row {
+                RenderRow::Entry { vis_idx } => {
+                    let entry_idx = self.visible_entries[*vis_idx];
+                    let entry = &self.entries[entry_idx];
+                    let is_selected = *vis_idx == self.selected;
 
-                let style = if entry.is_repo_header {
-                    if is_selected {
+                    let prefix = if is_selected { "> " } else { "  " };
+                    let display = if entry.is_repo_header {
+                        format!("{}\u{e0a0} {}/", prefix, entry.name)
+                    } else if self.mode == ExplorerMode::ChangedOnly {
+                        let status = entry.git_status.map_or(' ', |s| s.indicator());
+                        format!("{}[{}] {}", prefix, status, entry.name)
+                    } else {
+                        let suffix = if entry.is_dir { "/" } else { "" };
+                        format!("{}{}{}", prefix, entry.name, suffix)
+                    };
+
+                    let style = if entry.is_repo_header {
+                        if is_selected {
+                            CellStyle {
+                                bold: true,
+                                reverse: true,
+                                fg: Some(crossterm::style::Color::Cyan),
+                                ..CellStyle::default()
+                            }
+                        } else {
+                            CellStyle {
+                                bold: true,
+                                fg: Some(crossterm::style::Color::Cyan),
+                                ..CellStyle::default()
+                            }
+                        }
+                    } else if is_selected {
                         CellStyle {
-                            bold: true,
                             reverse: true,
-                            fg: Some(crossterm::style::Color::Cyan),
+                            fg: entry.git_status.map(|s| s.color()),
                             ..CellStyle::default()
                         }
                     } else {
                         CellStyle {
-                            bold: true,
-                            fg: Some(crossterm::style::Color::Cyan),
+                            fg: entry.git_status.map(|s| s.color()),
                             ..CellStyle::default()
                         }
+                    };
+                    let (truncated, used) = truncate_to_width(&display, width);
+                    surface.put_str(x, screen_row, truncated, &style);
+                    if used < width {
+                        surface.fill_region(x + used, screen_row, width - used, ' ', &style);
                     }
-                } else if is_selected {
-                    CellStyle {
-                        reverse: true,
-                        fg: entry.git_status.map(|s| s.color()),
-                        ..CellStyle::default()
-                    }
-                } else {
-                    CellStyle {
-                        fg: entry.git_status.map(|s| s.color()),
-                        ..CellStyle::default()
-                    }
-                };
-                let (truncated, used) = truncate_to_width(&display, width);
-                surface.put_str(x, screen_row, truncated, &style);
-                if used < width {
-                    surface.fill_region(x + used, screen_row, width - used, ' ', &style);
                 }
-            } else {
-                // Empty row
-                surface.fill_region(x, screen_row, width, ' ', &default_style);
+                RenderRow::Stats {
+                    vis_idx,
+                    additions,
+                    deletions,
+                } => {
+                    let is_selected = *vis_idx == self.selected;
+                    let base = if is_selected {
+                        CellStyle {
+                            reverse: true,
+                            ..CellStyle::default()
+                        }
+                    } else {
+                        CellStyle::default()
+                    };
+                    let add_style = CellStyle {
+                        fg: Some(crossterm::style::Color::Green),
+                        ..base
+                    };
+                    let del_style = CellStyle {
+                        fg: Some(crossterm::style::Color::Red),
+                        ..base
+                    };
+                    surface.fill_region(x, screen_row, width, ' ', &base);
+                    // Indent under the "  [X] " prefix (6 columns) when not selected,
+                    // "> [X] " (6 columns) when selected — same width either way.
+                    let indent = "      ";
+                    let mut col = x;
+                    let indent_w = crate::ui::text::display_width(indent);
+                    if indent_w <= width {
+                        surface.put_str(col, screen_row, indent, &base);
+                        col += indent_w;
+                    }
+                    let adds_str = format!("+{}", additions);
+                    let dels_str = format!("-{}", deletions);
+                    let adds_w = crate::ui::text::display_width(&adds_str);
+                    if col + adds_w <= x + width {
+                        surface.put_str(col, screen_row, &adds_str, &add_style);
+                        col += adds_w;
+                    }
+                    if col < x + width {
+                        surface.put_str(col, screen_row, " ", &base);
+                        col += 1;
+                    }
+                    let dels_w = crate::ui::text::display_width(&dels_str);
+                    if col + dels_w <= x + width {
+                        surface.put_str(col, screen_row, &dels_str, &del_style);
+                    }
+                }
             }
         }
 
@@ -1431,6 +1545,40 @@ fn format_mtime(t: SystemTime) -> String {
         "{:04}-{:02}-{:02} {:02}:{:02}",
         year, m, d, hour, minute
     )
+}
+
+fn collect_diff_stats(project_root: &Path) -> HashMap<String, (usize, usize)> {
+    let mut map = HashMap::new();
+    let (changed, staged) = match crate::command::git::git_status_files_in(project_root) {
+        Ok(v) => v,
+        Err(_) => return map,
+    };
+    for entry in staged.into_iter().chain(changed.into_iter()) {
+        if entry.additions == 0 && entry.deletions == 0 {
+            map.entry(entry.path).or_insert((0, 0));
+            continue;
+        }
+        let slot = map.entry(entry.path).or_insert((0, 0));
+        slot.0 += entry.additions;
+        slot.1 += entry.deletions;
+    }
+    map
+}
+
+fn count_file_lines(path: &Path) -> usize {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(_) => return 0,
+    };
+    if bytes.is_empty() {
+        return 0;
+    }
+    let nl = bytes.iter().filter(|b| **b == b'\n').count();
+    if bytes.last() == Some(&b'\n') {
+        nl
+    } else {
+        nl + 1
+    }
 }
 
 #[cfg(test)]

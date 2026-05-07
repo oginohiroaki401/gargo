@@ -1414,8 +1414,9 @@ impl GitView {
         let content_end = h.saturating_sub(2);
         let content_h = content_end.saturating_sub(content_start);
 
-        // Build flat display list: selectable headers + files
+        // Build flat display list: selectable headers + files (each file is two rows)
         let mut display_items: Vec<DisplayItem> = Vec::new();
+        let mut selectable_idx: usize = 0;
         for section in &self.repos {
             let has_entries = !section.changed.is_empty() || !section.staged.is_empty();
             if !has_entries {
@@ -1423,7 +1424,8 @@ impl GitView {
             }
 
             if multi {
-                let row_idx = display_items.len();
+                let row_idx = selectable_idx;
+                selectable_idx += 1;
                 display_items.push(DisplayItem::RepoHeader(
                     format!("\u{e0a0} {} ({})", section.display_name, section.branch),
                     row_idx == self.selected,
@@ -1431,30 +1433,46 @@ impl GitView {
             }
 
             if !section.changed.is_empty() {
-                let header_idx = display_items.len();
+                let header_idx = selectable_idx;
+                selectable_idx += 1;
                 display_items.push(DisplayItem::Header(
                     format!("Changed ({})", section.changed.len()),
                     header_idx == self.selected,
                 ));
                 for entry in &section.changed {
-                    let row_idx = display_items.len();
+                    let row_idx = selectable_idx;
+                    selectable_idx += 1;
+                    let is_sel = row_idx == self.selected;
                     display_items.push(DisplayItem::File {
-                        label: format!(" {} {}", entry.status_char, entry.path),
-                        selected: row_idx == self.selected,
+                        label: format!(" [{}] {}", entry.status_char, entry.path),
+                        selected: is_sel,
+                    });
+                    display_items.push(DisplayItem::FileStats {
+                        additions: entry.additions,
+                        deletions: entry.deletions,
+                        selected: is_sel,
                     });
                 }
             }
             if !section.staged.is_empty() {
-                let header_idx = display_items.len();
+                let header_idx = selectable_idx;
+                selectable_idx += 1;
                 display_items.push(DisplayItem::Header(
                     format!("Staged ({})", section.staged.len()),
                     header_idx == self.selected,
                 ));
                 for entry in &section.staged {
-                    let row_idx = display_items.len();
+                    let row_idx = selectable_idx;
+                    selectable_idx += 1;
+                    let is_sel = row_idx == self.selected;
                     display_items.push(DisplayItem::File {
-                        label: format!(" {} {}", entry.status_char, entry.path),
-                        selected: row_idx == self.selected,
+                        label: format!(" [{}] {}", entry.status_char, entry.path),
+                        selected: is_sel,
+                    });
+                    display_items.push(DisplayItem::FileStats {
+                        additions: entry.additions,
+                        deletions: entry.deletions,
+                        selected: is_sel,
                     });
                 }
             }
@@ -1465,13 +1483,25 @@ impl GitView {
             .iter()
             .position(DisplayItem::is_selected)
             .unwrap_or(0);
+        // If the selected item is a File, also try to keep its FileStats row visible.
+        let sel_display_end = match display_items.get(sel_display_pos) {
+            Some(DisplayItem::File { .. })
+                if matches!(
+                    display_items.get(sel_display_pos + 1),
+                    Some(DisplayItem::FileStats { .. })
+                ) =>
+            {
+                sel_display_pos + 1
+            }
+            _ => sel_display_pos,
+        };
 
         // Adjust scroll_offset
         if sel_display_pos < self.scroll_offset {
             self.scroll_offset = sel_display_pos;
         }
-        if sel_display_pos >= self.scroll_offset + content_h {
-            self.scroll_offset = sel_display_pos.saturating_sub(content_h.saturating_sub(1));
+        if sel_display_end >= self.scroll_offset + content_h {
+            self.scroll_offset = sel_display_end.saturating_sub(content_h.saturating_sub(1));
         }
 
         for row in 0..h {
@@ -1628,6 +1658,52 @@ impl GitView {
                                 );
                             }
                         }
+                        DisplayItem::FileStats {
+                            additions,
+                            deletions,
+                            selected,
+                        } => {
+                            let base = if *selected {
+                                CellStyle {
+                                    reverse: true,
+                                    ..CellStyle::default()
+                                }
+                            } else {
+                                CellStyle::default()
+                            };
+                            let add_style = CellStyle {
+                                fg: Some(Color::Green),
+                                ..base
+                            };
+                            let del_style = CellStyle {
+                                fg: Some(Color::Red),
+                                ..base
+                            };
+                            // Indent under the [X] file label: 5 spaces lines up past " [M] ".
+                            let indent = "     ";
+                            let adds_str = format!("+{}", additions);
+                            let dels_str = format!("-{}", deletions);
+                            surface.fill_region(x + 1, y + row, inner_w, ' ', &base);
+                            let mut col = x + 1;
+                            let indent_w = crate::ui::text::display_width(indent);
+                            if indent_w <= inner_w {
+                                surface.put_str(col, y + row, indent, &base);
+                                col += indent_w;
+                            }
+                            let adds_w = crate::ui::text::display_width(&adds_str);
+                            if col + adds_w <= x + 1 + inner_w {
+                                surface.put_str(col, y + row, &adds_str, &add_style);
+                                col += adds_w;
+                            }
+                            if col < x + 1 + inner_w {
+                                surface.put_str(col, y + row, " ", &base);
+                                col += 1;
+                            }
+                            let dels_w = crate::ui::text::display_width(&dels_str);
+                            if col + dels_w <= x + 1 + inner_w {
+                                surface.put_str(col, y + row, &dels_str, &del_style);
+                            }
+                        }
                     }
                 } else {
                     surface.fill_region(x + 1, y + row, inner_w, ' ', &default_style);
@@ -1746,7 +1822,15 @@ impl GitView {
 enum DisplayItem {
     RepoHeader(String, bool),
     Header(String, bool),
-    File { label: String, selected: bool },
+    File {
+        label: String,
+        selected: bool,
+    },
+    FileStats {
+        additions: usize,
+        deletions: usize,
+        selected: bool,
+    },
 }
 
 impl DisplayItem {
@@ -1755,6 +1839,7 @@ impl DisplayItem {
             DisplayItem::RepoHeader(_, selected) => *selected,
             DisplayItem::Header(_, selected) => *selected,
             DisplayItem::File { selected, .. } => *selected,
+            DisplayItem::FileStats { .. } => false,
         }
     }
 }
@@ -1821,17 +1906,23 @@ mod tests {
                         path: "src/lib.rs".to_string(),
                         status_char: 'M',
                         staged: false,
+                        additions: 0,
+                        deletions: 0,
                     },
                     GitFileEntry {
                         path: "README.md".to_string(),
                         status_char: 'M',
                         staged: false,
+                        additions: 0,
+                        deletions: 0,
                     },
                 ],
                 staged: vec![GitFileEntry {
                     path: "src/ui/explorer.rs".to_string(),
                     status_char: 'A',
                     staged: true,
+                    additions: 0,
+                    deletions: 0,
                 }],
             }],
             selected: 0,
