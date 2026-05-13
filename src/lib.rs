@@ -3,6 +3,7 @@ pub mod cli;
 pub mod command;
 pub mod config;
 pub mod core;
+pub mod diff_render;
 pub mod input;
 pub mod log;
 pub mod plugin;

@@ -22,6 +22,9 @@ use axum::{
 use tower_http::cors::CorsLayer;
 
 use crate::command::registry::{CommandContext, CommandEffect, CommandEntry, CommandRegistry};
+use crate::diff_render::{
+    DiffFile, FileStatus, parse_unified_diff, render_diff_styles, render_file_body_html,
+};
 use crate::input::action::{Action, AppAction, IntegrationAction};
 
 /// Commands that can be sent to the diff server
@@ -165,8 +168,6 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Git Diff</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/diff2html/bundles/css/diff2html.min.css" />
-    <script src="https://cdn.jsdelivr.net/npm/diff2html/bundles/js/diff2html-ui.min.js"></script>
     <style>
         body {
             margin: 0;
@@ -201,10 +202,7 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             font-size: 14px;
             color: #4b5563;
         }
-        .context-key {
-            font-weight: 600;
-            color: #1f2937;
-        }
+        .context-key { font-weight: 600; color: #1f2937; }
         .context-row code {
             font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
             background: #f6f8fa;
@@ -214,18 +212,8 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             color: #24292f;
             word-break: break-all;
         }
-        .controls {
-            display: flex;
-            gap: 12px;
-            align-items: center;
-            flex-wrap: wrap;
-        }
-        .controls label {
-            font-size: 14px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
+        .controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+        .controls label { font-size: 14px; display: flex; align-items: center; gap: 8px; }
         .controls select, .controls button {
             padding: 6px 10px;
             border: 1px solid #ccc;
@@ -233,9 +221,7 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             background: white;
             font-size: 14px;
         }
-        .controls button {
-            cursor: pointer;
-        }
+        .controls button { cursor: pointer; }
         #error-banner {
             display: none;
             margin: 0 0 20px 0;
@@ -252,44 +238,9 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
         }
-        .section h2 {
-            margin: 0 0 12px 0;
-            font-size: 18px;
-        }
-        .loading, .empty {
-            padding: 20px;
-            color: #666;
-        }
-        .file-list {
-            margin: 0;
-            padding-left: 20px;
-        }
-        .file-list li {
-            margin: 4px 0;
-            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-        }
-        .file-list a {
-            color: #0a58ca;
-            text-decoration: none;
-        }
-        .file-list a:hover {
-            text-decoration: underline;
-        }
-        .file-status {
-            display: inline-block;
-            width: 1.2em;
-            text-align: center;
-            font-weight: 700;
-            margin-right: 0.3em;
-        }
-        .file-status.staged    { color: #2da44e; }
-        .file-status.changed   { color: #d29922; }
-        .file-status.untracked { color: #8b949e; }
-        .layout {
-            display: flex;
-            gap: 20px;
-            align-items: flex-start;
-        }
+        .section h2 { margin: 0 0 12px 0; font-size: 18px; }
+        .loading, .empty { padding: 20px; color: #666; }
+        .layout { display: flex; gap: 20px; align-items: flex-start; }
         .sidebar {
             width: 260px;
             flex-shrink: 0;
@@ -298,34 +249,87 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             max-height: calc(100vh - 40px);
             overflow-y: auto;
         }
-        .sidebar .files-section {
-            margin-bottom: 0;
-        }
-        .content {
-            flex: 1 1 auto;
-            min-width: 0;
-        }
+        .sidebar .files-section { margin-bottom: 0; }
+        .content { flex: 1 1 auto; min-width: 0; }
         @media (max-width: 900px) {
             .layout { flex-direction: column; }
             .sidebar { position: static; width: auto; max-height: none; }
         }
-        .d2h-file-header {
+        .file-list { list-style: none; margin: 0; padding: 0; }
+        .file-list li { margin: 2px 0; }
+        .file-list a {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: #0a58ca;
+            text-decoration: none;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 12px;
+            padding: 2px 4px;
+            border-radius: 4px;
+        }
+        .file-list a:hover { background: #f6f8fa; text-decoration: underline; }
+        .file-list .file-path-text {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            flex: 1 1 auto;
+            min-width: 0;
+        }
+        .file-status { display: inline-block; width: 1.2em; text-align: center; font-weight: 700; flex: 0 0 1.2em; }
+        .file-status.staged    { color: #2da44e; }
+        .file-status.changed   { color: #d29922; }
+        .file-status.untracked { color: #8b949e; }
+        .gr-file {
+            background: white;
+            border: 1px solid #d0d7de;
+            border-radius: 6px;
+            margin-bottom: 12px;
+            overflow: hidden;
+        }
+        .gr-file-header {
             display: flex;
             align-items: center;
             flex-wrap: nowrap;
             gap: 8px;
             min-width: 0;
+            padding: 8px 12px;
+            background: #f6f8fa;
+            border-bottom: 1px solid #d0d7de;
         }
-        .d2h-file-header .d2h-file-name-wrapper {
-            min-width: 0;
-            overflow: hidden;
+        .gr-file-collapsed .gr-file-body { display: none; }
+        .gr-file-collapsed .gr-file-header { border-bottom: none; }
+        .gr-file-viewed .gr-file-header { background: #eef2f7; opacity: 0.85; }
+        .gr-file-name-wrapper {
             flex: 1 1 auto;
+            min-width: 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            overflow: hidden;
         }
-        .d2h-file-header .d2h-file-name {
+        .gr-file-name {
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 13px;
         }
+        .gr-status-tag {
+            flex-shrink: 0;
+            padding: 1px 6px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .gr-status-modified  { background: #fff8c5; color: #9a6700; }
+        .gr-status-added     { background: #dafbe1; color: #1a7f37; }
+        .gr-status-deleted   { background: #ffebe9; color: #cf222e; }
+        .gr-status-renamed   { background: #ddf4ff; color: #0969da; }
+        .gr-status-untracked { background: #eaeef2; color: #57606a; }
+        .gr-file-stats { flex-shrink: 0; display: inline-flex; gap: 8px; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+        .gr-additions { color: #1a7f37; }
+        .gr-deletions { color: #cf222e; }
         .diff-toggle-btn {
             order: -1;
             flex-shrink: 0;
@@ -358,20 +362,11 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             cursor: pointer;
             user-select: none;
         }
-        .diff-viewed-label:hover {
-            background: #eef2f7;
-        }
-        .diff-viewed-label input {
-            margin: 0;
-            cursor: pointer;
-        }
-        .diff-file-viewed > .d2h-file-header {
-            background: #eef2f7;
-            opacity: 0.8;
-        }
-        .diff-file-collapsed .d2h-file-diff {
-            display: none;
-        }
+        .diff-viewed-label:hover { background: #eef2f7; }
+        .diff-viewed-label input { margin: 0; cursor: pointer; }
+        .gr-file-body { background: white; }
+        .gr-file-body .loading, .gr-file-body .empty { padding: 12px; color: #57606a; font-size: 12px; }
+{{DIFF_STYLES}}
         #go-top-btn {
             position: fixed;
             right: 20px;
@@ -389,14 +384,8 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             transform: translateY(8px);
             transition: opacity 0.15s ease, transform 0.15s ease;
         }
-        #go-top-btn.visible {
-            opacity: 1;
-            pointer-events: auto;
-            transform: translateY(0);
-        }
-        #go-top-btn:hover {
-            background: #eef2f7;
-        }
+        #go-top-btn.visible { opacity: 1; pointer-events: auto; transform: translateY(0); }
+        #go-top-btn:hover { background: #eef2f7; }
     </style>
 </head>
 <body>
@@ -405,18 +394,9 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         <div class="context-row"><span class="context-key">Root</span><code id="root-path">{{ROOT_PATH}}</code></div>
         <div class="controls">
             <label>
-                View mode
-                <select id="view-mode">
-                    <option value="unified">Unified</option>
-                    <option value="side-by-side">Side-by-side</option>
-                </select>
-            </label>
-            <label>
                 <input type="checkbox" id="show-untracked">
                 Show untracked files
             </label>
-            <button id="expand-all-btn" type="button">Expand all</button>
-            <button id="collapse-all-btn" type="button">Collapse all</button>
             <button id="refresh-btn" type="button">Refresh</button>
         </div>
     </div>
@@ -427,31 +407,13 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         <aside class="sidebar">
             <section class="section files-section">
                 <h2 id="files-heading">Files</h2>
-                <div id="files-list">
-                    <div class="loading">Loading files...</div>
-                </div>
+                <div id="files-list"><div class="loading">Loading files...</div></div>
             </section>
         </aside>
         <main class="content">
             <section class="section">
-                <h2>Changed Diff</h2>
-                <div id="changed-diff" class="diff-container">
-                    <div class="loading">Loading changed diff...</div>
-                </div>
-            </section>
-
-            <section class="section">
-                <h2>Staged Diff</h2>
-                <div id="staged-diff" class="diff-container">
-                    <div class="loading">Loading staged diff...</div>
-                </div>
-            </section>
-
-            <section class="section" id="untracked-diff-section">
-                <h2>Untracked Diff</h2>
-                <div id="untracked-diff" class="diff-container">
-                    <div class="loading">Loading untracked diff...</div>
-                </div>
+                <h2>Diff</h2>
+                <div id="files-main"><div class="loading">Loading files...</div></div>
             </section>
         </main>
     </div>
@@ -459,100 +421,80 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
 
     <script>
         const urlParams = new URLSearchParams(window.location.search);
-        const normalizeViewMode = (value) => value === "side-by-side" ? "side-by-side" : "unified";
-        const parseBoolParam = (value, defaultValue) => {
-            if (value === null) {
-                return defaultValue;
-            }
-            return value === "true";
-        };
+        const parseBoolParam = (value, defaultValue) => value === null ? defaultValue : value === "true";
 
-        const viewModeSelect = document.getElementById("view-mode");
         const showUntrackedToggle = document.getElementById("show-untracked");
-        const expandAllButton = document.getElementById("expand-all-btn");
-        const collapseAllButton = document.getElementById("collapse-all-btn");
         const refreshButton = document.getElementById("refresh-btn");
         const errorBanner = document.getElementById("error-banner");
         const rootPathCode = document.getElementById("root-path");
         const filesHeading = document.getElementById("files-heading");
         const filesListContainer = document.getElementById("files-list");
-        const changedDiffContainer = document.getElementById("changed-diff");
-        const stagedDiffContainer = document.getElementById("staged-diff");
-        const untrackedDiffContainer = document.getElementById("untracked-diff");
-        const untrackedDiffSection = document.getElementById("untracked-diff-section");
+        const filesMain = document.getElementById("files-main");
         const goTopButton = document.getElementById("go-top-btn");
         const AUTO_REFRESH_INTERVAL_MS = 2000;
         const GO_TOP_SHOW_SCROLL_Y = 240;
         const STORAGE_ROOT = rootPathCode ? rootPathCode.textContent : "unknown-root";
-        const COLLAPSED_FILES_STORAGE_KEY = `gargo.diff.collapsed.v2:${STORAGE_ROOT}`;
-        const VIEWED_FILES_STORAGE_KEY = `gargo.diff.viewed.v1:${STORAGE_ROOT}`;
+        const COLLAPSED_FILES_STORAGE_KEY = `gargo.diff.expanded.v1:${STORAGE_ROOT}`;
+        const VIEWED_FILES_STORAGE_KEY = `gargo.diff.viewed.v2:${STORAGE_ROOT}`;
 
-        let latestStatus = null;
-        let isLoading = false;
-        let collapsedFileIds = loadIdSet(sessionStorage, COLLAPSED_FILES_STORAGE_KEY);
-        let viewedFileIds = loadIdSet(localStorage, VIEWED_FILES_STORAGE_KEY);
-        viewModeSelect.value = normalizeViewMode(urlParams.get("view"));
         showUntrackedToggle.checked = parseBoolParam(urlParams.get("show_untracked"), true);
+
+        let expandedFileIds = loadIdSet(sessionStorage, COLLAPSED_FILES_STORAGE_KEY);
+        let viewedFileIds = loadIdSet(localStorage, VIEWED_FILES_STORAGE_KEY);
+        const bodyCache = new Map();
+        let isLoading = false;
+        let latestStatus = null;
+
+        const STATUS_LABELS = {
+            modified: "CHANGED", added: "ADDED", deleted: "DELETED",
+            renamed: "RENAMED", untracked: "UNTRACKED",
+        };
+        const STATUS_CSS = {
+            modified: "gr-status-modified", added: "gr-status-added", deleted: "gr-status-deleted",
+            renamed: "gr-status-renamed", untracked: "gr-status-untracked",
+        };
+        const SECTION_LIST_CSS = { staged: "staged", unstaged: "changed", untracked: "untracked" };
+        const SECTION_LIST_BADGE = { staged: "S", unstaged: "M", untracked: "?" };
 
         function loadIdSet(storage, key) {
             try {
                 const raw = storage.getItem(key);
-                if (!raw) {
-                    return new Set();
-                }
+                if (!raw) return new Set();
                 const parsed = JSON.parse(raw);
-                if (!Array.isArray(parsed)) {
-                    return new Set();
-                }
-                const ids = parsed.filter((value) => typeof value === "string" && value.length > 0);
-                return new Set(ids);
-            } catch (_error) {
-                return new Set();
-            }
+                if (!Array.isArray(parsed)) return new Set();
+                return new Set(parsed.filter((v) => typeof v === "string" && v.length > 0));
+            } catch (_e) { return new Set(); }
         }
-
         const persistIdSet = (storage, key, set) => {
-            try {
-                storage.setItem(key, JSON.stringify(Array.from(set)));
-            } catch (_error) {
-                // Ignore storage failures and keep UI responsive.
-            }
+            try { storage.setItem(key, JSON.stringify(Array.from(set))); } catch (_e) {}
         };
-
-        const persistCollapsedFileIds = () => {
-            persistIdSet(sessionStorage, COLLAPSED_FILES_STORAGE_KEY, collapsedFileIds);
-        };
-
-        const persistViewedFileIds = () => {
-            persistIdSet(localStorage, VIEWED_FILES_STORAGE_KEY, viewedFileIds);
-        };
+        const persistExpandedFileIds = () => persistIdSet(sessionStorage, COLLAPSED_FILES_STORAGE_KEY, expandedFileIds);
+        const persistViewedFileIds = () => persistIdSet(localStorage, VIEWED_FILES_STORAGE_KEY, viewedFileIds);
 
         const showError = (message) => {
             errorBanner.textContent = `Error: ${message}`;
             errorBanner.style.display = "block";
         };
-
         const clearError = () => {
             errorBanner.textContent = "";
             errorBanner.style.display = "none";
         };
-
         const setLoading = (container, message) => {
-            container.innerHTML = `<div class="loading">${message}</div>`;
+            container.innerHTML = `<div class="loading">${escapeHtml(message)}</div>`;
         };
-
         const setEmpty = (container, message) => {
-            container.innerHTML = `<div class="empty">${message}</div>`;
+            container.innerHTML = `<div class="empty">${escapeHtml(message)}</div>`;
         };
+        const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({
+            "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;",
+        }[c]));
+        const fileIdOf = (section, path) => `${section}:${path}`;
+        const fileAnchorOf = (section, path) => `file-${section}-${path.replace(/[^A-Za-z0-9_\-\.]/g, "_")}`;
 
         const updateGoTopButtonVisibility = () => {
-            if (window.scrollY > GO_TOP_SHOW_SCROLL_Y) {
-                goTopButton.classList.add("visible");
-            } else {
-                goTopButton.classList.remove("visible");
-            }
+            if (window.scrollY > GO_TOP_SHOW_SCROLL_Y) goTopButton.classList.add("visible");
+            else goTopButton.classList.remove("visible");
         };
-
         const renderDiffToggleButtonLabel = (button, collapsed) => {
             button.textContent = collapsed ? "▸" : "▾";
             button.setAttribute("aria-expanded", collapsed ? "false" : "true");
@@ -560,336 +502,317 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             button.setAttribute("title", collapsed ? "Show diff" : "Hide diff");
         };
 
-        const setDiffFileCollapsed = (wrapper, fileId, collapsed) => {
-            if (collapsed) {
-                collapsedFileIds.add(fileId);
-            } else {
-                collapsedFileIds.delete(fileId);
-            }
-            wrapper.classList.toggle("diff-file-collapsed", collapsed);
-            const button = wrapper.querySelector(".diff-toggle-btn");
-            if (button) {
-                renderDiffToggleButtonLabel(button, collapsed);
-            }
-        };
+        function createFileRow(section, meta) {
+            const fileId = fileIdOf(section, meta.path);
+            const wrapper = document.createElement("div");
+            wrapper.className = "gr-file";
+            wrapper.dataset.diffFileId = fileId;
+            wrapper.dataset.section = section;
+            wrapper.dataset.path = meta.path;
+            wrapper.id = fileAnchorOf(section, meta.path);
 
-        const setDiffFileViewed = (wrapper, fileId, viewed) => {
-            if (viewed) {
+            const header = document.createElement("div");
+            header.className = "gr-file-header";
+
+            const toggleButton = document.createElement("button");
+            toggleButton.type = "button";
+            toggleButton.className = "diff-toggle-btn";
+            toggleButton.addEventListener("click", () => {
+                const wasCollapsed = wrapper.classList.contains("diff-file-collapsed");
+                setFileCollapsed(wrapper, !wasCollapsed);
+            });
+            header.insertBefore(toggleButton, header.firstChild);
+
+            const nameWrapper = document.createElement("span");
+            nameWrapper.className = "gr-file-name-wrapper";
+            const name = document.createElement("span");
+            name.className = "gr-file-name";
+            name.textContent = meta.path;
+            name.title = (meta.old_path && meta.old_path !== meta.path)
+                ? `${meta.old_path} → ${meta.path}` : meta.path;
+            nameWrapper.appendChild(name);
+            const tag = document.createElement("span");
+            const status = meta.status || "modified";
+            tag.className = `gr-status-tag ${STATUS_CSS[status] || STATUS_CSS.modified}`;
+            tag.textContent = STATUS_LABELS[status] || status.toUpperCase();
+            nameWrapper.appendChild(tag);
+            header.appendChild(nameWrapper);
+
+            const stats = document.createElement("span");
+            stats.className = "gr-file-stats";
+            const adds = document.createElement("span");
+            adds.className = "gr-additions";
+            adds.textContent = `+${meta.additions || 0}`;
+            const dels = document.createElement("span");
+            dels.className = "gr-deletions";
+            dels.textContent = `-${meta.deletions || 0}`;
+            stats.appendChild(adds);
+            stats.appendChild(dels);
+            header.appendChild(stats);
+
+            const label = document.createElement("label");
+            label.className = "diff-viewed-label";
+            label.title = "Mark this file as viewed (saved per browser)";
+            const checkbox = document.createElement("input");
+            checkbox.type = "checkbox";
+            checkbox.addEventListener("click", (e) => e.stopPropagation());
+            checkbox.addEventListener("change", () => {
+                setFileViewed(wrapper, checkbox.checked);
+            });
+            const labelText = document.createElement("span");
+            labelText.textContent = "Viewed";
+            label.appendChild(checkbox);
+            label.appendChild(labelText);
+            header.appendChild(label);
+
+            wrapper.appendChild(header);
+
+            const body = document.createElement("div");
+            body.className = "gr-file-body";
+            wrapper.appendChild(body);
+
+            return wrapper;
+        }
+
+        function updateRowMeta(wrapper, meta) {
+            const status = meta.status || "modified";
+            const tag = wrapper.querySelector(".gr-status-tag");
+            if (tag) {
+                tag.className = `gr-status-tag ${STATUS_CSS[status] || STATUS_CSS.modified}`;
+                tag.textContent = STATUS_LABELS[status] || status.toUpperCase();
+            }
+            const adds = wrapper.querySelector(".gr-additions");
+            if (adds) adds.textContent = `+${meta.additions || 0}`;
+            const dels = wrapper.querySelector(".gr-deletions");
+            if (dels) dels.textContent = `-${meta.deletions || 0}`;
+            const name = wrapper.querySelector(".gr-file-name");
+            if (name) {
+                name.title = (meta.old_path && meta.old_path !== meta.path)
+                    ? `${meta.old_path} → ${meta.path}` : meta.path;
+            }
+        }
+
+        function setFileCollapsed(wrapper, isCollapsed) {
+            const fileId = wrapper.dataset.diffFileId;
+            wrapper.classList.toggle("diff-file-collapsed", isCollapsed);
+            wrapper.classList.toggle("gr-file-collapsed", isCollapsed);
+            const button = wrapper.querySelector(".diff-toggle-btn");
+            if (button) renderDiffToggleButtonLabel(button, isCollapsed);
+            if (isCollapsed) {
+                expandedFileIds.delete(fileId);
+            } else {
+                expandedFileIds.add(fileId);
+                ensureBodyLoaded(wrapper).catch((e) => showError(e.message));
+            }
+            persistExpandedFileIds();
+        }
+
+        function setFileViewed(wrapper, isViewed) {
+            const fileId = wrapper.dataset.diffFileId;
+            wrapper.classList.toggle("diff-file-viewed", isViewed);
+            wrapper.classList.toggle("gr-file-viewed", isViewed);
+            const checkbox = wrapper.querySelector(".diff-viewed-label input[type=checkbox]");
+            if (checkbox && checkbox.checked !== isViewed) checkbox.checked = isViewed;
+            if (isViewed) {
                 viewedFileIds.add(fileId);
+                wrapper.classList.add("diff-file-collapsed");
+                wrapper.classList.add("gr-file-collapsed");
+                expandedFileIds.delete(fileId);
+                const button = wrapper.querySelector(".diff-toggle-btn");
+                if (button) renderDiffToggleButtonLabel(button, true);
+                const body = wrapper.querySelector(".gr-file-body");
+                if (body) { body.innerHTML = ""; delete body.dataset.loaded; }
             } else {
                 viewedFileIds.delete(fileId);
             }
-            wrapper.classList.toggle("diff-file-viewed", viewed);
-            const checkbox = wrapper.querySelector(".diff-viewed-label input[type=checkbox]");
-            if (checkbox && checkbox.checked !== viewed) {
-                checkbox.checked = viewed;
+            persistViewedFileIds();
+            persistExpandedFileIds();
+        }
+
+        async function ensureBodyLoaded(wrapper) {
+            const fileId = wrapper.dataset.diffFileId;
+            const section = wrapper.dataset.section;
+            const path = wrapper.dataset.path;
+            const body = wrapper.querySelector(".gr-file-body");
+            if (!body || body.dataset.loaded || body.dataset.loading) return;
+            const cached = bodyCache.get(fileId);
+            if (cached) {
+                body.innerHTML = cached.html;
+                body.dataset.loaded = "1";
+                return;
             }
-            setDiffFileCollapsed(wrapper, fileId, viewed);
-        };
-
-        const updateBulkToggleAvailability = () => {
-            const wrappers = document.querySelectorAll(".diff-container .d2h-file-wrapper[data-diff-file-id]");
-            const disabled = wrappers.length === 0;
-            expandAllButton.disabled = disabled;
-            collapseAllButton.disabled = disabled;
-        };
-
-        const setAllRenderedDiffFilesCollapsed = (collapsed) => {
-            const wrappers = document.querySelectorAll(".diff-container .d2h-file-wrapper[data-diff-file-id]");
-            wrappers.forEach((wrapper) => {
-                const fileId = wrapper.dataset.diffFileId;
-                if (!fileId) {
-                    return;
+            body.dataset.loading = "1";
+            body.innerHTML = `<div class="loading">Loading diff…</div>`;
+            try {
+                const params = new URLSearchParams({ section, path });
+                const response = await fetch(`/api/status/file?${params.toString()}`, { cache: "no-store" });
+                const data = await response.json();
+                if (data.error) throw new Error(data.error);
+                const html = typeof data.html === "string" ? data.html : "";
+                bodyCache.set(fileId, { html, stats: data });
+                body.innerHTML = html;
+                body.dataset.loaded = "1";
+                if (typeof data.additions === "number" || typeof data.deletions === "number") {
+                    updateRowMeta(wrapper, {
+                        path: data.path || path,
+                        status: data.status,
+                        additions: data.additions,
+                        deletions: data.deletions,
+                        binary: data.binary,
+                    });
                 }
-                setDiffFileCollapsed(wrapper, fileId, collapsed);
-            });
-            persistCollapsedFileIds();
-            updateBulkToggleAvailability();
-        };
-
-        const pruneCollapsedFileIds = (knownFileIds) => {
-            const next = new Set();
-            collapsedFileIds.forEach((fileId) => {
-                const isUntrackedEntry = fileId.startsWith("untracked-diff:");
-                if (knownFileIds.has(fileId) || (!showUntrackedToggle.checked && isUntrackedEntry)) {
-                    next.add(fileId);
-                }
-            });
-            if (next.size !== collapsedFileIds.size) {
-                collapsedFileIds = next;
-                persistCollapsedFileIds();
+            } catch (e) {
+                body.innerHTML = `<div class="loading">Error: ${escapeHtml(e.message)}</div>`;
+            } finally {
+                delete body.dataset.loading;
             }
-        };
+        }
 
-        const updateUntrackedVisibility = () => {
-            untrackedDiffSection.style.display = showUntrackedToggle.checked ? "" : "none";
-        };
-
-        const persistControls = () => {
-            const params = new URLSearchParams();
-            params.set("view", normalizeViewMode(viewModeSelect.value));
-            params.set("show_untracked", showUntrackedToggle.checked ? "true" : "false");
-            history.replaceState(null, "", `/diff?${params.toString()}`);
-        };
-
-        const parseDiffFiles = (diff) => {
-            if (!diff || diff.trim() === "") {
-                return [];
-            }
-
-            const files = [];
-            for (const line of diff.split("\n")) {
-                if (!line.startsWith("diff --git ")) {
-                    continue;
-                }
-                const match = line.match(/^diff --git a\/(.+) b\/(.+)$/);
-                if (!match) {
-                    continue;
-                }
-                files.push(match[2]);
-            }
-            return files;
-        };
-
-        const renderUnifiedFileList = (status) => {
-            const changedFiles = parseDiffFiles(status.unstaged_diff);
-            const stagedFiles = parseDiffFiles(status.staged_diff);
-            const showUntracked = showUntrackedToggle.checked;
-            const untrackedFiles = showUntracked ? (status.untracked_files || []) : [];
-
-            const entries = [];
-            for (let i = 0; i < stagedFiles.length; i += 1) {
-                entries.push({ name: stagedFiles[i], statusChar: "S", cssClass: "staged", anchor: `staged-diff-file-${i}` });
-            }
-            for (let i = 0; i < changedFiles.length; i += 1) {
-                entries.push({ name: changedFiles[i], statusChar: "M", cssClass: "changed", anchor: `changed-diff-file-${i}` });
-            }
-            for (let i = 0; i < untrackedFiles.length; i += 1) {
-                entries.push({ name: untrackedFiles[i], statusChar: "?", cssClass: "untracked", anchor: `untracked-diff-file-${i}` });
-            }
-            entries.sort((a, b) => a.name.localeCompare(b.name));
-
-            const parts = [];
-            if (stagedFiles.length > 0) parts.push(`${stagedFiles.length} staged`);
-            if (changedFiles.length > 0) parts.push(`${changedFiles.length} changed`);
-            if (untrackedFiles.length > 0) parts.push(`${untrackedFiles.length} untracked`);
-            filesHeading.textContent = parts.length > 0 ? `Files (${parts.join(", ")})` : "Files";
-
-            if (entries.length === 0) {
+        function renderSidebar(allEntries) {
+            if (allEntries.length === 0) {
+                filesHeading.textContent = "Files";
                 setEmpty(filesListContainer, "No files changed");
                 return;
             }
-
+            const counts = {};
+            for (const { section } of allEntries) counts[section] = (counts[section] || 0) + 1;
+            const parts = [];
+            if (counts.staged) parts.push(`${counts.staged} staged`);
+            if (counts.unstaged) parts.push(`${counts.unstaged} changed`);
+            if (counts.untracked) parts.push(`${counts.untracked} untracked`);
+            filesHeading.textContent = parts.length > 0 ? `Files (${parts.join(", ")})` : "Files";
             filesListContainer.innerHTML = "";
-            const list = document.createElement("ul");
-            list.className = "file-list";
-            for (const entry of entries) {
-                const item = document.createElement("li");
+            const ul = document.createElement("ul");
+            ul.className = "file-list";
+            for (const { section, meta } of allEntries) {
+                const li = document.createElement("li");
+                const a = document.createElement("a");
+                a.href = `#${fileAnchorOf(section, meta.path)}`;
                 const badge = document.createElement("span");
-                badge.className = `file-status ${entry.cssClass}`;
-                badge.textContent = entry.statusChar;
-                const link = document.createElement("a");
-                link.href = `#${entry.anchor}`;
-                link.textContent = entry.name;
-                item.appendChild(badge);
-                item.appendChild(link);
-                list.appendChild(item);
+                badge.className = `file-status ${SECTION_LIST_CSS[section] || "changed"}`;
+                badge.textContent = SECTION_LIST_BADGE[section] || "M";
+                const text = document.createElement("span");
+                text.className = "file-path-text";
+                text.textContent = meta.path;
+                text.title = meta.path;
+                a.appendChild(badge);
+                a.appendChild(text);
+                li.appendChild(a);
+                ul.appendChild(li);
             }
-            filesListContainer.appendChild(list);
-        };
+            filesListContainer.appendChild(ul);
+        }
 
-        const decorateRenderedDiffFiles = (container, anchorPrefix, diffFiles, knownFileIds) => {
-            const wrappers = container.querySelectorAll(".d2h-file-wrapper");
-            wrappers.forEach((wrapper, index) => {
-                wrapper.id = `${anchorPrefix}-file-${index}`;
-                const filePath = diffFiles[index] || `file-${index}`;
-                const fileId = `${anchorPrefix}:${filePath}`;
-                wrapper.dataset.diffFileId = fileId;
-                knownFileIds.add(fileId);
-
-                const header = wrapper.querySelector(".d2h-file-header");
-                if (header && !header.querySelector(".diff-toggle-btn")) {
-                    const toggleButton = document.createElement("button");
-                    toggleButton.type = "button";
-                    toggleButton.className = "diff-toggle-btn";
-                    toggleButton.addEventListener("click", () => {
-                        const shouldCollapse = !wrapper.classList.contains("diff-file-collapsed");
-                        setDiffFileCollapsed(wrapper, fileId, shouldCollapse);
-                        persistCollapsedFileIds();
-                    });
-                    header.insertBefore(toggleButton, header.firstChild);
-                }
-
-                if (header && !header.querySelector(".diff-viewed-label")) {
-                    const label = document.createElement("label");
-                    label.className = "diff-viewed-label";
-                    label.title = "Mark this file as viewed (saved per browser)";
-                    const checkbox = document.createElement("input");
-                    checkbox.type = "checkbox";
-                    checkbox.addEventListener("click", (event) => {
-                        event.stopPropagation();
-                    });
-                    checkbox.addEventListener("change", () => {
-                        setDiffFileViewed(wrapper, fileId, checkbox.checked);
-                        persistViewedFileIds();
-                        persistCollapsedFileIds();
-                    });
-                    const text = document.createElement("span");
-                    text.textContent = "Viewed";
-                    label.appendChild(checkbox);
-                    label.appendChild(text);
-                    header.appendChild(label);
-                }
-
-                const isViewed = viewedFileIds.has(fileId);
-                const isCollapsed = isViewed || collapsedFileIds.has(fileId);
-                wrapper.classList.toggle("diff-file-viewed", isViewed);
-                wrapper.classList.toggle("diff-file-collapsed", isCollapsed);
-                if (isViewed) {
-                    collapsedFileIds.add(fileId);
-                }
-                const toggleButton = wrapper.querySelector(".diff-toggle-btn");
-                if (toggleButton) {
-                    renderDiffToggleButtonLabel(toggleButton, isCollapsed);
-                }
-                const checkbox = wrapper.querySelector(".diff-viewed-label input[type=checkbox]");
-                if (checkbox) {
-                    checkbox.checked = isViewed;
-                }
-            });
-        };
-
-        const renderDiffSection = (container, diff, emptyMessage, anchorPrefix, knownFileIds) => {
-            const viewMode = normalizeViewMode(viewModeSelect.value);
-            if (!diff || diff.trim() === "") {
-                setEmpty(container, emptyMessage);
+        function renderMain(allEntries) {
+            if (allEntries.length === 0) {
+                filesMain.innerHTML = "";
+                setEmpty(filesMain, "No files changed");
                 return;
             }
-
-            container.innerHTML = "";
-            const configuration = {
-                drawFileList: false,
-                fileListToggle: false,
-                fileListStartVisible: false,
-                fileContentToggle: false,
-                matching: "lines",
-                outputFormat: viewMode === "side-by-side" ? "side-by-side" : "line-by-line",
-                synchronisedScroll: true,
-                highlight: true,
-                renderNothingWhenEmpty: false,
-            };
-            const diff2htmlUi = new Diff2HtmlUI(container, diff, configuration);
-            diff2htmlUi.draw();
-            diff2htmlUi.highlightCode();
-            const diffFiles = parseDiffFiles(diff);
-            decorateRenderedDiffFiles(container, anchorPrefix, diffFiles, knownFileIds);
-        };
-
-        const renderStatus = (status) => {
-            persistControls();
-            updateUntrackedVisibility();
-            const knownFileIds = new Set();
-
-            renderUnifiedFileList(status);
-
-            renderDiffSection(
-                changedDiffContainer,
-                status.unstaged_diff,
-                "No changed diff",
-                "changed-diff",
-                knownFileIds
-            );
-            renderDiffSection(
-                stagedDiffContainer,
-                status.staged_diff,
-                "No staged diff",
-                "staged-diff",
-                knownFileIds
-            );
-
-            if (showUntrackedToggle.checked) {
-                renderDiffSection(
-                    untrackedDiffContainer,
-                    status.untracked_diff,
-                    "No untracked diff",
-                    "untracked-diff",
-                    knownFileIds
-                );
+            const presentIds = new Set();
+            for (const { section, meta } of allEntries) presentIds.add(fileIdOf(section, meta.path));
+            const existing = new Map();
+            for (const child of Array.from(filesMain.children)) {
+                if (child.dataset && child.dataset.diffFileId) {
+                    if (presentIds.has(child.dataset.diffFileId)) {
+                        existing.set(child.dataset.diffFileId, child);
+                    } else {
+                        child.remove();
+                    }
+                } else {
+                    child.remove();
+                }
             }
-            pruneCollapsedFileIds(knownFileIds);
-            updateBulkToggleAvailability();
-        };
+            // Remove stale cache entries
+            for (const id of Array.from(bodyCache.keys())) {
+                if (!presentIds.has(id)) bodyCache.delete(id);
+            }
+            for (const id of Array.from(expandedFileIds)) {
+                if (!presentIds.has(id)) expandedFileIds.delete(id);
+            }
+            persistExpandedFileIds();
+
+            let anchor = null;
+            for (const { section, meta } of allEntries) {
+                const fileId = fileIdOf(section, meta.path);
+                let wrapper = existing.get(fileId);
+                if (wrapper) {
+                    updateRowMeta(wrapper, meta);
+                } else {
+                    wrapper = createFileRow(section, meta);
+                    filesMain.appendChild(wrapper);
+                }
+                if (anchor) {
+                    if (anchor.nextSibling !== wrapper) filesMain.insertBefore(wrapper, anchor.nextSibling);
+                } else if (filesMain.firstChild !== wrapper) {
+                    filesMain.insertBefore(wrapper, filesMain.firstChild);
+                }
+                anchor = wrapper;
+                const isViewed = viewedFileIds.has(fileId);
+                const isExpanded = !isViewed && expandedFileIds.has(fileId);
+                wrapper.classList.toggle("gr-file-viewed", isViewed);
+                wrapper.classList.toggle("diff-file-viewed", isViewed);
+                wrapper.classList.toggle("gr-file-collapsed", !isExpanded);
+                wrapper.classList.toggle("diff-file-collapsed", !isExpanded);
+                const checkbox = wrapper.querySelector(".diff-viewed-label input[type=checkbox]");
+                if (checkbox) checkbox.checked = isViewed;
+                const button = wrapper.querySelector(".diff-toggle-btn");
+                if (button) renderDiffToggleButtonLabel(button, !isExpanded);
+                if (isExpanded) {
+                    ensureBodyLoaded(wrapper).catch((e) => showError(e.message));
+                }
+            }
+        }
 
         async function loadStatus({ showLoading = true } = {}) {
-            if (isLoading) {
-                return;
-            }
+            if (isLoading) return;
             isLoading = true;
             clearError();
             if (showLoading) {
                 setLoading(filesListContainer, "Loading files...");
-                setLoading(changedDiffContainer, "Loading changed diff...");
-                setLoading(stagedDiffContainer, "Loading staged diff...");
+                setLoading(filesMain, "Loading files...");
             }
-            updateUntrackedVisibility();
-            if (showLoading && showUntrackedToggle.checked) {
-                setLoading(untrackedDiffContainer, "Loading untracked diff...");
-            }
-
+            persistControls();
             try {
                 const params = new URLSearchParams();
                 params.set("show_untracked", showUntrackedToggle.checked ? "true" : "false");
-                const response = await fetch(`/api/status?${params.toString()}`, {
-                    cache: "no-store"
-                });
+                const response = await fetch(`/api/status?${params.toString()}`, { cache: "no-store" });
                 const data = await response.json();
-                if (data.error) {
-                    throw new Error(data.error);
-                }
-
+                if (data.error) throw new Error(data.error);
                 latestStatus = data;
-                renderStatus(data);
+                const all = [];
+                for (const meta of (data.staged || [])) all.push({ section: "staged", meta });
+                for (const meta of (data.unstaged || [])) all.push({ section: "unstaged", meta });
+                for (const meta of (data.untracked || [])) all.push({ section: "untracked", meta });
+                renderSidebar(all);
+                renderMain(all);
             } finally {
                 isLoading = false;
             }
         }
 
+        const persistControls = () => {
+            const params = new URLSearchParams();
+            params.set("show_untracked", showUntrackedToggle.checked ? "true" : "false");
+            history.replaceState(null, "", `/diff?${params.toString()}`);
+        };
+
         refreshButton.addEventListener("click", () => {
-            loadStatus().catch((error) => showError(error.message));
+            loadStatus().catch((e) => showError(e.message));
         });
-
-        viewModeSelect.addEventListener("change", () => {
-            if (latestStatus) {
-                renderStatus(latestStatus);
-            } else {
-                loadStatus().catch((error) => showError(error.message));
-            }
-        });
-
         showUntrackedToggle.addEventListener("change", () => {
-            loadStatus().catch((error) => showError(error.message));
+            loadStatus().catch((e) => showError(e.message));
         });
-
-        expandAllButton.addEventListener("click", () => {
-            setAllRenderedDiffFilesCollapsed(false);
-        });
-
-        collapseAllButton.addEventListener("click", () => {
-            setAllRenderedDiffFilesCollapsed(true);
-        });
-
         goTopButton.addEventListener("click", () => {
             window.scrollTo({ top: 0, behavior: "smooth" });
         });
-
         window.addEventListener("scroll", updateGoTopButtonVisibility, { passive: true });
-
         window.setInterval(() => {
-            loadStatus({ showLoading: false }).catch((error) => showError(error.message));
+            loadStatus({ showLoading: false }).catch((e) => showError(e.message));
         }, AUTO_REFRESH_INTERVAL_MS);
 
         updateGoTopButtonVisibility();
-        loadStatus().catch((error) => showError(error.message));
+        loadStatus().catch((e) => showError(e.message));
     </script>
 </body>
 </html>"#;
@@ -901,8 +824,6 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Git Compare Branches</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/diff2html/bundles/css/diff2html.min.css" />
-    <script src="https://cdn.jsdelivr.net/npm/diff2html/bundles/js/diff2html-ui.min.js"></script>
     <style>
         body {
             margin: 0;
@@ -937,12 +858,9 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             font-size: 14px;
             color: #4b5563;
         }
-        .context-key {
-            font-weight: 600;
-            color: #1f2937;
-        }
+        .context-key { font-weight: 600; color: #1f2937; }
         .context-row code {
-            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
             background: #f6f8fa;
             border: 1px solid #d0d7de;
             border-radius: 6px;
@@ -950,18 +868,8 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             color: #24292f;
             word-break: break-all;
         }
-        .controls {
-            display: flex;
-            gap: 12px;
-            align-items: center;
-            flex-wrap: wrap;
-        }
-        .controls label {
-            font-size: 14px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
+        .controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+        .controls label { font-size: 14px; display: flex; align-items: center; gap: 8px; }
         .controls select, .controls button {
             padding: 6px 10px;
             border: 1px solid #ccc;
@@ -969,13 +877,8 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             background: white;
             font-size: 14px;
         }
-        .controls button {
-            cursor: pointer;
-        }
-        .range-arrow {
-            font-weight: 600;
-            color: #6b7280;
-        }
+        .controls button { cursor: pointer; }
+        .range-arrow { font-weight: 600; color: #6b7280; }
         #error-banner {
             display: none;
             margin: 0 0 20px 0;
@@ -992,34 +895,9 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
         }
-        .section h2 {
-            margin: 0 0 12px 0;
-            font-size: 18px;
-        }
-        .loading, .empty {
-            padding: 20px;
-            color: #666;
-        }
-        .file-list {
-            margin: 0;
-            padding-left: 20px;
-        }
-        .file-list li {
-            margin: 4px 0;
-            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-        }
-        .file-list a {
-            color: #0a58ca;
-            text-decoration: none;
-        }
-        .file-list a:hover {
-            text-decoration: underline;
-        }
-        .layout {
-            display: flex;
-            gap: 20px;
-            align-items: flex-start;
-        }
+        .section h2 { margin: 0 0 12px 0; font-size: 18px; }
+        .loading, .empty { padding: 20px; color: #666; }
+        .layout { display: flex; gap: 20px; align-items: flex-start; }
         .sidebar {
             width: 260px;
             flex-shrink: 0;
@@ -1028,34 +906,83 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             max-height: calc(100vh - 40px);
             overflow-y: auto;
         }
-        .sidebar .files-section {
-            margin-bottom: 0;
-        }
-        .content {
-            flex: 1 1 auto;
-            min-width: 0;
-        }
+        .sidebar .files-section { margin-bottom: 0; }
+        .content { flex: 1 1 auto; min-width: 0; }
         @media (max-width: 900px) {
             .layout { flex-direction: column; }
             .sidebar { position: static; width: auto; max-height: none; }
         }
-        .d2h-file-header {
+        .file-list { list-style: none; margin: 0; padding: 0; }
+        .file-list li { margin: 2px 0; }
+        .file-list a {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: #0a58ca;
+            text-decoration: none;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 12px;
+            padding: 2px 4px;
+            border-radius: 4px;
+        }
+        .file-list a:hover { background: #f6f8fa; text-decoration: underline; }
+        .file-list .file-path-text {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            flex: 1 1 auto;
+            min-width: 0;
+        }
+        .gr-file {
+            background: white;
+            border: 1px solid #d0d7de;
+            border-radius: 6px;
+            margin-bottom: 12px;
+            overflow: hidden;
+        }
+        .gr-file-header {
             display: flex;
             align-items: center;
             flex-wrap: nowrap;
             gap: 8px;
             min-width: 0;
+            padding: 8px 12px;
+            background: #f6f8fa;
+            border-bottom: 1px solid #d0d7de;
         }
-        .d2h-file-header .d2h-file-name-wrapper {
-            min-width: 0;
-            overflow: hidden;
+        .gr-file-collapsed .gr-file-body { display: none; }
+        .gr-file-collapsed .gr-file-header { border-bottom: none; }
+        .gr-file-viewed .gr-file-header { background: #eef2f7; opacity: 0.85; }
+        .gr-file-name-wrapper {
             flex: 1 1 auto;
+            min-width: 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            overflow: hidden;
         }
-        .d2h-file-header .d2h-file-name {
+        .gr-file-name {
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 13px;
         }
+        .gr-status-tag {
+            flex-shrink: 0;
+            padding: 1px 6px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .gr-status-modified  { background: #fff8c5; color: #9a6700; }
+        .gr-status-added     { background: #dafbe1; color: #1a7f37; }
+        .gr-status-deleted   { background: #ffebe9; color: #cf222e; }
+        .gr-status-renamed   { background: #ddf4ff; color: #0969da; }
+        .gr-status-untracked { background: #eaeef2; color: #57606a; }
+        .gr-file-stats { flex-shrink: 0; display: inline-flex; gap: 8px; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+        .gr-additions { color: #1a7f37; }
+        .gr-deletions { color: #cf222e; }
         .diff-toggle-btn {
             order: -1;
             flex-shrink: 0;
@@ -1088,20 +1015,11 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             cursor: pointer;
             user-select: none;
         }
-        .diff-viewed-label:hover {
-            background: #eef2f7;
-        }
-        .diff-viewed-label input {
-            margin: 0;
-            cursor: pointer;
-        }
-        .diff-file-viewed > .d2h-file-header {
-            background: #eef2f7;
-            opacity: 0.8;
-        }
-        .diff-file-collapsed .d2h-file-diff {
-            display: none;
-        }
+        .diff-viewed-label:hover { background: #eef2f7; }
+        .diff-viewed-label input { margin: 0; cursor: pointer; }
+        .gr-file-body { background: white; }
+        .gr-file-body .loading, .gr-file-body .empty { padding: 12px; color: #57606a; font-size: 12px; }
+{{DIFF_STYLES}}
         #go-top-btn {
             position: fixed;
             right: 20px;
@@ -1119,14 +1037,8 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             transform: translateY(8px);
             transition: opacity 0.15s ease, transform 0.15s ease;
         }
-        #go-top-btn.visible {
-            opacity: 1;
-            pointer-events: auto;
-            transform: translateY(0);
-        }
-        #go-top-btn:hover {
-            background: #eef2f7;
-        }
+        #go-top-btn.visible { opacity: 1; pointer-events: auto; transform: translateY(0); }
+        #go-top-btn:hover { background: #eef2f7; }
     </style>
 </head>
 <body>
@@ -1144,15 +1056,6 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                 <select id="compare-select"><option value="">(loading...)</option></select>
             </label>
             <button id="swap-btn" type="button" title="Swap base and compare">Swap</button>
-            <label>
-                View mode
-                <select id="view-mode">
-                    <option value="unified">Unified</option>
-                    <option value="side-by-side">Side-by-side</option>
-                </select>
-            </label>
-            <button id="expand-all-btn" type="button">Expand all</button>
-            <button id="collapse-all-btn" type="button">Collapse all</button>
             <button id="refresh-btn" type="button">Refresh</button>
         </div>
     </div>
@@ -1163,17 +1066,13 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         <aside class="sidebar">
             <section class="section files-section">
                 <h2 id="files-heading">Files</h2>
-                <div id="files-list">
-                    <div class="loading">Select a base and compare branch...</div>
-                </div>
+                <div id="files-list"><div class="loading">Select a base and compare branch...</div></div>
             </section>
         </aside>
         <main class="content">
             <section class="section">
                 <h2>Compare Diff</h2>
-                <div id="compare-diff" class="diff-container">
-                    <div class="loading">Select a base and compare branch...</div>
-                </div>
+                <div id="files-main"><div class="loading">Select a base and compare branch...</div></div>
             </section>
         </main>
     </div>
@@ -1181,91 +1080,66 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
 
     <script>
         const urlParams = new URLSearchParams(window.location.search);
-        const normalizeViewMode = (value) => value === "side-by-side" ? "side-by-side" : "unified";
 
         const baseSelect = document.getElementById("base-select");
         const compareSelect = document.getElementById("compare-select");
         const swapButton = document.getElementById("swap-btn");
-        const viewModeSelect = document.getElementById("view-mode");
-        const expandAllButton = document.getElementById("expand-all-btn");
-        const collapseAllButton = document.getElementById("collapse-all-btn");
         const refreshButton = document.getElementById("refresh-btn");
         const errorBanner = document.getElementById("error-banner");
         const rootPathCode = document.getElementById("root-path");
         const filesHeading = document.getElementById("files-heading");
         const filesListContainer = document.getElementById("files-list");
-        const compareDiffContainer = document.getElementById("compare-diff");
+        const filesMain = document.getElementById("files-main");
         const goTopButton = document.getElementById("go-top-btn");
         const GO_TOP_SHOW_SCROLL_Y = 240;
         const STORAGE_ROOT = rootPathCode ? rootPathCode.textContent : "unknown-root";
-        const COLLAPSED_FILES_STORAGE_KEY = `gargo.compare.collapsed.v2:${STORAGE_ROOT}`;
-        const VIEWED_FILES_STORAGE_KEY = `gargo.compare.viewed.v1:${STORAGE_ROOT}`;
+        const COLLAPSED_FILES_STORAGE_KEY = `gargo.compare.expanded.v1:${STORAGE_ROOT}`;
+        const VIEWED_FILES_STORAGE_KEY = `gargo.compare.viewed.v2:${STORAGE_ROOT}`;
 
-        let latestDiff = null;
-        let isLoadingCompare = false;
-        let collapsedFileIds = loadIdSet(sessionStorage, COLLAPSED_FILES_STORAGE_KEY);
+        let expandedFileIds = loadIdSet(sessionStorage, COLLAPSED_FILES_STORAGE_KEY);
         let viewedFileIds = loadIdSet(localStorage, VIEWED_FILES_STORAGE_KEY);
-        viewModeSelect.value = normalizeViewMode(urlParams.get("view"));
+        const bodyCache = new Map();
+        let isLoadingCompare = false;
+        let latestFiles = null;
+
+        const STATUS_LABELS = {
+            modified: "CHANGED", added: "ADDED", deleted: "DELETED",
+            renamed: "RENAMED", untracked: "UNTRACKED",
+        };
+        const STATUS_CSS = {
+            modified: "gr-status-modified", added: "gr-status-added", deleted: "gr-status-deleted",
+            renamed: "gr-status-renamed", untracked: "gr-status-untracked",
+        };
 
         function loadIdSet(storage, key) {
             try {
                 const raw = storage.getItem(key);
-                if (!raw) {
-                    return new Set();
-                }
+                if (!raw) return new Set();
                 const parsed = JSON.parse(raw);
-                if (!Array.isArray(parsed)) {
-                    return new Set();
-                }
-                const ids = parsed.filter((value) => typeof value === "string" && value.length > 0);
-                return new Set(ids);
-            } catch (_error) {
-                return new Set();
-            }
+                if (!Array.isArray(parsed)) return new Set();
+                return new Set(parsed.filter((v) => typeof v === "string" && v.length > 0));
+            } catch (_e) { return new Set(); }
         }
-
         const persistIdSet = (storage, key, set) => {
-            try {
-                storage.setItem(key, JSON.stringify(Array.from(set)));
-            } catch (_error) {
-                // Ignore storage failures.
-            }
+            try { storage.setItem(key, JSON.stringify(Array.from(set))); } catch (_e) {}
         };
+        const persistExpandedFileIds = () => persistIdSet(sessionStorage, COLLAPSED_FILES_STORAGE_KEY, expandedFileIds);
+        const persistViewedFileIds = () => persistIdSet(localStorage, VIEWED_FILES_STORAGE_KEY, viewedFileIds);
 
-        const persistCollapsedFileIds = () => {
-            persistIdSet(sessionStorage, COLLAPSED_FILES_STORAGE_KEY, collapsedFileIds);
-        };
-
-        const persistViewedFileIds = () => {
-            persistIdSet(localStorage, VIEWED_FILES_STORAGE_KEY, viewedFileIds);
-        };
-
-        const showError = (message) => {
-            errorBanner.textContent = `Error: ${message}`;
-            errorBanner.style.display = "block";
-        };
-
-        const clearError = () => {
-            errorBanner.textContent = "";
-            errorBanner.style.display = "none";
-        };
-
-        const setLoading = (container, message) => {
-            container.innerHTML = `<div class="loading">${message}</div>`;
-        };
-
-        const setEmpty = (container, message) => {
-            container.innerHTML = `<div class="empty">${message}</div>`;
-        };
+        const showError = (m) => { errorBanner.textContent = `Error: ${m}`; errorBanner.style.display = "block"; };
+        const clearError = () => { errorBanner.textContent = ""; errorBanner.style.display = "none"; };
+        const setLoading = (c, m) => { c.innerHTML = `<div class="loading">${escapeHtml(m)}</div>`; };
+        const setEmpty = (c, m) => { c.innerHTML = `<div class="empty">${escapeHtml(m)}</div>`; };
+        const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({
+            "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;",
+        }[c]));
+        const fileIdOf = (path) => `compare:${path}`;
+        const fileAnchorOf = (path) => `file-compare-${path.replace(/[^A-Za-z0-9_\-\.]/g, "_")}`;
 
         const updateGoTopButtonVisibility = () => {
-            if (window.scrollY > GO_TOP_SHOW_SCROLL_Y) {
-                goTopButton.classList.add("visible");
-            } else {
-                goTopButton.classList.remove("visible");
-            }
+            if (window.scrollY > GO_TOP_SHOW_SCROLL_Y) goTopButton.classList.add("visible");
+            else goTopButton.classList.remove("visible");
         };
-
         const renderDiffToggleButtonLabel = (button, collapsed) => {
             button.textContent = collapsed ? "▸" : "▾";
             button.setAttribute("aria-expanded", collapsed ? "false" : "true");
@@ -1273,204 +1147,250 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             button.setAttribute("title", collapsed ? "Show diff" : "Hide diff");
         };
 
-        const setDiffFileCollapsed = (wrapper, fileId, collapsed) => {
-            if (collapsed) {
-                collapsedFileIds.add(fileId);
-            } else {
-                collapsedFileIds.delete(fileId);
-            }
-            wrapper.classList.toggle("diff-file-collapsed", collapsed);
-            const button = wrapper.querySelector(".diff-toggle-btn");
-            if (button) {
-                renderDiffToggleButtonLabel(button, collapsed);
-            }
-        };
+        function createFileRow(meta) {
+            const fileId = fileIdOf(meta.path);
+            const wrapper = document.createElement("div");
+            wrapper.className = "gr-file";
+            wrapper.dataset.diffFileId = fileId;
+            wrapper.dataset.path = meta.path;
+            wrapper.id = fileAnchorOf(meta.path);
 
-        const setDiffFileViewed = (wrapper, fileId, viewed) => {
-            if (viewed) {
+            const header = document.createElement("div");
+            header.className = "gr-file-header";
+
+            const toggleButton = document.createElement("button");
+            toggleButton.type = "button";
+            toggleButton.className = "diff-toggle-btn";
+            toggleButton.addEventListener("click", () => {
+                const wasCollapsed = wrapper.classList.contains("diff-file-collapsed");
+                setFileCollapsed(wrapper, !wasCollapsed);
+            });
+            header.insertBefore(toggleButton, header.firstChild);
+
+            const nameWrapper = document.createElement("span");
+            nameWrapper.className = "gr-file-name-wrapper";
+            const name = document.createElement("span");
+            name.className = "gr-file-name";
+            name.textContent = meta.path;
+            name.title = (meta.old_path && meta.old_path !== meta.path)
+                ? `${meta.old_path} → ${meta.path}` : meta.path;
+            nameWrapper.appendChild(name);
+            const tag = document.createElement("span");
+            const status = meta.status || "modified";
+            tag.className = `gr-status-tag ${STATUS_CSS[status] || STATUS_CSS.modified}`;
+            tag.textContent = STATUS_LABELS[status] || status.toUpperCase();
+            nameWrapper.appendChild(tag);
+            header.appendChild(nameWrapper);
+
+            const stats = document.createElement("span");
+            stats.className = "gr-file-stats";
+            const adds = document.createElement("span");
+            adds.className = "gr-additions";
+            adds.textContent = `+${meta.additions || 0}`;
+            const dels = document.createElement("span");
+            dels.className = "gr-deletions";
+            dels.textContent = `-${meta.deletions || 0}`;
+            stats.appendChild(adds);
+            stats.appendChild(dels);
+            header.appendChild(stats);
+
+            const label = document.createElement("label");
+            label.className = "diff-viewed-label";
+            label.title = "Mark this file as viewed (saved per browser)";
+            const checkbox = document.createElement("input");
+            checkbox.type = "checkbox";
+            checkbox.addEventListener("click", (e) => e.stopPropagation());
+            checkbox.addEventListener("change", () => {
+                setFileViewed(wrapper, checkbox.checked);
+            });
+            const labelText = document.createElement("span");
+            labelText.textContent = "Viewed";
+            label.appendChild(checkbox);
+            label.appendChild(labelText);
+            header.appendChild(label);
+
+            wrapper.appendChild(header);
+
+            const body = document.createElement("div");
+            body.className = "gr-file-body";
+            wrapper.appendChild(body);
+
+            return wrapper;
+        }
+
+        function updateRowMeta(wrapper, meta) {
+            const status = meta.status || "modified";
+            const tag = wrapper.querySelector(".gr-status-tag");
+            if (tag) {
+                tag.className = `gr-status-tag ${STATUS_CSS[status] || STATUS_CSS.modified}`;
+                tag.textContent = STATUS_LABELS[status] || status.toUpperCase();
+            }
+            const adds = wrapper.querySelector(".gr-additions");
+            if (adds) adds.textContent = `+${meta.additions || 0}`;
+            const dels = wrapper.querySelector(".gr-deletions");
+            if (dels) dels.textContent = `-${meta.deletions || 0}`;
+        }
+
+        function setFileCollapsed(wrapper, isCollapsed) {
+            const fileId = wrapper.dataset.diffFileId;
+            wrapper.classList.toggle("diff-file-collapsed", isCollapsed);
+            wrapper.classList.toggle("gr-file-collapsed", isCollapsed);
+            const button = wrapper.querySelector(".diff-toggle-btn");
+            if (button) renderDiffToggleButtonLabel(button, isCollapsed);
+            if (isCollapsed) {
+                expandedFileIds.delete(fileId);
+            } else {
+                expandedFileIds.add(fileId);
+                ensureBodyLoaded(wrapper).catch((e) => showError(e.message));
+            }
+            persistExpandedFileIds();
+        }
+
+        function setFileViewed(wrapper, isViewed) {
+            const fileId = wrapper.dataset.diffFileId;
+            wrapper.classList.toggle("diff-file-viewed", isViewed);
+            wrapper.classList.toggle("gr-file-viewed", isViewed);
+            const checkbox = wrapper.querySelector(".diff-viewed-label input[type=checkbox]");
+            if (checkbox && checkbox.checked !== isViewed) checkbox.checked = isViewed;
+            if (isViewed) {
                 viewedFileIds.add(fileId);
+                wrapper.classList.add("diff-file-collapsed");
+                wrapper.classList.add("gr-file-collapsed");
+                expandedFileIds.delete(fileId);
+                const button = wrapper.querySelector(".diff-toggle-btn");
+                if (button) renderDiffToggleButtonLabel(button, true);
+                const body = wrapper.querySelector(".gr-file-body");
+                if (body) { body.innerHTML = ""; delete body.dataset.loaded; }
             } else {
                 viewedFileIds.delete(fileId);
             }
-            wrapper.classList.toggle("diff-file-viewed", viewed);
-            const checkbox = wrapper.querySelector(".diff-viewed-label input[type=checkbox]");
-            if (checkbox && checkbox.checked !== viewed) {
-                checkbox.checked = viewed;
+            persistViewedFileIds();
+            persistExpandedFileIds();
+        }
+
+        async function ensureBodyLoaded(wrapper) {
+            const fileId = wrapper.dataset.diffFileId;
+            const path = wrapper.dataset.path;
+            const body = wrapper.querySelector(".gr-file-body");
+            if (!body || body.dataset.loaded || body.dataset.loading) return;
+            const cached = bodyCache.get(fileId);
+            if (cached) {
+                body.innerHTML = cached.html;
+                body.dataset.loaded = "1";
+                return;
             }
-            setDiffFileCollapsed(wrapper, fileId, viewed);
-        };
-
-        const updateBulkToggleAvailability = () => {
-            const wrappers = document.querySelectorAll(".diff-container .d2h-file-wrapper[data-diff-file-id]");
-            const disabled = wrappers.length === 0;
-            expandAllButton.disabled = disabled;
-            collapseAllButton.disabled = disabled;
-        };
-
-        const setAllRenderedDiffFilesCollapsed = (collapsed) => {
-            const wrappers = document.querySelectorAll(".diff-container .d2h-file-wrapper[data-diff-file-id]");
-            wrappers.forEach((wrapper) => {
-                const fileId = wrapper.dataset.diffFileId;
-                if (!fileId) {
-                    return;
+            const base = baseSelect.value;
+            const compare = compareSelect.value;
+            if (!base || !compare) return;
+            body.dataset.loading = "1";
+            body.innerHTML = `<div class="loading">Loading diff…</div>`;
+            try {
+                const params = new URLSearchParams({ base, compare, path });
+                const response = await fetch(`/api/compare/file?${params.toString()}`, { cache: "no-store" });
+                const data = await response.json();
+                if (data.error) throw new Error(data.error);
+                const html = typeof data.html === "string" ? data.html : "";
+                bodyCache.set(fileId, { html, stats: data });
+                body.innerHTML = html;
+                body.dataset.loaded = "1";
+                if (typeof data.additions === "number" || typeof data.deletions === "number") {
+                    updateRowMeta(wrapper, {
+                        path: data.path || path,
+                        status: data.status,
+                        additions: data.additions,
+                        deletions: data.deletions,
+                    });
                 }
-                setDiffFileCollapsed(wrapper, fileId, collapsed);
-            });
-            persistCollapsedFileIds();
-            updateBulkToggleAvailability();
-        };
-
-        const pruneCollapsedFileIds = (knownFileIds) => {
-            const next = new Set();
-            collapsedFileIds.forEach((fileId) => {
-                if (knownFileIds.has(fileId)) {
-                    next.add(fileId);
-                }
-            });
-            if (next.size !== collapsedFileIds.size) {
-                collapsedFileIds = next;
-                persistCollapsedFileIds();
+            } catch (e) {
+                body.innerHTML = `<div class="loading">Error: ${escapeHtml(e.message)}</div>`;
+            } finally {
+                delete body.dataset.loading;
             }
-        };
+        }
 
-        const parseDiffFiles = (diff) => {
-            if (!diff || diff.trim() === "") {
-                return [];
-            }
-            const files = [];
-            for (const line of diff.split("\n")) {
-                if (!line.startsWith("diff --git ")) {
-                    continue;
-                }
-                const match = line.match(/^diff --git a\/(.+) b\/(.+)$/);
-                if (!match) {
-                    continue;
-                }
-                files.push(match[2]);
-            }
-            return files;
-        };
-
-        const renderFileList = (diff) => {
-            const files = parseDiffFiles(diff);
-            filesHeading.textContent = files.length > 0 ? `Files (${files.length})` : "Files";
+        function renderSidebar(files) {
             if (files.length === 0) {
+                filesHeading.textContent = "Files";
                 setEmpty(filesListContainer, "No changes between branches");
                 return;
             }
+            filesHeading.textContent = `Files (${files.length})`;
             filesListContainer.innerHTML = "";
-            const list = document.createElement("ul");
-            list.className = "file-list";
-            for (let i = 0; i < files.length; i += 1) {
-                const item = document.createElement("li");
-                const link = document.createElement("a");
-                link.href = `#compare-diff-file-${i}`;
-                link.textContent = files[i];
-                item.appendChild(link);
-                list.appendChild(item);
+            const ul = document.createElement("ul");
+            ul.className = "file-list";
+            for (const meta of files) {
+                const li = document.createElement("li");
+                const a = document.createElement("a");
+                a.href = `#${fileAnchorOf(meta.path)}`;
+                const text = document.createElement("span");
+                text.className = "file-path-text";
+                text.textContent = meta.path;
+                text.title = meta.path;
+                a.appendChild(text);
+                li.appendChild(a);
+                ul.appendChild(li);
             }
-            filesListContainer.appendChild(list);
-        };
+            filesListContainer.appendChild(ul);
+        }
 
-        const decorateRenderedDiffFiles = (container, anchorPrefix, diffFiles, knownFileIds) => {
-            const wrappers = container.querySelectorAll(".d2h-file-wrapper");
-            wrappers.forEach((wrapper, index) => {
-                wrapper.id = `${anchorPrefix}-file-${index}`;
-                const filePath = diffFiles[index] || `file-${index}`;
-                const fileId = `${anchorPrefix}:${filePath}`;
-                wrapper.dataset.diffFileId = fileId;
-                knownFileIds.add(fileId);
-
-                const header = wrapper.querySelector(".d2h-file-header");
-                if (header && !header.querySelector(".diff-toggle-btn")) {
-                    const toggleButton = document.createElement("button");
-                    toggleButton.type = "button";
-                    toggleButton.className = "diff-toggle-btn";
-                    toggleButton.addEventListener("click", () => {
-                        const shouldCollapse = !wrapper.classList.contains("diff-file-collapsed");
-                        setDiffFileCollapsed(wrapper, fileId, shouldCollapse);
-                        persistCollapsedFileIds();
-                    });
-                    header.insertBefore(toggleButton, header.firstChild);
-                }
-
-                if (header && !header.querySelector(".diff-viewed-label")) {
-                    const label = document.createElement("label");
-                    label.className = "diff-viewed-label";
-                    label.title = "Mark this file as viewed (saved per browser)";
-                    const checkbox = document.createElement("input");
-                    checkbox.type = "checkbox";
-                    checkbox.addEventListener("click", (event) => {
-                        event.stopPropagation();
-                    });
-                    checkbox.addEventListener("change", () => {
-                        setDiffFileViewed(wrapper, fileId, checkbox.checked);
-                        persistViewedFileIds();
-                        persistCollapsedFileIds();
-                    });
-                    const text = document.createElement("span");
-                    text.textContent = "Viewed";
-                    label.appendChild(checkbox);
-                    label.appendChild(text);
-                    header.appendChild(label);
-                }
-
-                const isViewed = viewedFileIds.has(fileId);
-                const isCollapsed = isViewed || collapsedFileIds.has(fileId);
-                wrapper.classList.toggle("diff-file-viewed", isViewed);
-                wrapper.classList.toggle("diff-file-collapsed", isCollapsed);
-                if (isViewed) {
-                    collapsedFileIds.add(fileId);
-                }
-                const toggleButton = wrapper.querySelector(".diff-toggle-btn");
-                if (toggleButton) {
-                    renderDiffToggleButtonLabel(toggleButton, isCollapsed);
-                }
-                const checkbox = wrapper.querySelector(".diff-viewed-label input[type=checkbox]");
-                if (checkbox) {
-                    checkbox.checked = isViewed;
-                }
-            });
-        };
-
-        const renderDiff = (diff) => {
-            const viewMode = normalizeViewMode(viewModeSelect.value);
-            const knownFileIds = new Set();
-            renderFileList(diff);
-            if (!diff || diff.trim() === "") {
-                setEmpty(compareDiffContainer, "No changes between branches");
-                pruneCollapsedFileIds(knownFileIds);
-                updateBulkToggleAvailability();
+        function renderMain(files) {
+            if (files.length === 0) {
+                filesMain.innerHTML = "";
+                setEmpty(filesMain, "No changes between branches");
                 return;
             }
-            compareDiffContainer.innerHTML = "";
-            const configuration = {
-                drawFileList: false,
-                fileListToggle: false,
-                fileListStartVisible: false,
-                fileContentToggle: false,
-                matching: "lines",
-                outputFormat: viewMode === "side-by-side" ? "side-by-side" : "line-by-line",
-                synchronisedScroll: true,
-                highlight: true,
-                renderNothingWhenEmpty: false,
-            };
-            const diff2htmlUi = new Diff2HtmlUI(compareDiffContainer, diff, configuration);
-            diff2htmlUi.draw();
-            diff2htmlUi.highlightCode();
-            const diffFiles = parseDiffFiles(diff);
-            decorateRenderedDiffFiles(compareDiffContainer, "compare-diff", diffFiles, knownFileIds);
-            pruneCollapsedFileIds(knownFileIds);
-            updateBulkToggleAvailability();
-        };
+            const presentIds = new Set(files.map((m) => fileIdOf(m.path)));
+            const existing = new Map();
+            for (const child of Array.from(filesMain.children)) {
+                if (child.dataset && child.dataset.diffFileId) {
+                    if (presentIds.has(child.dataset.diffFileId)) {
+                        existing.set(child.dataset.diffFileId, child);
+                    } else {
+                        child.remove();
+                    }
+                } else {
+                    child.remove();
+                }
+            }
+            for (const id of Array.from(bodyCache.keys())) {
+                if (!presentIds.has(id)) bodyCache.delete(id);
+            }
+            for (const id of Array.from(expandedFileIds)) {
+                if (!presentIds.has(id)) expandedFileIds.delete(id);
+            }
+            persistExpandedFileIds();
 
-        const persistControls = () => {
-            const params = new URLSearchParams();
-            if (baseSelect.value) params.set("base", baseSelect.value);
-            if (compareSelect.value) params.set("compare", compareSelect.value);
-            params.set("view", normalizeViewMode(viewModeSelect.value));
-            history.replaceState(null, "", `/compare?${params.toString()}`);
-        };
+            let anchor = null;
+            for (const meta of files) {
+                const fileId = fileIdOf(meta.path);
+                let wrapper = existing.get(fileId);
+                if (wrapper) {
+                    updateRowMeta(wrapper, meta);
+                } else {
+                    wrapper = createFileRow(meta);
+                    filesMain.appendChild(wrapper);
+                }
+                if (anchor) {
+                    if (anchor.nextSibling !== wrapper) filesMain.insertBefore(wrapper, anchor.nextSibling);
+                } else if (filesMain.firstChild !== wrapper) {
+                    filesMain.insertBefore(wrapper, filesMain.firstChild);
+                }
+                anchor = wrapper;
+                const isViewed = viewedFileIds.has(fileId);
+                const isExpanded = !isViewed && expandedFileIds.has(fileId);
+                wrapper.classList.toggle("gr-file-viewed", isViewed);
+                wrapper.classList.toggle("diff-file-viewed", isViewed);
+                wrapper.classList.toggle("gr-file-collapsed", !isExpanded);
+                wrapper.classList.toggle("diff-file-collapsed", !isExpanded);
+                const checkbox = wrapper.querySelector(".diff-viewed-label input[type=checkbox]");
+                if (checkbox) checkbox.checked = isViewed;
+                const button = wrapper.querySelector(".diff-toggle-btn");
+                if (button) renderDiffToggleButtonLabel(button, !isExpanded);
+                if (isExpanded) {
+                    ensureBodyLoaded(wrapper).catch((e) => showError(e.message));
+                }
+            }
+        }
 
         const populateSelect = (select, branches, preferred) => {
             select.innerHTML = "";
@@ -1498,9 +1418,7 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             try {
                 const response = await fetch("/api/branches", { cache: "no-store" });
                 const data = await response.json();
-                if (data.error) {
-                    throw new Error(data.error);
-                }
+                if (data.error) throw new Error(data.error);
                 const branches = Array.isArray(data.branches) ? data.branches : [];
                 const current = typeof data.current === "string" ? data.current : null;
                 const defaultBranch = typeof data.default === "string" ? data.default : null;
@@ -1509,8 +1427,7 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                 const compareParam = urlParams.get("compare");
                 const baseFallback =
                     (defaultBranch && branches.includes(defaultBranch) && defaultBranch !== current
-                        ? defaultBranch
-                        : null)
+                        ? defaultBranch : null)
                     || (defaultBranch && branches.includes(defaultBranch) ? defaultBranch : null)
                     || branches.find((b) => b !== current)
                     || branches[0]
@@ -1518,8 +1435,8 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                 const compareFallback = current || branches[0] || "";
                 populateSelect(baseSelect, branches, baseParam || baseFallback);
                 populateSelect(compareSelect, branches, compareParam || compareFallback);
-            } catch (error) {
-                showError(error.message);
+            } catch (e) {
+                showError(e.message);
                 baseSelect.innerHTML = '<option value="">(error)</option>';
                 compareSelect.innerHTML = '<option value="">(error)</option>';
             }
@@ -1530,85 +1447,73 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             const compare = compareSelect.value;
             if (!base || !compare) {
                 setEmpty(filesListContainer, "Select a base and compare branch...");
-                setEmpty(compareDiffContainer, "Select a base and compare branch...");
-                updateBulkToggleAvailability();
+                setEmpty(filesMain, "Select a base and compare branch...");
                 return;
             }
-            if (isLoadingCompare) {
-                return;
-            }
+            if (isLoadingCompare) return;
             isLoadingCompare = true;
             clearError();
             if (showLoading) {
                 setLoading(filesListContainer, "Loading files...");
-                setLoading(compareDiffContainer, `Loading diff for ${base}...${compare}...`);
+                setLoading(filesMain, `Loading files for ${base}...${compare}...`);
             }
+            // Drop body cache when base/compare changes
+            bodyCache.clear();
             try {
-                const params = new URLSearchParams();
-                params.set("base", base);
-                params.set("compare", compare);
-                const response = await fetch(`/api/compare?${params.toString()}`, {
-                    cache: "no-store"
-                });
+                const params = new URLSearchParams({ base, compare });
+                const response = await fetch(`/api/compare?${params.toString()}`, { cache: "no-store" });
                 const data = await response.json();
-                if (data.error) {
-                    throw new Error(data.error);
-                }
-                latestDiff = typeof data.diff === "string" ? data.diff : "";
-                renderDiff(latestDiff);
+                if (data.error) throw new Error(data.error);
+                latestFiles = Array.isArray(data.files) ? data.files : [];
+                renderSidebar(latestFiles);
+                renderMain(latestFiles);
             } finally {
                 isLoadingCompare = false;
             }
         }
 
+        const persistControls = () => {
+            const params = new URLSearchParams();
+            if (baseSelect.value) params.set("base", baseSelect.value);
+            if (compareSelect.value) params.set("compare", compareSelect.value);
+            history.replaceState(null, "", `/compare?${params.toString()}`);
+        };
+
         refreshButton.addEventListener("click", () => {
-            loadCompare().catch((error) => showError(error.message));
+            bodyCache.clear();
+            const expandedSnapshot = new Set(expandedFileIds);
+            loadCompare().then(() => {
+                // Re-fetch any files that should still be expanded
+                expandedFileIds = expandedSnapshot;
+                persistExpandedFileIds();
+                if (latestFiles) renderMain(latestFiles);
+            }).catch((e) => showError(e.message));
         });
-
-        viewModeSelect.addEventListener("change", () => {
-            persistControls();
-            if (latestDiff !== null) {
-                renderDiff(latestDiff);
-            }
-        });
-
         baseSelect.addEventListener("change", () => {
             persistControls();
-            loadCompare().catch((error) => showError(error.message));
+            loadCompare().catch((e) => showError(e.message));
         });
-
         compareSelect.addEventListener("change", () => {
             persistControls();
-            loadCompare().catch((error) => showError(error.message));
+            loadCompare().catch((e) => showError(e.message));
         });
-
         swapButton.addEventListener("click", () => {
             const a = baseSelect.value;
             const b = compareSelect.value;
             baseSelect.value = b;
             compareSelect.value = a;
             persistControls();
-            loadCompare().catch((error) => showError(error.message));
+            loadCompare().catch((e) => showError(e.message));
         });
-
-        expandAllButton.addEventListener("click", () => {
-            setAllRenderedDiffFilesCollapsed(false);
-        });
-
-        collapseAllButton.addEventListener("click", () => {
-            setAllRenderedDiffFilesCollapsed(true);
-        });
-
         goTopButton.addEventListener("click", () => {
             window.scrollTo({ top: 0, behavior: "smooth" });
         });
-
         window.addEventListener("scroll", updateGoTopButtonVisibility, { passive: true });
 
         (async () => {
             await loadBranches();
             persistControls();
-            await loadCompare().catch((error) => showError(error.message));
+            await loadCompare().catch((e) => showError(e.message));
         })();
 
         updateGoTopButtonVisibility();
@@ -1626,8 +1531,10 @@ async fn run_server(
         .route("/diff", get(handle_html_request))
         .route("/compare", get(handle_compare_html_request))
         .route("/api/status", get(handle_api_status_request))
+        .route("/api/status/file", get(handle_api_status_file_request))
         .route("/api/branches", get(handle_api_branches_request))
         .route("/api/compare", get(handle_api_compare_request))
+        .route("/api/compare/file", get(handle_api_compare_file_request))
         .with_state(state)
         .layer(CorsLayer::permissive());
 
@@ -1641,8 +1548,11 @@ async fn run_server(
 /// Serve the HTML page with diff2html
 async fn handle_html_request(State(state): State<Arc<DiffServerState>>) -> impl IntoResponse {
     let root_path = state.project_root.display().to_string();
-
-    Html(DIFF_HTML_TEMPLATE.replace("{{ROOT_PATH}}", &html_escape(&root_path)))
+    Html(
+        DIFF_HTML_TEMPLATE
+            .replace("{{ROOT_PATH}}", &html_escape(&root_path))
+            .replace("{{DIFF_STYLES}}", render_diff_styles()),
+    )
 }
 
 fn parse_bool_param(value: Option<&String>, default: bool) -> bool {
@@ -1701,92 +1611,174 @@ async fn handle_api_status_request(
     State(state): State<Arc<DiffServerState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
-    fn status_response(payload: serde_json::Value) -> Response {
-        let mut response = (StatusCode::OK, Json(payload)).into_response();
-        response.headers_mut().insert(
-            header::CACHE_CONTROL,
-            HeaderValue::from_static("no-store, no-cache, must-revalidate"),
-        );
-        response
-    }
-
     let show_untracked = parse_bool_param(params.get("show_untracked"), true);
     let repo_root = &state.project_root;
 
-    let unstaged_diff = match git_output_in_repo(repo_root, &["diff"]).await {
+    let unstaged_raw = match git_output_in_repo(repo_root, &["diff"]).await {
         Ok(output) => output,
-        Err(error) => {
-            return status_response(serde_json::json!({
-                "error": error
-            }));
-        }
+        Err(error) => return bad_request(error),
+    };
+    let staged_raw = match git_output_in_repo(repo_root, &["diff", "--cached"]).await {
+        Ok(output) => output,
+        Err(error) => return bad_request(error),
     };
 
-    let staged_diff = match git_output_in_repo(repo_root, &["diff", "--cached"]).await {
-        Ok(output) => output,
-        Err(error) => {
-            return status_response(serde_json::json!({
-                "error": error
-            }));
-        }
-    };
+    let unstaged_files: Vec<serde_json::Value> = parse_unified_diff(&unstaged_raw)
+        .iter()
+        .map(file_metadata_json)
+        .collect();
+    let staged_files: Vec<serde_json::Value> = parse_unified_diff(&staged_raw)
+        .iter()
+        .map(file_metadata_json)
+        .collect();
 
-    let (untracked_files, untracked_diff) = if show_untracked {
-        let untracked_raw =
-            match git_output_in_repo(repo_root, &["ls-files", "--others", "--exclude-standard"])
-                .await
-            {
-                Ok(output) => output,
-                Err(error) => {
-                    return status_response(serde_json::json!({
-                        "error": error
-                    }));
-                }
-            };
-        let untracked_files: Vec<String> = untracked_raw
-            .lines()
+    let untracked_files: Vec<serde_json::Value> = if show_untracked {
+        let raw = match git_output_in_repo(
+            repo_root,
+            &["ls-files", "--others", "--exclude-standard"],
+        )
+        .await
+        {
+            Ok(output) => output,
+            Err(error) => return bad_request(error),
+        };
+        raw.lines()
             .map(str::trim)
             .filter(|line| !line.is_empty())
-            .map(str::to_string)
-            .collect();
+            .map(|path| {
+                serde_json::json!({
+                    "path": path,
+                    "old_path": serde_json::Value::Null,
+                    "status": "untracked",
+                    "binary": false,
+                    "additions": 0,
+                    "deletions": 0,
+                })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
-        let mut untracked_diffs = Vec::with_capacity(untracked_files.len());
-        for path in &untracked_files {
+    ok_json(serde_json::json!({
+        "unstaged": unstaged_files,
+        "staged": staged_files,
+        "untracked": untracked_files,
+    }))
+}
+
+async fn handle_api_status_file_request(
+    State(state): State<Arc<DiffServerState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let section = match params.get("section").map(String::as_str) {
+        Some(s) if matches!(s, "staged" | "unstaged" | "untracked") => s,
+        _ => return bad_request("missing or invalid `section` query parameter"),
+    };
+    let path_raw = match params.get("path") {
+        Some(v) => v,
+        None => return bad_request("missing `path` query parameter"),
+    };
+    let path = match parse_diff_path(path_raw) {
+        Some(p) => p,
+        None => return bad_request(format!("invalid path: {}", path_raw)),
+    };
+    let repo_root = &state.project_root;
+
+    let diff_text = match section {
+        "staged" => match git_output_in_repo(repo_root, &["diff", "--cached", "--", &path]).await {
+            Ok(o) => o,
+            Err(e) => return bad_request(e),
+        },
+        "unstaged" => match git_output_in_repo(repo_root, &["diff", "--", &path]).await {
+            Ok(o) => o,
+            Err(e) => return bad_request(e),
+        },
+        "untracked" => {
             let mut cmd = tokio::process::Command::new("git");
-            cmd.args(["diff", "--no-index", "--", "/dev/null"]);
-            cmd.arg(path);
+            cmd.args(["-c", "core.quotepath=off"]);
+            cmd.args(["diff", "--no-index", "--", "/dev/null", &path]);
             cmd.current_dir(repo_root);
-
-            let patch = match git_output_from_command(
+            match git_output_from_command(
                 cmd,
                 &[1],
                 &format!("git diff --no-index -- /dev/null {}", path),
             )
             .await
             {
-                Ok(output) => output,
-                Err(error) => {
-                    return status_response(serde_json::json!({
-                        "error": error
-                    }));
-                }
-            };
-            if !patch.trim().is_empty() {
-                untracked_diffs.push(patch);
+                Ok(o) => o,
+                Err(e) => return bad_request(e),
             }
         }
-
-        (untracked_files, untracked_diffs.join("\n"))
-    } else {
-        (Vec::new(), String::new())
+        _ => unreachable!(),
     };
 
-    status_response(serde_json::json!({
-        "unstaged_diff": unstaged_diff,
-        "staged_diff": staged_diff,
-        "untracked_files": untracked_files,
-        "untracked_diff": untracked_diff,
-    }))
+    let mut files = parse_unified_diff(&diff_text);
+    if section == "untracked" {
+        for f in &mut files {
+            f.status = FileStatus::Untracked;
+        }
+    }
+    match files.into_iter().next() {
+        Some(file) => {
+            let html = render_file_body_html(&file);
+            ok_json(serde_json::json!({
+                "path": file.path,
+                "status": file.status.as_str(),
+                "additions": file.additions,
+                "deletions": file.deletions,
+                "binary": file.binary,
+                "html": html,
+            }))
+        }
+        None => ok_json(serde_json::json!({
+            "path": path,
+            "status": section,
+            "additions": 0,
+            "deletions": 0,
+            "binary": false,
+            "html": empty_diff_html(),
+        })),
+    }
+}
+
+fn file_metadata_json(file: &DiffFile) -> serde_json::Value {
+    serde_json::json!({
+        "path": file.path,
+        "old_path": file.old_path,
+        "status": file.status.as_str(),
+        "binary": file.binary,
+        "additions": file.additions,
+        "deletions": file.deletions,
+    })
+}
+
+fn empty_diff_html() -> String {
+    r#"<div class="gr-diff-body"><div class="gr-line gr-line-hunk"><span class="gr-ln"></span><span class="gr-lnr"></span><span class="gr-sign"></span><span class="gr-text">(no content changes)</span></div></div>"#
+        .to_string()
+}
+
+/// Validate a relative path used as a git diff argument.
+///
+/// We always pass paths after `--` so flag injection is structurally blocked,
+/// but we still reject control characters, path traversal, absolute paths,
+/// and unreasonably long inputs to keep the API surface tight.
+fn parse_diff_path(value: &str) -> Option<String> {
+    if value.is_empty() || value.len() > 4096 {
+        return None;
+    }
+    if value.starts_with('-') || value.starts_with('/') {
+        return None;
+    }
+    if value.contains('\0') || value.contains('\n') || value.contains('\r') {
+        return None;
+    }
+    for segment in value.split('/') {
+        if segment == ".." {
+            return None;
+        }
+    }
+    Some(value.to_string())
 }
 
 /// Validate a git branch name to block flag injection and command injection.
@@ -1834,7 +1826,11 @@ async fn handle_compare_html_request(
     State(state): State<Arc<DiffServerState>>,
 ) -> impl IntoResponse {
     let root_path = state.project_root.display().to_string();
-    Html(COMPARE_HTML_TEMPLATE.replace("{{ROOT_PATH}}", &html_escape(&root_path)))
+    Html(
+        COMPARE_HTML_TEMPLATE
+            .replace("{{ROOT_PATH}}", &html_escape(&root_path))
+            .replace("{{DIFF_STYLES}}", render_diff_styles()),
+    )
 }
 
 /// List the local branches in the repo and the current HEAD branch.
@@ -1914,21 +1910,9 @@ async fn handle_api_compare_request(
     State(state): State<Arc<DiffServerState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
-    let base_raw = match params.get("base") {
-        Some(v) => v,
-        None => return bad_request("missing `base` query parameter"),
-    };
-    let compare_raw = match params.get("compare") {
-        Some(v) => v,
-        None => return bad_request("missing `compare` query parameter"),
-    };
-    let base = match parse_branch_name(base_raw) {
-        Some(name) => name,
-        None => return bad_request(format!("invalid branch name: {}", base_raw)),
-    };
-    let compare = match parse_branch_name(compare_raw) {
-        Some(name) => name,
-        None => return bad_request(format!("invalid branch name: {}", compare_raw)),
+    let (base, compare) = match parse_compare_branches(&params) {
+        Ok(v) => v,
+        Err(resp) => return resp,
     };
 
     let range = format!("{}...{}", base, compare);
@@ -1937,11 +1921,79 @@ async fn handle_api_compare_request(
         Err(error) => return bad_request(error),
     };
 
+    let files: Vec<serde_json::Value> = parse_unified_diff(&diff)
+        .iter()
+        .map(file_metadata_json)
+        .collect();
+
     ok_json(serde_json::json!({
         "base": base,
         "compare": compare,
-        "diff": diff,
+        "files": files,
     }))
+}
+
+async fn handle_api_compare_file_request(
+    State(state): State<Arc<DiffServerState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let (base, compare) = match parse_compare_branches(&params) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let path_raw = match params.get("path") {
+        Some(v) => v,
+        None => return bad_request("missing `path` query parameter"),
+    };
+    let path = match parse_diff_path(path_raw) {
+        Some(p) => p,
+        None => return bad_request(format!("invalid path: {}", path_raw)),
+    };
+
+    let range = format!("{}...{}", base, compare);
+    let diff = match git_output_in_repo(&state.project_root, &["diff", &range, "--", &path]).await
+    {
+        Ok(output) => output,
+        Err(error) => return bad_request(error),
+    };
+
+    match parse_unified_diff(&diff).into_iter().next() {
+        Some(file) => {
+            let html = render_file_body_html(&file);
+            ok_json(serde_json::json!({
+                "path": file.path,
+                "status": file.status.as_str(),
+                "additions": file.additions,
+                "deletions": file.deletions,
+                "binary": file.binary,
+                "html": html,
+            }))
+        }
+        None => ok_json(serde_json::json!({
+            "path": path,
+            "status": "modified",
+            "additions": 0,
+            "deletions": 0,
+            "binary": false,
+            "html": empty_diff_html(),
+        })),
+    }
+}
+
+fn parse_compare_branches(
+    params: &HashMap<String, String>,
+) -> Result<(String, String), Response> {
+    let base_raw = params
+        .get("base")
+        .ok_or_else(|| bad_request("missing `base` query parameter"))?;
+    let compare_raw = params
+        .get("compare")
+        .ok_or_else(|| bad_request("missing `compare` query parameter"))?;
+    let base = parse_branch_name(base_raw)
+        .ok_or_else(|| bad_request(format!("invalid branch name: {}", base_raw)))?;
+    let compare = parse_branch_name(compare_raw)
+        .ok_or_else(|| bad_request(format!("invalid branch name: {}", compare_raw)))?;
+    Ok((base, compare))
 }
 
 /// Register diff server commands in the command palette

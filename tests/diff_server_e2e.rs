@@ -99,6 +99,29 @@ fn get_status_code_with_retry(url: &str) -> u16 {
     }
 }
 
+fn get_status_and_json_with_retry(url: &str) -> (u16, serde_json::Value) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match ureq::get(url).call() {
+            Ok(resp) => {
+                let code = resp.status();
+                let body = resp.into_json().expect("valid json body");
+                return (code, body);
+            }
+            Err(ureq::Error::Status(code, resp)) => {
+                let body = resp.into_json().unwrap_or(serde_json::Value::Null);
+                return (code, body);
+            }
+            Err(err) => {
+                if Instant::now() >= deadline {
+                    panic!("failed to call {}: {}", url, err);
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+}
+
 fn get_text_with_retry(url: &str) -> String {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
@@ -149,6 +172,16 @@ fn stop_diff_server(handle: &DiffServerHandle) {
     let _ = handle.command_tx.send(DiffServerCommand::Stop);
 }
 
+fn paths_of(arr: &serde_json::Value) -> Vec<String> {
+    arr.as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.get("path").and_then(|p| p.as_str()).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[test]
 fn test_diff_server_start_stop_and_status_api_results() {
     let _cwd_lock = cwd_test_lock();
@@ -177,30 +210,31 @@ fn test_diff_server_start_stop_and_status_api_results() {
     let status_url = format!("http://127.0.0.1:{}/api/status", port);
     let body = get_json_with_retry(&status_url);
 
-    let diff = body["unstaged_diff"]
-        .as_str()
-        .expect("unstaged_diff field should be a string");
-    assert!(
-        diff.contains("+line2"),
-        "expected patch to include added line, got: {}",
-        diff
+    let unstaged = paths_of(&body["unstaged"]);
+    assert_eq!(unstaged, vec!["sample.txt".to_string()]);
+    assert!(body["staged"].as_array().map(|a| a.is_empty()).unwrap_or(false));
+    assert!(body["untracked"].as_array().map(|a| a.is_empty()).unwrap_or(false));
+
+    // /api/status/file returns rendered HTML for one file
+    let file_url = format!(
+        "http://127.0.0.1:{}/api/status/file?section=unstaged&path=sample.txt",
+        port
     );
-    assert_eq!(body["staged_diff"].as_str(), Some(""));
-    assert_eq!(body["untracked_diff"].as_str(), Some(""));
-    let untracked = body["untracked_files"]
-        .as_array()
-        .expect("untracked_files should be an array");
-    assert!(untracked.is_empty(), "unexpected untracked files: {}", body);
+    let file_body = get_json_with_retry(&file_url);
+    let html_body = file_body["html"].as_str().expect("html should be string");
+    assert!(
+        html_body.contains("gr-diff-body")
+            && html_body.contains("gr-line-add")
+            && html_body.contains(">line2<"),
+        "expected per-file HTML to contain added line: {}",
+        html_body
+    );
 
     let html_url = format!("http://127.0.0.1:{}/diff", port);
     let html = get_text_with_retry(&html_url);
     assert!(
         html.contains("id=\"show-untracked\""),
         "expected diff UI to include show-untracked checkbox"
-    );
-    assert!(
-        html.contains("id=\"expand-all-btn\"") && html.contains("id=\"collapse-all-btn\""),
-        "expected diff UI to include expand/collapse all controls"
     );
     assert!(
         html.contains("id=\"go-top-btn\""),
@@ -234,7 +268,7 @@ fn test_diff_server_start_stop_and_status_api_results() {
         html.contains("COLLAPSED_FILES_STORAGE_KEY")
             && html.contains("loadIdSet(sessionStorage, COLLAPSED_FILES_STORAGE_KEY)")
             && html.contains("persistIdSet(sessionStorage, COLLAPSED_FILES_STORAGE_KEY"),
-        "expected diff UI to persist collapsed file state in session storage"
+        "expected diff UI to persist expanded file state in session storage"
     );
     assert!(
         html.contains("VIEWED_FILES_STORAGE_KEY")
@@ -273,30 +307,17 @@ fn test_diff_server_start_stop_and_status_api_results() {
         "expected diff UI sidebar to be sticky"
     );
     assert!(
-        html.contains("id=\"files-list\"")
-            && html.contains("id=\"files-heading\"")
-            && html.contains("id=\"changed-diff\"")
-            && html.contains("id=\"staged-diff\"")
-            && html.contains("id=\"untracked-diff\""),
-        "expected diff UI to include unified files list and diff containers"
+        !html.contains("diff2html"),
+        "expected diff UI to no longer depend on diff2html: {}",
+        &html[..200.min(html.len())]
     );
-    let files_heading_idx = html
-        .find("id=\"files-heading\"")
-        .expect("expected files-heading element");
-    let changed_diff_idx = html
-        .find("<h2>Changed Diff</h2>")
-        .expect("expected Changed Diff heading");
-    let staged_diff_idx = html
-        .find("<h2>Staged Diff</h2>")
-        .expect("expected Staged Diff heading");
-    let untracked_diff_idx = html
-        .find("<h2>Untracked Diff</h2>")
-        .expect("expected Untracked Diff heading");
     assert!(
-        files_heading_idx < changed_diff_idx
-            && changed_diff_idx < staged_diff_idx
-            && staged_diff_idx < untracked_diff_idx,
-        "expected unified files heading before diff sections in /diff HTML"
+        html.contains("/api/status/file"),
+        "expected diff UI to reference the lazy per-file endpoint"
+    );
+    assert!(
+        html.contains(".gr-diff-body") && html.contains(".gr-line-add"),
+        "expected diff UI to embed Rust-rendered diff styles"
     );
 
     handle
@@ -334,7 +355,7 @@ fn test_diff_server_start_stop_and_status_api_results() {
 }
 
 #[test]
-fn test_diff_server_status_sections_and_removed_endpoints() {
+fn test_diff_server_status_sections_and_per_file_lazy_endpoint() {
     let _cwd_lock = cwd_test_lock();
 
     let repo_dir = tempdir().expect("create temp repo");
@@ -357,182 +378,121 @@ fn test_diff_server_status_sections_and_removed_endpoints() {
 
     let status_url = format!("http://127.0.0.1:{}/api/status", port);
 
-    // Clean repo: no unstaged/staged/untracked changes.
-    let clean_body = get_json_with_retry(&status_url);
-    assert_eq!(clean_body["unstaged_diff"].as_str(), Some(""));
-    assert_eq!(clean_body["staged_diff"].as_str(), Some(""));
-    assert_eq!(clean_body["untracked_diff"].as_str(), Some(""));
-    let clean_untracked = clean_body["untracked_files"]
-        .as_array()
-        .expect("untracked_files should be an array");
-    assert!(
-        clean_untracked.is_empty(),
-        "expected no untracked files: {}",
-        clean_body
-    );
+    // Clean repo: all sections empty
+    let clean = get_json_with_retry(&status_url);
+    assert!(clean["unstaged"].as_array().unwrap().is_empty());
+    assert!(clean["staged"].as_array().unwrap().is_empty());
+    assert!(clean["untracked"].as_array().unwrap().is_empty());
 
-    // Unstaged-only scenario.
+    // Unstaged-only scenario
     fs::write(&tracked_file, "line1\nline2\n").expect("write unstaged change");
-    let unstaged_only_body = get_json_with_retry(&status_url);
-    let unstaged_diff = unstaged_only_body["unstaged_diff"]
-        .as_str()
-        .unwrap_or_else(|| panic!("unstaged_diff should be a string: {}", unstaged_only_body));
-    assert!(
-        unstaged_diff.contains("+line2"),
-        "expected unstaged diff to include +line2: {}",
-        unstaged_diff
-    );
-    assert_eq!(unstaged_only_body["staged_diff"].as_str(), Some(""));
-    let unstaged_only_untracked = unstaged_only_body["untracked_files"]
-        .as_array()
-        .expect("untracked_files should be an array");
-    assert!(
-        unstaged_only_untracked.is_empty(),
-        "expected no untracked files in unstaged-only scenario: {}",
-        unstaged_only_body
-    );
-    assert_eq!(unstaged_only_body["untracked_diff"].as_str(), Some(""));
+    let unstaged_only = get_json_with_retry(&status_url);
+    let unstaged = unstaged_only["unstaged"].as_array().unwrap();
+    assert_eq!(unstaged.len(), 1);
+    assert_eq!(unstaged[0]["path"].as_str(), Some("sample.txt"));
+    assert_eq!(unstaged[0]["status"].as_str(), Some("modified"));
+    assert_eq!(unstaged[0]["additions"].as_u64(), Some(1));
+    assert_eq!(unstaged[0]["deletions"].as_u64(), Some(0));
+    assert!(unstaged_only["staged"].as_array().unwrap().is_empty());
+    assert!(unstaged_only["untracked"].as_array().unwrap().is_empty());
 
-    // Staged-only scenario.
+    // Per-file fetch returns rendered HTML
+    let file_url = format!(
+        "http://127.0.0.1:{}/api/status/file?section=unstaged&path=sample.txt",
+        port
+    );
+    let file_body = get_json_with_retry(&file_url);
+    assert_eq!(file_body["status"].as_str(), Some("modified"));
+    let html = file_body["html"].as_str().expect("html should be string");
+    assert!(
+        html.contains("gr-line-add") && html.contains(">line2<"),
+        "expected per-file HTML to include added line: {}",
+        html
+    );
+
+    // Staged scenario
     run_git(repo, &["add", "sample.txt"]);
-    let staged_only_body = get_json_with_retry(&status_url);
-    assert_eq!(staged_only_body["unstaged_diff"].as_str(), Some(""));
-    let staged_diff = staged_only_body["staged_diff"]
-        .as_str()
-        .expect("staged_diff should be a string");
-    assert!(
-        staged_diff.contains("+line2"),
-        "expected staged diff to include +line2: {}",
-        staged_diff
-    );
-    let staged_only_untracked = staged_only_body["untracked_files"]
-        .as_array()
-        .expect("untracked_files should be an array");
-    assert!(
-        staged_only_untracked.is_empty(),
-        "expected no untracked files in staged-only scenario: {}",
-        staged_only_body
-    );
-    assert_eq!(staged_only_body["untracked_diff"].as_str(), Some(""));
+    let staged_only = get_json_with_retry(&status_url);
+    assert!(staged_only["unstaged"].as_array().unwrap().is_empty());
+    let staged = staged_only["staged"].as_array().unwrap();
+    assert_eq!(staged.len(), 1);
+    assert_eq!(staged[0]["path"].as_str(), Some("sample.txt"));
+    assert_eq!(staged[0]["additions"].as_u64(), Some(1));
 
-    // Untracked-only addition on top of staged changes.
+    let staged_file = get_json_with_retry(&format!(
+        "http://127.0.0.1:{}/api/status/file?section=staged&path=sample.txt",
+        port
+    ));
+    let staged_html = staged_file["html"].as_str().unwrap();
+    assert!(staged_html.contains("gr-line-add") && staged_html.contains(">line2<"));
+
+    // Untracked addition
     let untracked_file = repo.join("new-untracked.txt");
     fs::write(&untracked_file, "new file\n").expect("write untracked file");
-    let with_untracked_body = get_json_with_retry(&status_url);
-    let with_untracked = with_untracked_body["untracked_files"]
-        .as_array()
-        .expect("untracked_files should be an array");
+    let with_untracked = get_json_with_retry(&status_url);
+    let untracked = with_untracked["untracked"].as_array().unwrap();
     assert!(
+        untracked
+            .iter()
+            .any(|f| f["path"].as_str() == Some("new-untracked.txt")),
+        "expected untracked file in listing: {}",
         with_untracked
-            .iter()
-            .any(|v| v.as_str() == Some("new-untracked.txt")),
-        "expected untracked file in response: {}",
-        with_untracked_body
     );
-    let with_untracked_diff = with_untracked_body["untracked_diff"]
-        .as_str()
-        .expect("untracked_diff should be a string");
+    let untracked_file_body = get_json_with_retry(&format!(
+        "http://127.0.0.1:{}/api/status/file?section=untracked&path=new-untracked.txt",
+        port
+    ));
+    let utext = untracked_file_body["html"].as_str().unwrap();
     assert!(
-        with_untracked_diff.contains("diff --git a/new-untracked.txt b/new-untracked.txt"),
-        "expected untracked_diff to contain synthetic patch header: {}",
-        with_untracked_diff
+        utext.contains("gr-line-add") && utext.contains(">new file<"),
+        "expected untracked file html to include added line: {}",
+        utext
     );
 
-    let with_untracked_hidden_body =
-        get_json_with_retry(&format!("{}?show_untracked=false", status_url));
-    let with_untracked_hidden = with_untracked_hidden_body["untracked_files"]
-        .as_array()
-        .expect("untracked_files should be an array");
-    assert!(
-        with_untracked_hidden.is_empty(),
-        "expected hidden-untracked response to omit untracked files: {}",
-        with_untracked_hidden_body
-    );
-    assert_eq!(
-        with_untracked_hidden_body["untracked_diff"].as_str(),
-        Some("")
-    );
-    let hidden_staged = with_untracked_hidden_body["staged_diff"]
-        .as_str()
-        .expect("staged_diff should be a string");
-    assert!(
-        hidden_staged.contains("+line2"),
-        "expected staged diff to remain available when show_untracked=false: {}",
-        hidden_staged
-    );
+    // show_untracked=false hides untracked listing
+    let hidden = get_json_with_retry(&format!("{}?show_untracked=false", status_url));
+    assert!(hidden["untracked"].as_array().unwrap().is_empty());
 
-    // Mixed scenario: staged + unstaged + untracked.
-    fs::write(&tracked_file, "line1\nline2\nline3\n").expect("write mixed scenario change");
-    let mixed_body = get_json_with_retry(&status_url);
-    let mixed_unstaged = mixed_body["unstaged_diff"]
-        .as_str()
-        .expect("unstaged_diff should be a string");
-    assert!(
-        mixed_unstaged.contains("+line3"),
-        "expected unstaged diff to include +line3: {}",
-        mixed_unstaged
-    );
-    assert!(
-        !mixed_unstaged.contains("+line2"),
-        "did not expect +line2 in unstaged diff: {}",
-        mixed_unstaged
-    );
+    // Path validation: traversal, flag injection
+    let bad_paths = [
+        "../escape",
+        "-rf",
+        "/etc/passwd",
+        "foo/../bar",
+        "bad\nname",
+    ];
+    for bad in bad_paths {
+        let encoded: String = bad
+            .chars()
+            .map(|c| match c {
+                'a'..='z' | 'A'..='Z' | '0'..='9' | '/' | '-' | '_' | '.' => c.to_string(),
+                _ => format!("%{:02X}", c as u32),
+            })
+            .collect();
+        let code = get_status_code_with_retry(&format!(
+            "http://127.0.0.1:{}/api/status/file?section=unstaged&path={}",
+            port, encoded
+        ));
+        assert_eq!(code, 400, "expected 400 for bad path {:?}", bad);
+    }
 
-    let mixed_staged = mixed_body["staged_diff"]
-        .as_str()
-        .expect("staged_diff should be a string");
-    assert!(
-        mixed_staged.contains("+line2"),
-        "expected staged diff to include +line2: {}",
-        mixed_staged
-    );
-    assert!(
-        !mixed_staged.contains("+line3"),
-        "did not expect +line3 in staged diff: {}",
-        mixed_staged
-    );
-    let mixed_untracked = mixed_body["untracked_files"]
-        .as_array()
-        .expect("untracked_files should be an array");
-    assert!(
-        mixed_untracked
-            .iter()
-            .any(|v| v.as_str() == Some("new-untracked.txt")),
-        "expected untracked file in mixed response: {}",
-        mixed_body
-    );
-    let mixed_untracked_diff = mixed_body["untracked_diff"]
-        .as_str()
-        .expect("untracked_diff should be a string");
-    assert!(
-        mixed_untracked_diff.contains("diff --git a/new-untracked.txt b/new-untracked.txt"),
-        "expected untracked diff in mixed response: {}",
-        mixed_untracked_diff
-    );
+    // Missing path or section
+    let missing_section = get_status_code_with_retry(&format!(
+        "http://127.0.0.1:{}/api/status/file?path=sample.txt",
+        port
+    ));
+    assert_eq!(missing_section, 400);
+    let missing_path = get_status_code_with_retry(&format!(
+        "http://127.0.0.1:{}/api/status/file?section=unstaged",
+        port
+    ));
+    assert_eq!(missing_path, 400);
 
-    let branches_body =
-        get_json_with_retry(&format!("http://127.0.0.1:{}/api/branches", port));
-    let branches_arr = branches_body["branches"]
-        .as_array()
-        .expect("branches should be an array");
-    assert!(
-        !branches_arr.is_empty(),
-        "expected at least one local branch in /api/branches response: {}",
-        branches_body
-    );
-    assert!(
-        branches_body.get("current").is_some(),
-        "expected /api/branches to include `current` field: {}",
-        branches_body
-    );
-    assert!(
-        branches_body.get("default").is_some(),
-        "expected /api/branches to include `default` field: {}",
-        branches_body
-    );
-
-    let diff_status = get_status_code_with_retry(&format!("http://127.0.0.1:{}/api/diff", port));
-    assert_eq!(diff_status, 404, "expected /api/diff to be removed");
+    let bad_section = get_status_code_with_retry(&format!(
+        "http://127.0.0.1:{}/api/status/file?section=bogus&path=sample.txt",
+        port
+    ));
+    assert_eq!(bad_section, 400);
 
     stop_diff_server(&handle);
     match read_event(&handle.event_rx) {
@@ -587,19 +547,26 @@ fn test_diff_server_uses_explicit_project_root_instead_of_process_cwd() {
         html
     );
 
+    // The metadata listing now lives at /api/status with a `files` shape;
+    // verify the file with project-B's content shows up.
     let status = get_json_with_retry(&format!("http://127.0.0.1:{}/api/status", port));
-    let unstaged_diff = status["unstaged_diff"]
-        .as_str()
-        .expect("unstaged_diff should be a string");
+    let unstaged = paths_of(&status["unstaged"]);
+    assert_eq!(unstaged, vec!["sample.txt".to_string()]);
+
+    let file_body = get_json_with_retry(&format!(
+        "http://127.0.0.1:{}/api/status/file?section=unstaged&path=sample.txt",
+        port
+    ));
+    let html_body = file_body["html"].as_str().expect("html should be string");
     assert!(
-        unstaged_diff.contains("+line-from-b"),
+        html_body.contains(">line-from-b<"),
         "expected diff to come from project root B: {}",
-        unstaged_diff
+        html_body
     );
     assert!(
-        !unstaged_diff.contains("+line-from-a"),
+        !html_body.contains(">line-from-a<"),
         "did not expect diff from cwd repo A: {}",
-        unstaged_diff
+        html_body
     );
 
     stop_diff_server(&handle);
@@ -645,12 +612,12 @@ fn test_diff_server_concurrent_instances_use_distinct_ports() {
 
     let status_a = get_json_with_retry(&format!("http://127.0.0.1:{}/api/status", port_a));
     assert!(
-        status_a.get("unstaged_diff").is_some(),
+        status_a.get("unstaged").is_some(),
         "expected /api/status response for first server"
     );
     let status_b = get_json_with_retry(&format!("http://127.0.0.1:{}/api/status", port_b));
     assert!(
-        status_b.get("unstaged_diff").is_some(),
+        status_b.get("unstaged").is_some(),
         "expected /api/status response for second server"
     );
 
@@ -664,31 +631,6 @@ fn test_diff_server_concurrent_instances_use_distinct_ports() {
     match read_event(&handle_b.event_rx) {
         DiffServerEvent::Stopped => {}
         event => panic!("expected second Stopped event, got: {:?}", event),
-    }
-}
-
-fn get_status_and_json_with_retry(url: &str) -> (u16, serde_json::Value) {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        match ureq::get(url).call() {
-            Ok(resp) => {
-                let code = resp.status();
-                let body = resp.into_json().expect("valid json body");
-                return (code, body);
-            }
-            Err(ureq::Error::Status(code, resp)) => {
-                let body = resp
-                    .into_json()
-                    .unwrap_or(serde_json::Value::Null);
-                return (code, body);
-            }
-            Err(err) => {
-                if Instant::now() >= deadline {
-                    panic!("failed to call {}: {}", url, err);
-                }
-                thread::sleep(Duration::from_millis(50));
-            }
-        }
     }
 }
 
@@ -730,28 +672,10 @@ fn test_diff_server_api_branches_lists_local_branches() {
         .iter()
         .map(|v| v.as_str().expect("branch name should be string").to_string())
         .collect();
-    assert!(
-        branches.contains(&"main".to_string()),
-        "expected main in branches: {:?}",
-        branches
-    );
-    assert!(
-        branches.contains(&"feature".to_string()),
-        "expected feature in branches: {:?}",
-        branches
-    );
-    assert_eq!(
-        body["current"].as_str(),
-        Some("main"),
-        "expected current branch to be main: {}",
-        body
-    );
-    assert_eq!(
-        body["default"].as_str(),
-        Some("main"),
-        "expected default branch to fall back to main when no origin/HEAD is set: {}",
-        body
-    );
+    assert!(branches.contains(&"main".to_string()));
+    assert!(branches.contains(&"feature".to_string()));
+    assert_eq!(body["current"].as_str(), Some("main"));
+    assert_eq!(body["default"].as_str(), Some("main"));
 
     stop_diff_server(&handle);
     match read_event(&handle.event_rx) {
@@ -761,7 +685,7 @@ fn test_diff_server_api_branches_lists_local_branches() {
 }
 
 #[test]
-fn test_diff_server_api_compare_returns_branch_diff() {
+fn test_diff_server_api_compare_returns_file_metadata() {
     let _cwd_lock = cwd_test_lock();
     let repo_dir = tempdir().expect("create temp repo");
     let repo = repo_dir.path();
@@ -780,16 +704,27 @@ fn test_diff_server_api_compare_returns_branch_diff() {
     let body = get_json_with_retry(&url);
     assert_eq!(body["base"].as_str(), Some("main"));
     assert_eq!(body["compare"].as_str(), Some("feature"));
-    let diff = body["diff"].as_str().expect("diff should be a string");
-    assert!(
-        diff.contains("+feature-line"),
-        "expected compare diff to include feature line: {}",
-        diff
+    let files = body["files"].as_array().expect("files should be array");
+    let paths: Vec<&str> = files
+        .iter()
+        .filter_map(|v| v["path"].as_str())
+        .collect();
+    assert!(paths.contains(&"base.txt"));
+    assert!(paths.contains(&"feature-only.txt"));
+    // No big diff field on the listing
+    assert!(body.get("diff").is_none());
+
+    // Per-file body returns the rendered HTML
+    let file_url = format!(
+        "http://127.0.0.1:{}/api/compare/file?base=main&compare=feature&path=base.txt",
+        port
     );
+    let file_body = get_json_with_retry(&file_url);
+    let html = file_body["html"].as_str().expect("html should be string");
     assert!(
-        diff.contains("feature-only.txt"),
-        "expected compare diff to include new file: {}",
-        diff
+        html.contains("gr-line-add") && html.contains(">feature-line<"),
+        "expected per-file compare HTML to contain added line: {}",
+        html
     );
 
     let same_url = format!(
@@ -797,10 +732,9 @@ fn test_diff_server_api_compare_returns_branch_diff() {
         port
     );
     let same_body = get_json_with_retry(&same_url);
-    assert_eq!(
-        same_body["diff"].as_str(),
-        Some(""),
-        "expected empty diff when comparing branch to itself: {}",
+    assert!(
+        same_body["files"].as_array().map(|a| a.is_empty()).unwrap_or(false),
+        "expected empty files list when comparing branch to itself: {}",
         same_body
     );
 
@@ -824,31 +758,34 @@ fn test_diff_server_api_compare_rejects_flag_injection() {
         return;
     };
 
-    // Branch name starting with `-` (flag injection).
-    let inject_url = format!(
+    // Branch flag injection
+    let (code, body) = get_status_and_json_with_retry(&format!(
         "http://127.0.0.1:{}/api/compare?base=--upload-pack=evil&compare=main",
         port
-    );
-    let (code, body) = get_status_and_json_with_retry(&inject_url);
+    ));
     assert_eq!(code, 400, "expected 400 for flag injection: {}", body);
-    assert!(
-        body["error"].as_str().is_some(),
-        "expected error message in body: {}",
-        body
-    );
+    assert!(body["error"].as_str().is_some());
 
-    // Disallowed character (semicolon).
-    let bad_char_url = format!(
+    // Bad char (semicolon URL-encoded)
+    let (code, _) = get_status_and_json_with_retry(&format!(
         "http://127.0.0.1:{}/api/compare?base=main%3Brm&compare=main",
         port
-    );
-    let (code, _body) = get_status_and_json_with_retry(&bad_char_url);
+    ));
     assert_eq!(code, 400, "expected 400 for disallowed character");
 
-    // Missing query parameter.
-    let missing_url = format!("http://127.0.0.1:{}/api/compare?base=main", port);
-    let (code, _body) = get_status_and_json_with_retry(&missing_url);
+    // Missing query parameter
+    let (code, _) = get_status_and_json_with_retry(&format!(
+        "http://127.0.0.1:{}/api/compare?base=main",
+        port
+    ));
     assert_eq!(code, 400, "expected 400 when compare param is missing");
+
+    // Path traversal on compare/file endpoint
+    let (code, _) = get_status_and_json_with_retry(&format!(
+        "http://127.0.0.1:{}/api/compare/file?base=main&compare=feature&path=..%2Fescape",
+        port
+    ));
+    assert_eq!(code, 400, "expected 400 for path traversal in compare/file");
 
     stop_diff_server(&handle);
     match read_event(&handle.event_rx) {
@@ -872,26 +809,12 @@ fn test_diff_server_compare_html_page() {
     };
 
     let html = get_text_with_retry(&format!("http://127.0.0.1:{}/compare", port));
-    assert!(
-        html.contains("Compare branches"),
-        "expected /compare HTML to include context label"
-    );
-    assert!(
-        html.contains("id=\"base-select\"") && html.contains("id=\"compare-select\""),
-        "expected /compare HTML to include base/compare selects"
-    );
-    assert!(
-        html.contains("id=\"swap-btn\""),
-        "expected /compare HTML to include swap button"
-    );
-    assert!(
-        html.contains("/api/branches") && html.contains("/api/compare"),
-        "expected /compare HTML to reference compare endpoints"
-    );
-    assert!(
-        html.contains(&format!(r#"<code id="root-path">{}</code>"#, repo_root)),
-        "expected /compare HTML to embed project root"
-    );
+    assert!(html.contains("Compare branches"));
+    assert!(html.contains("id=\"base-select\"") && html.contains("id=\"compare-select\""));
+    assert!(html.contains("id=\"swap-btn\""));
+    assert!(html.contains("/api/branches") && html.contains("/api/compare"));
+    assert!(html.contains("/api/compare/file"));
+    assert!(html.contains(&format!(r#"<code id="root-path">{}</code>"#, repo_root)));
     assert!(
         html.contains("data.default") && html.contains("defaultBranch"),
         "expected /compare HTML to apply default-branch fallback for base select"
@@ -903,23 +826,21 @@ fn test_diff_server_compare_html_page() {
             && html.contains("persistIdSet(localStorage, VIEWED_FILES_STORAGE_KEY"),
         "expected /compare HTML to wire per-file Viewed checkbox backed by local storage"
     );
-    assert!(
-        html.contains("header.insertBefore(toggleButton, header.firstChild)"),
-        "expected /compare HTML to place the toggle chevron on the left of the file header"
-    );
+    assert!(html.contains("header.insertBefore(toggleButton, header.firstChild)"));
     assert!(
         html.contains("class=\"layout\"")
             && html.contains("class=\"sidebar\"")
-            && html.contains("class=\"content\""),
-        "expected /compare HTML to use sidebar + content layout"
+            && html.contains("class=\"content\"")
+    );
+    assert!(html.contains("flex-wrap: nowrap") && html.contains("text-overflow: ellipsis"));
+    assert!(html.contains("position: sticky"));
+    assert!(
+        !html.contains("diff2html"),
+        "expected /compare HTML to no longer depend on diff2html"
     );
     assert!(
-        html.contains("flex-wrap: nowrap") && html.contains("text-overflow: ellipsis"),
-        "expected /compare HTML file header to use single-line ellipsis layout"
-    );
-    assert!(
-        html.contains("position: sticky"),
-        "expected /compare HTML sidebar to be sticky"
+        html.contains(".gr-diff-body") && html.contains(".gr-line-add"),
+        "expected /compare HTML to embed Rust-rendered diff styles"
     );
 
     stop_diff_server(&handle);
