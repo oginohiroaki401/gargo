@@ -10,10 +10,14 @@
 //! compact HTML body suitable for direct `innerHTML` injection in the
 //! diff server's browser UI.
 //!
-//! Syntax highlighting and side-by-side rendering are intentionally out of
-//! scope here. Class names are all prefixed with `gr-` (gargo-render) so
-//! they will not collide with anything else on the page.
+//! Optional syntax highlighting is supported via
+//! [`render_file_body_html_with_highlights`]: callers compute spans
+//! externally (e.g. with tree-sitter) and pass them in. This keeps the
+//! module free of any highlighting dependency. Side-by-side rendering is
+//! still out of scope. Class names are all prefixed with `gr-`
+//! (gargo-render) so they will not collide with anything else on the page.
 
+use std::collections::HashMap;
 use std::fmt::Write;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +75,22 @@ pub struct DiffLine {
     pub new_no: Option<usize>,
     pub content: String,
 }
+
+/// Highlight spans for a single [`DiffLine`].
+///
+/// Each tuple is `(start_byte, end_byte_exclusive, capture_name)` where
+/// the offsets are into [`DiffLine::content`]. Tree-sitter capture names
+/// (e.g. `"keyword"`, `"function.method"`) are emitted as CSS classes
+/// `gr-hl-keyword`, `gr-hl-function gr-hl-function-method`. Spans may
+/// overlap; the renderer flattens them so the innermost (shortest) span
+/// wins.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LineHighlights {
+    pub spans: Vec<(usize, usize, String)>,
+}
+
+/// Map of `(hunk_index, line_index)` → spans for that line.
+pub type DiffHighlights = HashMap<(usize, usize), LineHighlights>;
 
 /// Parse the output of `git diff` (unified diff) into per-file records.
 pub fn parse_unified_diff(input: &str) -> Vec<DiffFile> {
@@ -342,6 +362,19 @@ fn parse_range_start(s: &str) -> Option<usize> {
 /// The returned string is a fully-formed `<div class="gr-diff-body">…</div>`
 /// element. Callers wrap it in their own file header.
 pub fn render_file_body_html(file: &DiffFile) -> String {
+    let empty = DiffHighlights::new();
+    render_file_body_html_with_highlights(file, &empty)
+}
+
+/// Render a single [`DiffFile`] as HTML, applying per-line highlight spans.
+///
+/// Spans are supplied externally; this module does not depend on any
+/// particular highlighter. Lines without an entry in `highlights` (or with
+/// an empty span list) render exactly as in [`render_file_body_html`].
+pub fn render_file_body_html_with_highlights(
+    file: &DiffFile,
+    highlights: &DiffHighlights,
+) -> String {
     let mut out = String::new();
     out.push_str(r#"<div class="gr-diff-body">"#);
     if file.binary {
@@ -349,10 +382,11 @@ pub fn render_file_body_html(file: &DiffFile) -> String {
     } else if file.hunks.is_empty() {
         push_marker_line(&mut out, "(no content changes)");
     } else {
-        for hunk in &file.hunks {
+        for (hi, hunk) in file.hunks.iter().enumerate() {
             push_hunk_header(&mut out, &hunk.header);
-            for ln in &hunk.lines {
-                push_diff_line(&mut out, ln);
+            for (li, ln) in hunk.lines.iter().enumerate() {
+                let hl = highlights.get(&(hi, li));
+                push_diff_line(&mut out, ln, hl);
             }
         }
     }
@@ -376,7 +410,7 @@ fn push_hunk_header(out: &mut String, header: &str) {
     out.push_str("</span></div>");
 }
 
-fn push_diff_line(out: &mut String, line: &DiffLine) {
+fn push_diff_line(out: &mut String, line: &DiffLine, hl: Option<&LineHighlights>) {
     let (cls, sign) = match line.kind {
         LineKind::Context => ("gr-line-context", " "),
         LineKind::Add => ("gr-line-add", "+"),
@@ -396,8 +430,95 @@ fn push_diff_line(out: &mut String, line: &DiffLine) {
     out.push_str("</span>");
     let _ = write!(out, r#"<span class="gr-sign">{}</span>"#, html_escape(sign));
     out.push_str(r#"<span class="gr-text">"#);
-    out.push_str(&html_escape(&line.content));
+    match hl {
+        Some(h) if !h.spans.is_empty() => push_highlighted_text(out, &line.content, &h.spans),
+        _ => out.push_str(&html_escape(&line.content)),
+    }
     out.push_str("</span></div>");
+}
+
+/// Emit `content` with `<span class="gr-hl-…">` wrappers per the supplied
+/// spans. Overlapping spans are resolved with "innermost wins": the
+/// shortest span covering a byte is the one that styles it. The unstyled
+/// regions are emitted as escaped text.
+fn push_highlighted_text(out: &mut String, content: &str, spans: &[(usize, usize, String)]) {
+    let len = content.len();
+    if len == 0 {
+        return;
+    }
+
+    // Resolve overlaps: each byte gets the capture name of the shortest
+    // (innermost) span that covers it. Longer spans are written first so
+    // shorter ones override.
+    let mut active: Vec<Option<&str>> = vec![None; len];
+    let mut sorted: Vec<&(usize, usize, String)> =
+        spans.iter().filter(|(s, _, _)| *s < len).collect();
+    sorted.sort_by_key(|(s, e, _)| std::cmp::Reverse(e.saturating_sub(*s)));
+    for (s, e, cap) in sorted {
+        let s = *s;
+        let e = (*e).min(len);
+        if s >= e {
+            continue;
+        }
+        for slot in active.iter_mut().take(e).skip(s) {
+            *slot = Some(cap.as_str());
+        }
+    }
+
+    // Walk and coalesce contiguous regions with the same capture.
+    // Tree-sitter span boundaries fall on UTF-8 char boundaries, so the
+    // resulting (i, j) ranges are safe to slice.
+    let mut i = 0;
+    while i < len {
+        let cur = active[i];
+        let mut j = i + 1;
+        while j < len && active[j] == cur {
+            j += 1;
+        }
+        if !content.is_char_boundary(i) || !content.is_char_boundary(j) {
+            // Defensive: if a span lands inside a multi-byte character
+            // (shouldn't happen with tree-sitter), fall through to plain
+            // text to avoid a panic.
+            out.push_str(&html_escape(&content[i..len]));
+            return;
+        }
+        let seg = &content[i..j];
+        match cur {
+            Some(cap) => {
+                let _ = write!(out, r#"<span class="{}">"#, hl_class_attr(cap));
+                out.push_str(&html_escape(seg));
+                out.push_str("</span>");
+            }
+            None => out.push_str(&html_escape(seg)),
+        }
+        i = j;
+    }
+}
+
+/// Build the space-separated class list for a tree-sitter capture name.
+///
+/// `"function.method"` → `"gr-hl-function gr-hl-function-method"` so CSS
+/// can target the general or specific level without duplicating colors.
+fn hl_class_attr(capture: &str) -> String {
+    let parts: Vec<&str> = capture.split('.').collect();
+    let mut out = String::with_capacity(capture.len() + 16);
+    for i in 0..parts.len() {
+        if i > 0 {
+            out.push(' ');
+        }
+        out.push_str("gr-hl-");
+        for (j, p) in parts[..=i].iter().enumerate() {
+            if j > 0 {
+                out.push('-');
+            }
+            for c in p.chars() {
+                if c.is_ascii_alphanumeric() || c == '_' {
+                    out.push(c);
+                }
+            }
+        }
+    }
+    out
 }
 
 pub fn html_escape(input: &str) -> String {
@@ -466,6 +587,46 @@ pub fn render_diff_styles() -> &'static str {
 .gr-line-hunk { background: #ddf4ff; color: #57606a; }
 .gr-line-hunk .gr-ln, .gr-line-hunk .gr-lnr { background: #ddf4ff; border-right-color: #b6e3ff; }
 .gr-line-nonewline { color: #57606a; font-style: italic; }
+
+/* Syntax highlight palette: ANSI-light variants, tuned for the white
+ * diff background. Captures with hierarchy (e.g. "function.method") get
+ * a chained class list so the more general rule applies and the more
+ * specific one can add weight/style on top. */
+.gr-hl-keyword { color: #800080; font-weight: 600; }
+.gr-hl-keyword-operator { font-weight: 400; }
+.gr-hl-string { color: #008000; }
+.gr-hl-character { color: #008000; }
+.gr-hl-comment { color: #6e7781; font-style: italic; }
+.gr-hl-function { color: #000080; }
+.gr-hl-function-macro { font-weight: 600; }
+.gr-hl-type { color: #808000; }
+.gr-hl-constructor { color: #808000; }
+.gr-hl-constant { color: #008080; }
+.gr-hl-number { color: #008080; }
+.gr-hl-float { color: #008080; }
+.gr-hl-boolean { color: #008080; }
+.gr-hl-variable-builtin { color: #800000; }
+.gr-hl-variable-parameter { font-style: italic; }
+.gr-hl-property { color: #1f2328; }
+.gr-hl-attribute { color: #008080; }
+.gr-hl-label { color: #008080; }
+.gr-hl-escape { color: #008080; }
+.gr-hl-embedded { color: #1f2328; }
+.gr-hl-tag { color: #800000; }
+.gr-hl-heading { color: #000080; font-weight: 600; }
+.gr-hl-title { color: #000080; font-weight: 600; }
+.gr-hl-link { color: #008080; }
+.gr-hl-emphasis { font-style: italic; }
+.gr-hl-strong { font-weight: 600; }
+.gr-hl-namespace { color: #808000; }
+.gr-hl-module { color: #808000; }
+.gr-hl-text-title { color: #000080; font-weight: 600; }
+.gr-hl-text-literal { color: #008000; }
+.gr-hl-text-uri { color: #008080; }
+.gr-hl-text-reference { color: #008080; }
+.gr-hl-text-emphasis { font-style: italic; }
+.gr-hl-text-strong { font-weight: 600; }
+.gr-hl-punctuation-special { color: #6e7781; font-weight: 600; }
 "#
 }
 
@@ -752,5 +913,126 @@ rename to new
         assert!(css.contains(".gr-line-remove"));
         assert!(css.contains(".gr-line-hunk"));
         assert!(css.contains(".gr-diff-body"));
+        assert!(css.contains(".gr-hl-keyword"));
+        assert!(css.contains(".gr-hl-string"));
+        assert!(css.contains(".gr-hl-comment"));
+    }
+
+    #[test]
+    fn hl_class_attr_chains_hierarchy() {
+        assert_eq!(hl_class_attr("keyword"), "gr-hl-keyword");
+        assert_eq!(
+            hl_class_attr("function.method"),
+            "gr-hl-function gr-hl-function-method"
+        );
+        assert_eq!(
+            hl_class_attr("punctuation.bracket"),
+            "gr-hl-punctuation gr-hl-punctuation-bracket"
+        );
+        // Non-alphanumeric (other than _) are stripped so attribute is safe.
+        assert_eq!(hl_class_attr("weird/name"), "gr-hl-weirdname");
+    }
+
+    #[test]
+    fn highlighted_text_emits_spans_and_escapes() {
+        let mut out = String::new();
+        let spans = vec![
+            (0, 2, "keyword".to_string()),     // "fn"
+            (3, 4, "function".to_string()),    // "f"
+        ];
+        push_highlighted_text(&mut out, "fn f()", &spans);
+        assert!(out.contains(r#"<span class="gr-hl-keyword">fn</span>"#), "{}", out);
+        assert!(out.contains(r#"<span class="gr-hl-function">f</span>"#), "{}", out);
+        // The unstyled "()" tail and the space between are preserved.
+        assert!(out.ends_with("()"), "{}", out);
+    }
+
+    #[test]
+    fn highlighted_text_innermost_span_wins() {
+        // Outer span covers 0..10 as "function", inner 4..7 as "keyword".
+        // The inner should style "abc", outer surrounds the rest.
+        let mut out = String::new();
+        let spans = vec![
+            (0, 10, "function".to_string()),
+            (4, 7, "keyword".to_string()),
+        ];
+        push_highlighted_text(&mut out, "0123abc789", &spans);
+        // Three regions: function "0123", keyword "abc", function "789".
+        assert!(out.contains(r#"<span class="gr-hl-function">0123</span>"#), "{}", out);
+        assert!(out.contains(r#"<span class="gr-hl-keyword">abc</span>"#), "{}", out);
+        assert!(out.contains(r#"<span class="gr-hl-function">789</span>"#), "{}", out);
+    }
+
+    #[test]
+    fn highlighted_text_escapes_special_chars_inside_spans() {
+        let mut out = String::new();
+        let content = "<x> & 'q'";
+        // One span covering the whole line.
+        let spans = vec![(0, content.len(), "string".to_string())];
+        push_highlighted_text(&mut out, content, &spans);
+        assert!(!out.contains("<x>"));
+        assert!(out.contains("&lt;x&gt;"));
+        assert!(out.contains("&amp;"));
+        assert!(out.contains("&#39;q&#39;"));
+    }
+
+    #[test]
+    fn render_with_highlights_attaches_classes_to_diff_lines() {
+        let input = "\
+diff --git a/lib.rs b/lib.rs
+index 1..2 100644
+--- a/lib.rs
++++ b/lib.rs
+@@ -1,1 +1,1 @@
+-fn old() {}
++fn new() {}
+";
+        let f = one_file(input);
+        let mut highlights: DiffHighlights = HashMap::new();
+        // First hunk, first line is the removed "fn old() {}" — mark "fn".
+        highlights.insert(
+            (0, 0),
+            LineHighlights {
+                spans: vec![(0, 2, "keyword".to_string())],
+            },
+        );
+        // Second line is the added "fn new() {}" — mark "fn" and "new".
+        highlights.insert(
+            (0, 1),
+            LineHighlights {
+                spans: vec![
+                    (0, 2, "keyword".to_string()),
+                    (3, 6, "function".to_string()),
+                ],
+            },
+        );
+        let html = render_file_body_html_with_highlights(&f, &highlights);
+        assert!(html.contains(r#"<span class="gr-hl-keyword">fn</span>"#), "{}", html);
+        assert!(html.contains(r#"<span class="gr-hl-function">new</span>"#), "{}", html);
+        // The diff line wrappers are still there.
+        assert!(html.contains(r#"<div class="gr-line gr-line-add">"#));
+        assert!(html.contains(r#"<div class="gr-line gr-line-remove">"#));
+    }
+
+    #[test]
+    fn render_without_highlights_is_unchanged() {
+        // With no entry for a line, the renderer must produce the same
+        // body as the legacy `render_file_body_html`.
+        let input = "\
+diff --git a/x.txt b/x.txt
+index 1..2 100644
+--- a/x.txt
++++ b/x.txt
+@@ -1,2 +1,3 @@
+ keep
+-old
++new1
++new2
+";
+        let f = one_file(input);
+        let legacy = render_file_body_html(&f);
+        let with_empty =
+            render_file_body_html_with_highlights(&f, &DiffHighlights::new());
+        assert_eq!(legacy, with_empty);
     }
 }
