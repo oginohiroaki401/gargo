@@ -780,7 +780,28 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                     type: "file", name: leafName, entry,
                 });
             }
+            collapseSingleChainDirs(root, "");
             return root;
+        }
+
+        function collapseSingleChainDirs(node, parentDirPath) {
+            // Merge any dir that contains exactly one sub-dir (and no files)
+            // into its child, GitHub-style. Sets a `displayName` on each dir
+            // child so rendering shows the merged chain (e.g. "src/main/java").
+            for (const child of node.children.values()) {
+                if (child.type !== "dir") continue;
+                child.displayName = parentDirPath
+                    ? child.dirPath.slice(parentDirPath.length + 1)
+                    : child.dirPath;
+                collapseSingleChainDirs(child, child.dirPath);
+                while (child.children.size === 1) {
+                    const only = child.children.values().next().value;
+                    if (only.type !== "dir") break;
+                    child.displayName = `${child.displayName}/${only.displayName}`;
+                    child.dirPath = only.dirPath;
+                    child.children = only.children;
+                }
+            }
         }
 
         function appendTreeNode(parentUl, node) {
@@ -807,8 +828,7 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                 toggle.textContent = "▾";
                 const nameEl = document.createElement("span");
                 nameEl.className = "tree-dir-name";
-                const segs = dir.dirPath.split("/");
-                nameEl.textContent = segs[segs.length - 1];
+                nameEl.textContent = dir.displayName || dir.dirPath;
                 nameEl.title = dir.dirPath;
                 const countEl = document.createElement("span");
                 countEl.className = "tree-dir-count";
@@ -1614,7 +1634,25 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                 const leafName = parts[parts.length - 1] || meta.path;
                 node.children.set(`__file__${leafName}`, { type: "file", name: leafName, meta });
             }
+            collapseSingleChainDirs(root, "");
             return root;
+        }
+
+        function collapseSingleChainDirs(node, parentDirPath) {
+            for (const child of node.children.values()) {
+                if (child.type !== "dir") continue;
+                child.displayName = parentDirPath
+                    ? child.dirPath.slice(parentDirPath.length + 1)
+                    : child.dirPath;
+                collapseSingleChainDirs(child, child.dirPath);
+                while (child.children.size === 1) {
+                    const only = child.children.values().next().value;
+                    if (only.type !== "dir") break;
+                    child.displayName = `${child.displayName}/${only.displayName}`;
+                    child.dirPath = only.dirPath;
+                    child.children = only.children;
+                }
+            }
         }
 
         function appendTreeNode(parentUl, node) {
@@ -1640,8 +1678,7 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                 toggle.textContent = "▾";
                 const nameEl = document.createElement("span");
                 nameEl.className = "tree-dir-name";
-                const segs = dir.dirPath.split("/");
-                nameEl.textContent = segs[segs.length - 1];
+                nameEl.textContent = dir.displayName || dir.dirPath;
                 nameEl.title = dir.dirPath;
                 const countEl = document.createElement("span");
                 countEl.className = "tree-dir-count";

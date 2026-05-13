@@ -339,7 +339,11 @@ fn test_diff_server_start_stop_and_status_api_results() {
             && html.contains("\"tree-dir\"")
             && html.contains("\"tree-file\"")
             && html.contains("tree-dir-toggle"),
-        "expected diff UI sidebar to render a tree view"
+        "expected sidebar to render a tree view"
+    );
+    assert!(
+        html.contains("collapseSingleChainDirs") && html.contains("displayName"),
+        "expected sidebar tree to collapse single-child directory chains"
     );
 
     handle
