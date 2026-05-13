@@ -9,7 +9,7 @@ use crate::config::{Config, LspServerConfig, LspStartMode};
 use crate::core::document::DocumentId;
 use crate::core::lsp_types::LspLocation;
 use crate::core::markdown_link::{
-    ResolvedTarget, complete_link_target_at_cursor, resolve_link_target,
+    ResolvedTarget, bare_url_at_cursor, complete_link_target_at_cursor, resolve_link_target,
 };
 use crate::log::debug_log;
 use crate::plugin::types::{
@@ -438,8 +438,13 @@ impl LspPlugin {
             return None;
         }
 
-        let target = complete_link_target_at_cursor(active_doc)?;
-        let resolved = resolve_link_target(&target.target, path, project_root)?;
+        let resolved = if let Some(target) = complete_link_target_at_cursor(active_doc) {
+            resolve_link_target(&target.target, path, project_root)?
+        } else if let Some(url) = bare_url_at_cursor(active_doc) {
+            ResolvedTarget::Url(url)
+        } else {
+            return None;
+        };
         let outputs = match resolved {
             ResolvedTarget::Url(url) => vec![PluginOutput::OpenUrl(url)],
             ResolvedTarget::LocalPath(path) => {
@@ -944,6 +949,28 @@ mod tests {
         assert!(matches!(
             outputs.first(),
             Some(PluginOutput::OpenUrl(url)) if url == "https://example.com/docs"
+        ));
+    }
+
+    #[test]
+    fn goto_definition_opens_bare_url_in_markdown() {
+        let tmp = tempdir().expect("temp dir");
+        let root = tmp.path();
+        let doc_path = root.join("note.md");
+        let content = "- https://www.google.com/\n";
+        fs::write(&doc_path, content).expect("write doc");
+
+        let mut editor = Editor::open(&doc_path.to_string_lossy());
+        editor.active_buffer_mut().cursors[0] = char_idx(content, "google");
+
+        let config = config_without_lsp_servers();
+        let mut plugin = LspPlugin::new(&config, root);
+        let ctx = PluginContext::new(&editor, root, &config);
+        let outputs = plugin.on_command("lsp.goto_definition", &ctx);
+
+        assert!(matches!(
+            outputs.first(),
+            Some(PluginOutput::OpenUrl(url)) if url == "https://www.google.com/"
         ));
     }
 

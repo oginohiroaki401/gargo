@@ -129,6 +129,85 @@ pub fn complete_link_target_at_cursor(doc: &Document) -> Option<CompleteLinkTarg
     None
 }
 
+pub fn bare_url_at_cursor(doc: &Document) -> Option<String> {
+    if doc.rope.len_chars() == 0 {
+        return None;
+    }
+
+    let cursor = doc
+        .display_cursor()
+        .min(doc.rope.len_chars().saturating_sub(1));
+    let line_idx = doc.rope.char_to_line(cursor);
+    let line_start_char = doc.rope.line_to_char(line_idx);
+    let line_text = doc
+        .rope
+        .line(line_idx)
+        .to_string()
+        .trim_end_matches('\n')
+        .to_string();
+    let chars: Vec<char> = line_text.chars().collect();
+    if chars.is_empty() {
+        return None;
+    }
+    let cursor_col = cursor.saturating_sub(line_start_char).min(chars.len());
+
+    let mut col = 0;
+    while col < chars.len() {
+        let scheme_len = if starts_with_ignore_ascii_case(&chars, col, "https://") {
+            8
+        } else if starts_with_ignore_ascii_case(&chars, col, "http://") {
+            7
+        } else {
+            col += 1;
+            continue;
+        };
+
+        if col > 0 && chars[col - 1] == '(' {
+            col += scheme_len;
+            continue;
+        }
+
+        let mut end = col + scheme_len;
+        while end < chars.len() && is_url_body_char(chars[end]) {
+            end += 1;
+        }
+        while end > col + scheme_len && is_url_trailing_punct(chars[end - 1]) {
+            end -= 1;
+        }
+
+        if cursor_col >= col && cursor_col <= end.saturating_sub(1).max(col) {
+            return Some(chars[col..end].iter().collect::<String>());
+        }
+
+        col = end.max(col + 1);
+    }
+    None
+}
+
+fn starts_with_ignore_ascii_case(chars: &[char], pos: usize, prefix: &str) -> bool {
+    let prefix_chars: Vec<char> = prefix.chars().collect();
+    if pos + prefix_chars.len() > chars.len() {
+        return false;
+    }
+    for (i, pc) in prefix_chars.iter().enumerate() {
+        if !chars[pos + i].eq_ignore_ascii_case(pc) {
+            return false;
+        }
+    }
+    true
+}
+
+fn is_url_body_char(c: char) -> bool {
+    if c.is_whitespace() {
+        return false;
+    }
+    !matches!(c, '<' | '>' | '"' | '`' | '|' | '\\' | '^' | '{' | '}')
+}
+
+fn is_url_trailing_punct(c: char) -> bool {
+    matches!(c, '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '\'')
+}
+
 pub fn resolve_link_target(
     target: &str,
     current_doc_path: &Path,
@@ -267,6 +346,53 @@ mod tests {
             resolved,
             ResolvedTarget::Url("https://example.com/a?b=1#c".to_string())
         );
+    }
+
+    #[test]
+    fn bare_url_at_cursor_detects_https_url() {
+        let text = "- https://www.google.com/";
+        let doc = doc_with_cursor(text, char_idx(text, "google"));
+        assert_eq!(
+            bare_url_at_cursor(&doc),
+            Some("https://www.google.com/".to_string())
+        );
+    }
+
+    #[test]
+    fn bare_url_at_cursor_detects_http_url_at_start_of_line() {
+        let text = "http://example.com/path?q=1";
+        let doc = doc_with_cursor(text, 0);
+        assert_eq!(
+            bare_url_at_cursor(&doc),
+            Some("http://example.com/path?q=1".to_string())
+        );
+    }
+
+    #[test]
+    fn bare_url_at_cursor_strips_trailing_punctuation() {
+        let text = "see https://example.com/page.";
+        let doc = doc_with_cursor(text, char_idx(text, "example"));
+        assert_eq!(
+            bare_url_at_cursor(&doc),
+            Some("https://example.com/page".to_string())
+        );
+    }
+
+    #[test]
+    fn bare_url_at_cursor_none_when_cursor_off_url() {
+        let text = "before https://example.com after";
+        let doc = doc_with_cursor(text, char_idx(text, "before"));
+        assert!(bare_url_at_cursor(&doc).is_none());
+
+        let doc = doc_with_cursor(text, char_idx(text, "after"));
+        assert!(bare_url_at_cursor(&doc).is_none());
+    }
+
+    #[test]
+    fn bare_url_at_cursor_skips_url_inside_markdown_link() {
+        let text = "[x](https://example.com/page)";
+        let doc = doc_with_cursor(text, char_idx(text, "example"));
+        assert!(bare_url_at_cursor(&doc).is_none());
     }
 
     #[test]
