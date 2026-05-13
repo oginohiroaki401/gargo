@@ -232,15 +232,31 @@ fn test_diff_server_start_stop_and_status_api_results() {
     );
     assert!(
         html.contains("COLLAPSED_FILES_STORAGE_KEY")
-            && html.contains("sessionStorage.getItem(COLLAPSED_FILES_STORAGE_KEY)")
-            && html.contains("sessionStorage.setItem("),
+            && html.contains("loadIdSet(sessionStorage, COLLAPSED_FILES_STORAGE_KEY)")
+            && html.contains("persistIdSet(sessionStorage, COLLAPSED_FILES_STORAGE_KEY"),
         "expected diff UI to persist collapsed file state in session storage"
+    );
+    assert!(
+        html.contains("VIEWED_FILES_STORAGE_KEY")
+            && html.contains("loadIdSet(localStorage, VIEWED_FILES_STORAGE_KEY)")
+            && html.contains("persistIdSet(localStorage, VIEWED_FILES_STORAGE_KEY"),
+        "expected diff UI to persist viewed file state in local storage"
     );
     assert!(
         html.contains("className = \"diff-toggle-btn\"")
             && html.contains("wrapper.classList.toggle(\"diff-file-collapsed\", isCollapsed)")
             && html.contains("wrapper.dataset.diffFileId = fileId"),
         "expected diff UI to wire per-file diff toggle and collapsed state"
+    );
+    assert!(
+        html.contains("className = \"diff-viewed-label\"")
+            && html.contains("wrapper.classList.toggle(\"diff-file-viewed\", isViewed)")
+            && html.contains("textContent = \"Viewed\""),
+        "expected diff UI to render a per-file Viewed checkbox"
+    );
+    assert!(
+        html.contains("header.insertBefore(toggleButton, header.firstChild)"),
+        "expected diff UI to place the toggle chevron on the left of the file header"
     );
     assert!(
         html.contains("id=\"files-list\"")
@@ -495,6 +511,11 @@ fn test_diff_server_status_sections_and_removed_endpoints() {
         "expected /api/branches to include `current` field: {}",
         branches_body
     );
+    assert!(
+        branches_body.get("default").is_some(),
+        "expected /api/branches to include `default` field: {}",
+        branches_body
+    );
 
     let diff_status = get_status_code_with_retry(&format!("http://127.0.0.1:{}/api/diff", port));
     assert_eq!(diff_status, 404, "expected /api/diff to be removed");
@@ -711,6 +732,12 @@ fn test_diff_server_api_branches_lists_local_branches() {
         "expected current branch to be main: {}",
         body
     );
+    assert_eq!(
+        body["default"].as_str(),
+        Some("main"),
+        "expected default branch to fall back to main when no origin/HEAD is set: {}",
+        body
+    );
 
     stop_diff_server(&handle);
     match read_event(&handle.event_rx) {
@@ -850,6 +877,21 @@ fn test_diff_server_compare_html_page() {
     assert!(
         html.contains(&format!(r#"<code id="root-path">{}</code>"#, repo_root)),
         "expected /compare HTML to embed project root"
+    );
+    assert!(
+        html.contains("data.default") && html.contains("defaultBranch"),
+        "expected /compare HTML to apply default-branch fallback for base select"
+    );
+    assert!(
+        html.contains("className = \"diff-viewed-label\"")
+            && html.contains("textContent = \"Viewed\"")
+            && html.contains("loadIdSet(localStorage, VIEWED_FILES_STORAGE_KEY)")
+            && html.contains("persistIdSet(localStorage, VIEWED_FILES_STORAGE_KEY"),
+        "expected /compare HTML to wire per-file Viewed checkbox backed by local storage"
+    );
+    assert!(
+        html.contains("header.insertBefore(toggleButton, header.firstChild)"),
+        "expected /compare HTML to place the toggle chevron on the left of the file header"
     );
 
     stop_diff_server(&handle);

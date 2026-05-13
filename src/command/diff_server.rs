@@ -285,9 +285,33 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         .file-status.staged    { color: #2da44e; }
         .file-status.changed   { color: #d29922; }
         .file-status.untracked { color: #8b949e; }
+        .d2h-file-header {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
         .diff-toggle-btn {
-            float: right;
-            margin-left: 8px;
+            order: -1;
+            padding: 0 6px;
+            border: 1px solid transparent;
+            border-radius: 6px;
+            background: transparent;
+            color: #57606a;
+            font-size: 14px;
+            line-height: 1.2;
+            cursor: pointer;
+        }
+        .diff-toggle-btn:hover {
+            background: #eef2f7;
+            border-color: #d0d7de;
+            color: #24292f;
+        }
+        .diff-viewed-label {
+            margin-left: auto;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
             padding: 2px 8px;
             border: 1px solid #d0d7de;
             border-radius: 6px;
@@ -295,9 +319,18 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             color: #24292f;
             font-size: 12px;
             cursor: pointer;
+            user-select: none;
         }
-        .diff-toggle-btn:hover {
+        .diff-viewed-label:hover {
             background: #eef2f7;
+        }
+        .diff-viewed-label input {
+            margin: 0;
+            cursor: pointer;
+        }
+        .diff-file-viewed > .d2h-file-header {
+            background: #eef2f7;
+            opacity: 0.8;
         }
         .diff-file-collapsed .d2h-file-diff {
             display: none;
@@ -408,17 +441,20 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         const goTopButton = document.getElementById("go-top-btn");
         const AUTO_REFRESH_INTERVAL_MS = 2000;
         const GO_TOP_SHOW_SCROLL_Y = 240;
-        const COLLAPSED_FILES_STORAGE_KEY = `gargo.diff.collapsed.v1:${rootPathCode ? rootPathCode.textContent : "unknown-root"}`;
+        const STORAGE_ROOT = rootPathCode ? rootPathCode.textContent : "unknown-root";
+        const COLLAPSED_FILES_STORAGE_KEY = `gargo.diff.collapsed.v2:${STORAGE_ROOT}`;
+        const VIEWED_FILES_STORAGE_KEY = `gargo.diff.viewed.v1:${STORAGE_ROOT}`;
 
         let latestStatus = null;
         let isLoading = false;
-        let collapsedFileIds = loadCollapsedFileIds();
+        let collapsedFileIds = loadIdSet(sessionStorage, COLLAPSED_FILES_STORAGE_KEY);
+        let viewedFileIds = loadIdSet(localStorage, VIEWED_FILES_STORAGE_KEY);
         viewModeSelect.value = normalizeViewMode(urlParams.get("view"));
         showUntrackedToggle.checked = parseBoolParam(urlParams.get("show_untracked"), true);
 
-        function loadCollapsedFileIds() {
+        function loadIdSet(storage, key) {
             try {
-                const raw = sessionStorage.getItem(COLLAPSED_FILES_STORAGE_KEY);
+                const raw = storage.getItem(key);
                 if (!raw) {
                     return new Set();
                 }
@@ -433,15 +469,20 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             }
         }
 
-        const persistCollapsedFileIds = () => {
+        const persistIdSet = (storage, key, set) => {
             try {
-                sessionStorage.setItem(
-                    COLLAPSED_FILES_STORAGE_KEY,
-                    JSON.stringify(Array.from(collapsedFileIds))
-                );
+                storage.setItem(key, JSON.stringify(Array.from(set)));
             } catch (_error) {
                 // Ignore storage failures and keep UI responsive.
             }
+        };
+
+        const persistCollapsedFileIds = () => {
+            persistIdSet(sessionStorage, COLLAPSED_FILES_STORAGE_KEY, collapsedFileIds);
+        };
+
+        const persistViewedFileIds = () => {
+            persistIdSet(localStorage, VIEWED_FILES_STORAGE_KEY, viewedFileIds);
         };
 
         const showError = (message) => {
@@ -471,9 +512,10 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         };
 
         const renderDiffToggleButtonLabel = (button, collapsed) => {
-            button.textContent = collapsed ? "Show diff" : "Hide diff";
+            button.textContent = collapsed ? "▸" : "▾";
             button.setAttribute("aria-expanded", collapsed ? "false" : "true");
             button.setAttribute("aria-label", collapsed ? "Show diff" : "Hide diff");
+            button.setAttribute("title", collapsed ? "Show diff" : "Hide diff");
         };
 
         const setDiffFileCollapsed = (wrapper, fileId, collapsed) => {
@@ -487,6 +529,20 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             if (button) {
                 renderDiffToggleButtonLabel(button, collapsed);
             }
+        };
+
+        const setDiffFileViewed = (wrapper, fileId, viewed) => {
+            if (viewed) {
+                viewedFileIds.add(fileId);
+            } else {
+                viewedFileIds.delete(fileId);
+            }
+            wrapper.classList.toggle("diff-file-viewed", viewed);
+            const checkbox = wrapper.querySelector(".diff-viewed-label input[type=checkbox]");
+            if (checkbox && checkbox.checked !== viewed) {
+                checkbox.checked = viewed;
+            }
+            setDiffFileCollapsed(wrapper, fileId, viewed);
         };
 
         const updateBulkToggleAvailability = () => {
@@ -605,7 +661,7 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             wrappers.forEach((wrapper, index) => {
                 wrapper.id = `${anchorPrefix}-file-${index}`;
                 const filePath = diffFiles[index] || `file-${index}`;
-                const fileId = `${anchorPrefix}:${filePath}:${index}`;
+                const fileId = `${anchorPrefix}:${filePath}`;
                 wrapper.dataset.diffFileId = fileId;
                 knownFileIds.add(fileId);
 
@@ -619,14 +675,44 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                         setDiffFileCollapsed(wrapper, fileId, shouldCollapse);
                         persistCollapsedFileIds();
                     });
-                    header.appendChild(toggleButton);
+                    header.insertBefore(toggleButton, header.firstChild);
                 }
 
-                const isCollapsed = collapsedFileIds.has(fileId);
+                if (header && !header.querySelector(".diff-viewed-label")) {
+                    const label = document.createElement("label");
+                    label.className = "diff-viewed-label";
+                    label.title = "Mark this file as viewed (saved per browser)";
+                    const checkbox = document.createElement("input");
+                    checkbox.type = "checkbox";
+                    checkbox.addEventListener("click", (event) => {
+                        event.stopPropagation();
+                    });
+                    checkbox.addEventListener("change", () => {
+                        setDiffFileViewed(wrapper, fileId, checkbox.checked);
+                        persistViewedFileIds();
+                        persistCollapsedFileIds();
+                    });
+                    const text = document.createElement("span");
+                    text.textContent = "Viewed";
+                    label.appendChild(checkbox);
+                    label.appendChild(text);
+                    header.appendChild(label);
+                }
+
+                const isViewed = viewedFileIds.has(fileId);
+                const isCollapsed = isViewed || collapsedFileIds.has(fileId);
+                wrapper.classList.toggle("diff-file-viewed", isViewed);
                 wrapper.classList.toggle("diff-file-collapsed", isCollapsed);
+                if (isViewed) {
+                    collapsedFileIds.add(fileId);
+                }
                 const toggleButton = wrapper.querySelector(".diff-toggle-btn");
                 if (toggleButton) {
                     renderDiffToggleButtonLabel(toggleButton, isCollapsed);
+                }
+                const checkbox = wrapper.querySelector(".diff-viewed-label input[type=checkbox]");
+                if (checkbox) {
+                    checkbox.checked = isViewed;
                 }
             });
         };
@@ -887,9 +973,33 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         .file-list a:hover {
             text-decoration: underline;
         }
+        .d2h-file-header {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
         .diff-toggle-btn {
-            float: right;
-            margin-left: 8px;
+            order: -1;
+            padding: 0 6px;
+            border: 1px solid transparent;
+            border-radius: 6px;
+            background: transparent;
+            color: #57606a;
+            font-size: 14px;
+            line-height: 1.2;
+            cursor: pointer;
+        }
+        .diff-toggle-btn:hover {
+            background: #eef2f7;
+            border-color: #d0d7de;
+            color: #24292f;
+        }
+        .diff-viewed-label {
+            margin-left: auto;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
             padding: 2px 8px;
             border: 1px solid #d0d7de;
             border-radius: 6px;
@@ -897,9 +1007,18 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             color: #24292f;
             font-size: 12px;
             cursor: pointer;
+            user-select: none;
         }
-        .diff-toggle-btn:hover {
+        .diff-viewed-label:hover {
             background: #eef2f7;
+        }
+        .diff-viewed-label input {
+            margin: 0;
+            cursor: pointer;
+        }
+        .diff-file-viewed > .d2h-file-header {
+            background: #eef2f7;
+            opacity: 0.8;
         }
         .diff-file-collapsed .d2h-file-diff {
             display: none;
@@ -994,16 +1113,19 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         const compareDiffContainer = document.getElementById("compare-diff");
         const goTopButton = document.getElementById("go-top-btn");
         const GO_TOP_SHOW_SCROLL_Y = 240;
-        const COLLAPSED_FILES_STORAGE_KEY = `gargo.compare.collapsed.v1:${rootPathCode ? rootPathCode.textContent : "unknown-root"}`;
+        const STORAGE_ROOT = rootPathCode ? rootPathCode.textContent : "unknown-root";
+        const COLLAPSED_FILES_STORAGE_KEY = `gargo.compare.collapsed.v2:${STORAGE_ROOT}`;
+        const VIEWED_FILES_STORAGE_KEY = `gargo.compare.viewed.v1:${STORAGE_ROOT}`;
 
         let latestDiff = null;
         let isLoadingCompare = false;
-        let collapsedFileIds = loadCollapsedFileIds();
+        let collapsedFileIds = loadIdSet(sessionStorage, COLLAPSED_FILES_STORAGE_KEY);
+        let viewedFileIds = loadIdSet(localStorage, VIEWED_FILES_STORAGE_KEY);
         viewModeSelect.value = normalizeViewMode(urlParams.get("view"));
 
-        function loadCollapsedFileIds() {
+        function loadIdSet(storage, key) {
             try {
-                const raw = sessionStorage.getItem(COLLAPSED_FILES_STORAGE_KEY);
+                const raw = storage.getItem(key);
                 if (!raw) {
                     return new Set();
                 }
@@ -1018,15 +1140,20 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             }
         }
 
-        const persistCollapsedFileIds = () => {
+        const persistIdSet = (storage, key, set) => {
             try {
-                sessionStorage.setItem(
-                    COLLAPSED_FILES_STORAGE_KEY,
-                    JSON.stringify(Array.from(collapsedFileIds))
-                );
+                storage.setItem(key, JSON.stringify(Array.from(set)));
             } catch (_error) {
                 // Ignore storage failures.
             }
+        };
+
+        const persistCollapsedFileIds = () => {
+            persistIdSet(sessionStorage, COLLAPSED_FILES_STORAGE_KEY, collapsedFileIds);
+        };
+
+        const persistViewedFileIds = () => {
+            persistIdSet(localStorage, VIEWED_FILES_STORAGE_KEY, viewedFileIds);
         };
 
         const showError = (message) => {
@@ -1056,9 +1183,10 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         };
 
         const renderDiffToggleButtonLabel = (button, collapsed) => {
-            button.textContent = collapsed ? "Show diff" : "Hide diff";
+            button.textContent = collapsed ? "▸" : "▾";
             button.setAttribute("aria-expanded", collapsed ? "false" : "true");
             button.setAttribute("aria-label", collapsed ? "Show diff" : "Hide diff");
+            button.setAttribute("title", collapsed ? "Show diff" : "Hide diff");
         };
 
         const setDiffFileCollapsed = (wrapper, fileId, collapsed) => {
@@ -1072,6 +1200,20 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             if (button) {
                 renderDiffToggleButtonLabel(button, collapsed);
             }
+        };
+
+        const setDiffFileViewed = (wrapper, fileId, viewed) => {
+            if (viewed) {
+                viewedFileIds.add(fileId);
+            } else {
+                viewedFileIds.delete(fileId);
+            }
+            wrapper.classList.toggle("diff-file-viewed", viewed);
+            const checkbox = wrapper.querySelector(".diff-viewed-label input[type=checkbox]");
+            if (checkbox && checkbox.checked !== viewed) {
+                checkbox.checked = viewed;
+            }
+            setDiffFileCollapsed(wrapper, fileId, viewed);
         };
 
         const updateBulkToggleAvailability = () => {
@@ -1151,7 +1293,7 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             wrappers.forEach((wrapper, index) => {
                 wrapper.id = `${anchorPrefix}-file-${index}`;
                 const filePath = diffFiles[index] || `file-${index}`;
-                const fileId = `${anchorPrefix}:${filePath}:${index}`;
+                const fileId = `${anchorPrefix}:${filePath}`;
                 wrapper.dataset.diffFileId = fileId;
                 knownFileIds.add(fileId);
 
@@ -1165,14 +1307,44 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                         setDiffFileCollapsed(wrapper, fileId, shouldCollapse);
                         persistCollapsedFileIds();
                     });
-                    header.appendChild(toggleButton);
+                    header.insertBefore(toggleButton, header.firstChild);
                 }
 
-                const isCollapsed = collapsedFileIds.has(fileId);
+                if (header && !header.querySelector(".diff-viewed-label")) {
+                    const label = document.createElement("label");
+                    label.className = "diff-viewed-label";
+                    label.title = "Mark this file as viewed (saved per browser)";
+                    const checkbox = document.createElement("input");
+                    checkbox.type = "checkbox";
+                    checkbox.addEventListener("click", (event) => {
+                        event.stopPropagation();
+                    });
+                    checkbox.addEventListener("change", () => {
+                        setDiffFileViewed(wrapper, fileId, checkbox.checked);
+                        persistViewedFileIds();
+                        persistCollapsedFileIds();
+                    });
+                    const text = document.createElement("span");
+                    text.textContent = "Viewed";
+                    label.appendChild(checkbox);
+                    label.appendChild(text);
+                    header.appendChild(label);
+                }
+
+                const isViewed = viewedFileIds.has(fileId);
+                const isCollapsed = isViewed || collapsedFileIds.has(fileId);
+                wrapper.classList.toggle("diff-file-viewed", isViewed);
                 wrapper.classList.toggle("diff-file-collapsed", isCollapsed);
+                if (isViewed) {
+                    collapsedFileIds.add(fileId);
+                }
                 const toggleButton = wrapper.querySelector(".diff-toggle-btn");
                 if (toggleButton) {
                     renderDiffToggleButtonLabel(toggleButton, isCollapsed);
+                }
+                const checkbox = wrapper.querySelector(".diff-viewed-label input[type=checkbox]");
+                if (checkbox) {
+                    checkbox.checked = isViewed;
                 }
             });
         };
@@ -1247,12 +1419,21 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                 }
                 const branches = Array.isArray(data.branches) ? data.branches : [];
                 const current = typeof data.current === "string" ? data.current : null;
+                const defaultBranch = typeof data.default === "string" ? data.default : null;
 
                 const baseParam = urlParams.get("base");
                 const compareParam = urlParams.get("compare");
-                const baseFallback = branches.find((b) => b !== current) || branches[0] || "";
+                const baseFallback =
+                    (defaultBranch && branches.includes(defaultBranch) && defaultBranch !== current
+                        ? defaultBranch
+                        : null)
+                    || (defaultBranch && branches.includes(defaultBranch) ? defaultBranch : null)
+                    || branches.find((b) => b !== current)
+                    || branches[0]
+                    || "";
+                const compareFallback = current || branches[0] || "";
                 populateSelect(baseSelect, branches, baseParam || baseFallback);
-                populateSelect(compareSelect, branches, compareParam || current || branches[0] || "");
+                populateSelect(compareSelect, branches, compareParam || compareFallback);
             } catch (error) {
                 showError(error.message);
                 baseSelect.innerHTML = '<option value="">(error)</option>';
@@ -1607,10 +1788,41 @@ async fn handle_api_branches_request(
         branches.push(name.to_string());
     }
 
+    let default = detect_default_branch(repo_root, &branches).await;
+
     ok_json(serde_json::json!({
         "current": current,
+        "default": default,
         "branches": branches,
     }))
+}
+
+/// Best-effort detection of the repository's default branch.
+///
+/// Tries `origin/HEAD` first (set by `git clone` or `git remote set-head`), then
+/// falls back to the well-known `main` / `master` names if either exists
+/// locally. Returns `None` only for repos without remote and without either
+/// conventional name.
+async fn detect_default_branch(repo_root: &Path, known: &[String]) -> Option<String> {
+    if let Ok(output) = git_output_in_repo(
+        repo_root,
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+    )
+    .await
+    {
+        let trimmed = output.trim();
+        if let Some(rest) = trimmed.strip_prefix("origin/") {
+            if !rest.is_empty() && known.iter().any(|b| b == rest) {
+                return Some(rest.to_string());
+            }
+        }
+    }
+    for candidate in ["main", "master"] {
+        if known.iter().any(|b| b == candidate) {
+            return Some(candidate.to_string());
+        }
+    }
+    None
 }
 
 /// Compute `git diff base...compare` for the requested branches.
