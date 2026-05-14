@@ -1,20 +1,20 @@
     1
-     ~
-     ~    ┌─────────────────────────────────────┐  ┌─────────────────────────────────────┐
-     ~    │ Issues (1)                          │  │[OPEN] by alice                      │
-     ~    │ #77 Issue viewer preview            │  │Labels: bug, ui                      │
-     ~    │                                     │  │Created: 2026-02-01                  │
-     ~    │                                     │  │                                     │
-     ~    │                                     │  │Title: Issue viewer preview          │
-     ~    │                                     │  │                                     │
-     ~    │                                     │  │Description:                         │
-     ~    │                                     │  │Issue body details.                  │
-     ~    │                                     │  │                                     │
-     ~    │                                     │  │Comments (2):                        │
-     ~    │                                     │  │- @bob (2026-02-02)                  │
-     ~    │                                     │  │First comment line                   │
-     ~    │                                     │  │                                     │
-     ~    │o:open c:copy /:find q:close         │  │- @charlie (2026-02-03)              │
-     ~    └─────────────────────────────────────┘  └─────────────────────────────────────┘
- NOR [scratch]                                                                             [1/1] 1:1
+  ┌────────────────────────────────────────────┐  ┌─────────────────────────────────────────────┐
+  │ Issues (1)                                 │  │[OPEN] by alice                              │
+  │ #77 Issue viewer preview                   │  │Labels: bug, ui                              │
+  │                                            │  │Created: 2026-02-01                          │
+  │                                            │  │                                             │
+  │                                            │  │Title: Issue viewer preview                  │
+  │                                            │  │                                             │
+  │                                            │  │Description:                                 │
+  │                                            │  │Issue body details.                          │
+  │                                            │  │                                             │
+  │                                            │  │Comments (2):                                │
+  │                                            │  │- @bob (2026-02-02)                          │
+  │                                            │  │First comment line                           │
+  │                                            │  │                                             │
+  │                                            │  │- @charlie (2026-02-03)                      │
+  │                                            │  │Second comment                               │
+  │o:open c:copy /:find q:close                │  │                                             │
+ N└────────────────────────────────────────────┘  └─────────────────────────────────────────────┘1:1
 

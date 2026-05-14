@@ -75,14 +75,13 @@ fn in_tmux() -> bool {
 }
 
 pub fn debug_log(msg: &str) {
-    if std::env::var("GARGO_LOG_IMAGES").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true")) {
-        if let Ok(mut f) = std::fs::OpenOptions::new()
+    if std::env::var("GARGO_LOG_IMAGES").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        && let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open("/tmp/gargo-images.log")
-        {
-            let _ = writeln!(f, "{msg}");
-        }
+    {
+        let _ = writeln!(f, "{msg}");
     }
 }
 

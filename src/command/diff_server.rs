@@ -2411,10 +2411,11 @@ async fn detect_default_branch(repo_root: &Path, known: &[String]) -> Option<Str
     .await
     {
         let trimmed = output.trim();
-        if let Some(rest) = trimmed.strip_prefix("origin/") {
-            if !rest.is_empty() && known.iter().any(|b| b == rest) {
-                return Some(rest.to_string());
-            }
+        if let Some(rest) = trimmed.strip_prefix("origin/")
+            && !rest.is_empty()
+            && known.iter().any(|b| b == rest)
+        {
+            return Some(rest.to_string());
         }
     }
     for candidate in ["main", "master"] {
@@ -2500,6 +2501,7 @@ async fn handle_api_compare_file_request(
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn parse_compare_branches(
     params: &HashMap<String, String>,
 ) -> Result<(String, String), Response> {

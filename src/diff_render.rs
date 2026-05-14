@@ -305,12 +305,10 @@ fn flush_file(
             file.status,
             FileStatus::Modified | FileStatus::Renamed | FileStatus::Deleted
         )
+        && let Some(op) = header_path_old.clone()
+        && Some(&op) != Some(&file.path)
     {
-        if let Some(op) = header_path_old.clone() {
-            if Some(&op) != Some(&file.path) {
-                file.old_path = Some(op);
-            }
-        }
+        file.old_path = Some(op);
     }
 
     *header_path_old = None;

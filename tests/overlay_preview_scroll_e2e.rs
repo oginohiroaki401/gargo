@@ -80,7 +80,7 @@ fn issue_preview_mouse_scroll_reveals_later_lines() {
     let rows_before =
         support::render_snapshot::apply_ansi_to_screen(&mut screen, &frame1, cols, rows);
     let text_before = rows_before.join("\n");
-    assert!(!text_before.contains("ISSUE-LINE-09"));
+    assert!(!text_before.contains("ISSUE-LINE-12"));
 
     let mouse = scroll_down_event();
     assert!(matches!(
@@ -92,7 +92,7 @@ fn issue_preview_mouse_scroll_reveals_later_lines() {
     let rows_after =
         support::render_snapshot::apply_ansi_to_screen(&mut screen, &frame2, cols, rows);
     let text_after = rows_after.join("\n");
-    assert!(text_after.contains("ISSUE-LINE-09"));
+    assert!(text_after.contains("ISSUE-LINE-12"));
 }
 
 #[test]
@@ -121,7 +121,7 @@ fn pr_preview_mouse_scroll_reveals_later_lines() {
     let rows_before =
         support::render_snapshot::apply_ansi_to_screen(&mut screen, &frame1, cols, rows);
     let text_before = rows_before.join("\n");
-    assert!(!text_before.contains("PR-LINE-11"));
+    assert!(!text_before.contains("PR-LINE-14"));
 
     let mouse = scroll_down_event();
     assert!(matches!(
@@ -133,7 +133,7 @@ fn pr_preview_mouse_scroll_reveals_later_lines() {
     let rows_after =
         support::render_snapshot::apply_ansi_to_screen(&mut screen, &frame2, cols, rows);
     let text_after = rows_after.join("\n");
-    assert!(text_after.contains("PR-LINE-11"));
+    assert!(text_after.contains("PR-LINE-14"));
 }
 
 #[test]
