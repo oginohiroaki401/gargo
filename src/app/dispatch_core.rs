@@ -365,26 +365,16 @@ impl App {
                 self.editor.active_buffer_mut().extend_long_word_backward();
             }
             CoreAction::DeleteSelection => {
-                // Build a per-cursor range vector aligned with `cursors`, so
-                // `delete_ranges` can preserve the multi-cursor state.
+                // Treat overlapping/touching selections as one big selection so
+                // we don't over-delete cells that two cursors both cover.
                 let buf = self.editor.active_buffer();
                 let ranges: Vec<(usize, usize)> = buf
-                    .selections
-                    .iter()
-                    .zip(buf.cursors.iter())
-                    .map(|(sel, &cursor)| {
-                        if let Some(s) = sel {
-                            let start = s.anchor.min(s.head);
-                            let end = s.anchor.max(s.head).min(buf.rope.len_chars());
-                            (start, end)
-                        } else {
-                            (cursor, cursor)
-                        }
-                    })
+                    .merged_selection_ranges()
+                    .into_iter()
+                    .filter(|&(s, e)| s < e)
                     .collect();
-                let has_any_selection = ranges.iter().any(|&(s, e)| s < e);
 
-                if has_any_selection {
+                if !ranges.is_empty() {
                     let buf = self.editor.active_buffer_mut();
                     let deleted = buf.delete_ranges(&ranges);
                     buf.clear_anchor();

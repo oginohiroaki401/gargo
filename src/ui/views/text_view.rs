@@ -356,7 +356,7 @@ impl TextView {
             }
         }
 
-        for (sel_start, sel_end) in buf.selection_ranges() {
+        for (sel_start, sel_end) in buf.merged_selection_ranges() {
             for row in 0..view_height {
                 let line_idx = buf.scroll_offset + row;
                 if line_idx >= total_lines {

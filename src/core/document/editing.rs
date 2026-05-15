@@ -627,34 +627,29 @@ impl Document {
 
         // Re-sort segments to original cursor order for the returned text.
         deleted_segments.sort_by_key(|&(idx, _)| idx);
-        let combined = deleted_segments
+        // Concatenate the deleted segments (no separator) — each range carries
+        // its own trailing characters, so concat is faithful to the source.
+        let combined: String = deleted_segments
             .iter()
             .filter(|(_, s)| !s.is_empty())
             .map(|(_, s)| s.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
+            .collect();
 
-        // Build new cursors: each cursor moves to the start of its own deleted
-        // range (clamped to current document length), with deletions occurring
-        // earlier in the document shifting it back.
+        // One cursor per deleted range, parked at the post-shift start of that
+        // range. Ranges to the left shift later ranges back by the cumulative
+        // deleted length.
         let new_len = self.rope.len_chars();
-        let mut new_cursors: Vec<usize> = Vec::with_capacity(self.cursors.len());
-        for (i, &cursor) in self.cursors.iter().enumerate() {
-            let (start, end) = ranges.get(i).copied().unwrap_or((cursor, cursor));
-            // How much earlier deleted text shifts this cursor: sum of ranges
-            // strictly before this cursor's range (after sorting we already
-            // applied them, but counting in original space):
-            let shift: usize = ranges
-                .iter()
-                .filter(|&&(s, e)| e <= cursor && s != start)
-                .map(|&(s, e)| e - s)
-                .sum();
-            let target = if start < end {
-                start
-            } else {
-                cursor.saturating_sub(shift)
-            };
-            new_cursors.push(target.min(new_len));
+        let mut sorted_ranges: Vec<(usize, usize)> = ranges.to_vec();
+        sorted_ranges.sort_by_key(|&(s, _)| s);
+        let mut new_cursors: Vec<usize> = Vec::with_capacity(sorted_ranges.len());
+        let mut cumulative_shift = 0usize;
+        for &(start, end) in &sorted_ranges {
+            let pos = start.saturating_sub(cumulative_shift).min(new_len);
+            new_cursors.push(pos);
+            cumulative_shift += end.saturating_sub(start);
+        }
+        if new_cursors.is_empty() {
+            new_cursors.push(0.min(new_len));
         }
         self.cursors = new_cursors;
         self.selections = vec![None; self.cursors.len()];

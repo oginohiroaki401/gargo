@@ -100,14 +100,43 @@ impl Document {
             .collect()
     }
 
-    /// Helix-style: joins every cursor's selection text with `\n`. Returns
-    /// `None` when no cursor has a selection.
+    /// Returns selection ranges with overlapping and touching ranges merged
+    /// into single unions. The underlying per-cursor selections are NOT
+    /// modified — callers that need each cursor's individual anchor (e.g.
+    /// the `extend_*` motions) continue to read `self.selections` directly.
+    pub fn merged_selection_ranges(&self) -> Vec<(usize, usize)> {
+        let mut ranges = self.selection_ranges();
+        if ranges.len() <= 1 {
+            return ranges;
+        }
+        ranges.sort_by_key(|&(s, _)| s);
+        let mut merged: Vec<(usize, usize)> = Vec::with_capacity(ranges.len());
+        for (s, e) in ranges {
+            match merged.last_mut() {
+                // Touching counts as overlap (`s <= prev_end`).
+                Some(last) if s <= last.1 => last.1 = last.1.max(e),
+                _ => merged.push((s, e)),
+            }
+        }
+        merged
+    }
+
+    /// Concatenates the merged-selection texts for clipboard/register use.
+    /// Overlapping ranges contribute their union exactly once; disjoint
+    /// ranges are concatenated with no separator (each line-selection
+    /// already carries its own trailing newline).
     pub fn selection_text_combined(&self) -> Option<String> {
-        let texts = self.selection_texts();
-        if texts.is_empty() {
+        let merged = self.merged_selection_ranges();
+        if merged.is_empty() {
             return None;
         }
-        Some(texts.join("\n"))
+        let mut out = String::new();
+        for (s, e) in merged {
+            if s < e {
+                out.push_str(&self.rope.slice(s..e).to_string());
+            }
+        }
+        if out.is_empty() { None } else { Some(out) }
     }
 
     /// Select the word (or whitespace/punctuation run) at `pos`.

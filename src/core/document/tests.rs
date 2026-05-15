@@ -1939,16 +1939,122 @@ fn sort_and_dedup_cursors_reorders_selections_in_parallel() {
 }
 
 #[test]
-fn selection_text_combined_joins_with_newline() {
+fn selection_text_combined_concatenates_word_selections() {
     let mut doc = doc_from_str("foo bar baz\n");
     doc.cursors = vec![0];
     doc.selections = vec![Some(Selection::tail_on_forward(0, 3))];
     doc.cursors.push(8);
     doc.selections.push(Some(Selection::tail_on_forward(8, 11)));
 
+    // Concat with no separator (each segment carries its own trailing chars).
+    assert_eq!(doc.selection_text_combined(), Some("foobaz".to_string()));
+}
+
+#[test]
+fn selection_text_combined_concatenates_line_selections() {
+    let mut doc = doc_from_str("## a\nsome\n## b\none\n");
+    // Select line 0 ("## a\n") and line 2 ("## b\n").
+    doc.cursors = vec![5];
+    doc.selections = vec![Some(Selection::tail_on_forward(0, 5))];
+    doc.cursors.push(15);
+    doc.selections.push(Some(Selection::tail_on_forward(10, 15)));
+
     assert_eq!(
         doc.selection_text_combined(),
-        Some("foo\nbaz".to_string())
+        Some("## a\n## b\n".to_string())
     );
+}
+
+#[test]
+fn merged_selection_ranges_merges_overlap() {
+    let mut doc = doc_from_str("abcdefghij\n");
+    doc.cursors = vec![5];
+    doc.selections = vec![Some(Selection::tail_on_forward(0, 5))];
+    doc.cursors.push(7);
+    doc.selections.push(Some(Selection::tail_on_forward(3, 7)));
+
+    assert_eq!(doc.merged_selection_ranges(), vec![(0, 7)]);
+}
+
+#[test]
+fn merged_selection_ranges_merges_touching() {
+    let mut doc = doc_from_str("abcdefghij\n");
+    doc.cursors = vec![5];
+    doc.selections = vec![Some(Selection::tail_on_forward(0, 5))];
+    doc.cursors.push(10);
+    doc.selections.push(Some(Selection::tail_on_forward(5, 10)));
+
+    assert_eq!(doc.merged_selection_ranges(), vec![(0, 10)]);
+}
+
+#[test]
+fn merged_selection_ranges_keeps_disjoint() {
+    let mut doc = doc_from_str("abcdefghij\n");
+    doc.cursors = vec![3];
+    doc.selections = vec![Some(Selection::tail_on_forward(0, 3))];
+    doc.cursors.push(9);
+    doc.selections.push(Some(Selection::tail_on_forward(6, 9)));
+
+    assert_eq!(doc.merged_selection_ranges(), vec![(0, 3), (6, 9)]);
+}
+
+#[test]
+fn merged_selection_ranges_preserves_per_cursor_anchors() {
+    let mut doc = doc_from_str("abcdefghij\n");
+    doc.cursors = vec![5];
+    doc.selections = vec![Some(Selection::tail_on_forward(0, 5))];
+    doc.cursors.push(7);
+    doc.selections.push(Some(Selection::tail_on_forward(3, 7)));
+
+    // Merge view collapses the two ranges.
+    assert_eq!(doc.merged_selection_ranges(), vec![(0, 7)]);
+    // Underlying anchors are untouched, so a later motion that retracts a
+    // head can dissolve the union back into the original two ranges.
+    assert_eq!(doc.selections[0].unwrap().anchor, 0);
+    assert_eq!(doc.selections[1].unwrap().anchor, 3);
+}
+
+#[test]
+fn selection_text_combined_overlap_yields_union_text_once() {
+    let mut doc = doc_from_str("abcdefghij\n");
+    doc.cursors = vec![5];
+    doc.selections = vec![Some(Selection::tail_on_forward(0, 5))];
+    doc.cursors.push(7);
+    doc.selections.push(Some(Selection::tail_on_forward(3, 7)));
+
+    assert_eq!(
+        doc.selection_text_combined(),
+        Some("abcdefg".to_string())
+    );
+}
+
+/// End-to-end scenario from the user's example: two cursors on `##` markers,
+/// `x` thrice grows both line-selections until the document is fully covered.
+/// `y` (selection_text_combined) returns the whole doc with no duplication.
+/// Then moving the cursors back up preserves the per-cursor anchors so the
+/// merged view dissolves naturally.
+#[test]
+fn user_scenario_select_line_grows_into_unified_selection() {
+    let mut doc = doc_from_str("## a\nsome\n## b\none\n");
+    // Cursor 0 on first `##`, cursor 1 on second `##`.
+    doc.cursors = vec![0];
+    doc.add_cursor_at(10);
+
+    doc.select_line(); // x #1: each cursor selects its own line.
+    doc.extend_line_selection_down(); // x #2: extend each by one more line.
+    doc.extend_line_selection_down(); // x #3: extend again — ranges now overlap.
+
+    let combined = doc.selection_text_combined().expect("merged text");
+    assert_eq!(combined, "## a\nsome\n## b\none\n");
+
+    // Anchors of each cursor are still the original line starts so a later
+    // upward retract restores the per-cursor view.
+    let primary_idx = doc.cursors.iter().position(|&c| c < 10).unwrap_or(0);
+    let secondary_idx = 1 - primary_idx;
+    let primary = doc.selections[primary_idx].unwrap();
+    let secondary = doc.selections[secondary_idx].unwrap();
+    let anchors = [primary.anchor, secondary.anchor];
+    assert!(anchors.contains(&0));
+    assert!(anchors.contains(&10));
 }
 
