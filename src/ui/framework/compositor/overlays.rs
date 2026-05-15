@@ -59,6 +59,10 @@ impl Compositor {
         self.git_view = None;
     }
 
+    pub fn has_git_view(&self) -> bool {
+        self.git_view.is_some()
+    }
+
     pub fn open_commit_log(&mut self, view: CommitLogView) {
         self.commit_log = Some(view);
     }
@@ -69,6 +73,10 @@ impl Compositor {
 
     pub fn close_commit_log(&mut self) {
         self.commit_log = None;
+    }
+
+    pub fn has_commit_log(&self) -> bool {
+        self.commit_log.is_some()
     }
 
     pub fn open_pr_list_picker(&mut self, picker: PrListPicker) {

@@ -223,6 +223,7 @@ pub enum WorkspaceAction {
     OpenBranchComparePicker,
     OpenBranchCompareView(String),
     OpenCommitDiffView(String),
+    ShowLastUsedSidebar,
     OpenSearchResultsBuffer {
         query: String,
         entries: Vec<SearchResultEntry>,
@@ -260,6 +261,7 @@ pub enum WindowAction {
     WindowCloseCurrent,
     WindowCloseOthers,
     WindowSwap(WindowDirection),
+    WindowFocusByCreationIndex(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

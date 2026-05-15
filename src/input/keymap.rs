@@ -211,6 +211,15 @@ pub fn resolve(key: KeyEvent, state: &mut KeyState, mode: &Mode, is_recording: b
             KeyCode::Char('q') => return app(AppAction::Buffer(BufferAction::CloseBuffer)),
             KeyCode::Char('o') => return app(AppAction::Navigation(NavigationAction::JumpOlder)),
             KeyCode::Char('i') => return app(AppAction::Navigation(NavigationAction::JumpNewer)),
+            KeyCode::Char('0') => {
+                return app(AppAction::Workspace(WorkspaceAction::ShowLastUsedSidebar));
+            }
+            KeyCode::Char(c @ '1'..='9') => {
+                let idx = (c.to_digit(10).unwrap() - 1) as usize;
+                return app(AppAction::Window(WindowAction::WindowFocusByCreationIndex(
+                    idx,
+                )));
+            }
             _ => {}
         }
     }
@@ -1497,5 +1506,42 @@ mod tests {
             )))
         );
         assert_eq!(state, KeyState::Normal);
+    }
+
+    #[test]
+    fn ctrl_digits_1_to_9_focus_window_by_creation_index() {
+        for n in 1u32..=9 {
+            let ch = char::from_digit(n, 10).unwrap();
+            let mut state = KeyState::Normal;
+            let action = resolve(ctrl_key(KeyCode::Char(ch)), &mut state, &Mode::Normal, false);
+            assert_eq!(
+                action,
+                app(AppAction::Window(WindowAction::WindowFocusByCreationIndex(
+                    (n - 1) as usize
+                ))),
+                "ctrl+{ch} should focus index {}",
+                n - 1
+            );
+        }
+    }
+
+    #[test]
+    fn ctrl_zero_shows_last_used_sidebar() {
+        let mut state = KeyState::Normal;
+        let action = resolve(ctrl_key(KeyCode::Char('0')), &mut state, &Mode::Normal, false);
+        assert_eq!(
+            action,
+            app(AppAction::Workspace(WorkspaceAction::ShowLastUsedSidebar))
+        );
+    }
+
+    #[test]
+    fn ctrl_digits_fire_in_insert_mode_too() {
+        let mut state = KeyState::Normal;
+        let action = resolve(ctrl_key(KeyCode::Char('3')), &mut state, &Mode::Insert, false);
+        assert_eq!(
+            action,
+            app(AppAction::Window(WindowAction::WindowFocusByCreationIndex(2)))
+        );
     }
 }

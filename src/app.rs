@@ -36,7 +36,7 @@ use crate::core::markdown_link::link_edit_context_at_cursor;
 use crate::core::mode;
 use crate::input::action::{
     Action, AppAction, BufferAction, CoreAction, IntegrationAction, LifecycleAction,
-    NavigationAction, ProjectAction, UiAction, WindowAction, WorkspaceAction,
+    NavigationAction, ProjectAction, UiAction, WindowAction, WindowSplitAxis, WorkspaceAction,
 };
 use crate::input::chord::KeyState;
 use crate::log::debug_log;
@@ -109,6 +109,14 @@ enum CountBehavior {
     AbsoluteLineJump,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LastUsedSidebar {
+    ExplorerRegular,
+    ExplorerChangedFiles,
+    GitView,
+    CommitLog,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct UpdateCheckCache {
     checked_at_unix_secs: u64,
@@ -141,6 +149,7 @@ pub struct App {
     key_state: KeyState,
     last_explorer_dir: Option<PathBuf>,
     last_explorer_selected: Option<String>,
+    last_used_sidebar: Option<LastUsedSidebar>,
     close_confirm: bool,
     git_status_cache: HashMap<String, GitFileStatus>,
     discovered_repos: Vec<PathBuf>,
@@ -227,6 +236,7 @@ impl App {
             key_state: KeyState::Normal,
             last_explorer_dir: None,
             last_explorer_selected: None,
+            last_used_sidebar: None,
             close_confirm: false,
             git_status_cache,
             discovered_repos,
@@ -2847,6 +2857,7 @@ fn app_action_refreshes_active_doc(action: &AppAction) -> bool {
             | AppAction::Window(WindowAction::WindowCloseCurrent)
             | AppAction::Window(WindowAction::WindowCloseOthers)
             | AppAction::Window(WindowAction::WindowSwap(_))
+            | AppAction::Window(WindowAction::WindowFocusByCreationIndex(_))
             | AppAction::Buffer(BufferAction::OpenFileFromGitView { .. })
             | AppAction::Buffer(BufferAction::OpenFileFromExplorerPopup(_))
             | AppAction::Buffer(BufferAction::OpenFileFromExplorer(_))

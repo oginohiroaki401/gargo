@@ -59,6 +59,16 @@ impl WindowManager {
         self.core.split_focused(axis, new_buffer_id);
     }
 
+    pub fn window_ids_by_creation(&self) -> Vec<WindowId> {
+        self.core.window_ids_by_creation()
+    }
+
+    pub fn focus_window_id(&mut self, window_id: WindowId) -> Result<(), String> {
+        self.core
+            .focus_window_id(window_id)
+            .map_err(map_error_for_gargo)
+    }
+
     pub fn layout(&self, area: PaneRect) -> Layout {
         Layout::from(self.core.layout(area))
     }

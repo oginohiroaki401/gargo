@@ -460,6 +460,7 @@ impl App {
                     }
                     explorer.set_preview_mode(initial_preview);
                     self.compositor.open_explorer(explorer);
+                    self.last_used_sidebar = Some(LastUsedSidebar::ExplorerRegular);
                 }
             }
             AppAction::Workspace(WorkspaceAction::ToggleChangedFilesSidebar) => {
@@ -477,6 +478,7 @@ impl App {
                         );
                         explorer.set_preview_mode(initial_preview);
                         self.compositor.open_explorer(explorer);
+                        self.last_used_sidebar = Some(LastUsedSidebar::ExplorerChangedFiles);
                     }
                 } else {
                     let mut explorer = Explorer::new_changed_only(
@@ -486,6 +488,7 @@ impl App {
                     );
                     explorer.set_preview_mode(initial_preview);
                     self.compositor.open_explorer(explorer);
+                    self.last_used_sidebar = Some(LastUsedSidebar::ExplorerChangedFiles);
                 }
             }
             AppAction::Workspace(WorkspaceAction::RevealInExplorer) => {
@@ -517,6 +520,26 @@ impl App {
                 let repo_root = self.active_buffer_repo_root();
                 let view = crate::ui::overlays::git::CommitLogView::new(repo_root, runtime_tx);
                 self.compositor.open_commit_log(view);
+                self.last_used_sidebar = Some(LastUsedSidebar::CommitLog);
+            }
+            AppAction::Workspace(WorkspaceAction::ShowLastUsedSidebar) => {
+                if !(self.compositor.has_explorer()
+                    || self.compositor.has_git_view()
+                    || self.compositor.has_commit_log())
+                {
+                    let variant = self
+                        .last_used_sidebar
+                        .unwrap_or(LastUsedSidebar::ExplorerRegular);
+                    let target = match variant {
+                        LastUsedSidebar::ExplorerRegular => WorkspaceAction::ToggleExplorer,
+                        LastUsedSidebar::ExplorerChangedFiles => {
+                            WorkspaceAction::ToggleChangedFilesSidebar
+                        }
+                        LastUsedSidebar::GitView => WorkspaceAction::OpenGitView,
+                        LastUsedSidebar::CommitLog => WorkspaceAction::OpenCommitLog,
+                    };
+                    return self.dispatch(Action::App(AppAction::Workspace(target)));
+                }
             }
             AppAction::Workspace(WorkspaceAction::OpenGitView) => {
                 self.queue_git_status_refresh(true);
@@ -595,6 +618,7 @@ impl App {
                     );
                     self.compositor.open_git_view(git_view);
                 }
+                self.last_used_sidebar = Some(LastUsedSidebar::GitView);
             }
             AppAction::Workspace(WorkspaceAction::OpenGitCommitMessageBuffer) => {
                 self.compositor.apply(UiAction::CloseGitView);
@@ -871,6 +895,42 @@ impl App {
                     }
                     Err(msg) => {
                         self.editor.message = Some(msg);
+                    }
+                }
+            }
+            AppAction::Window(WindowAction::WindowFocusByCreationIndex(idx)) => {
+                self.flush_insert_transaction_if_active();
+                let (cols, rows) = self.layout_dims();
+                match self.compositor.focus_window_by_creation_index(idx) {
+                    Ok(buffer_id) => {
+                        if self.editor.switch_to_buffer(buffer_id) {
+                            self.emit_plugin_event(PluginEvent::BufferActivated {
+                                doc_id: self.editor.active_buffer().id,
+                            });
+                        }
+                    }
+                    Err(_) => {
+                        let previous_buffer = self.editor.active_buffer().id;
+                        let new_buffer = self.editor.new_buffer();
+                        match self.compositor.split_focused_window(
+                            WindowSplitAxis::Vertical,
+                            new_buffer,
+                            cols,
+                            rows,
+                        ) {
+                            Ok(()) => {
+                                self.sync_active_buffer_to_focused_window();
+                                self.emit_plugin_event(PluginEvent::BufferActivated {
+                                    doc_id: self.editor.active_buffer().id,
+                                });
+                            }
+                            Err(msg) => {
+                                self.editor.force_close_active_buffer();
+                                let _ = self.editor.switch_to_buffer(previous_buffer);
+                                self.compositor.set_focused_buffer(previous_buffer);
+                                self.editor.message = Some(msg);
+                            }
+                        }
                     }
                 }
             }

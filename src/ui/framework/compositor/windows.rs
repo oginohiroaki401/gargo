@@ -96,6 +96,18 @@ impl Compositor {
         self.window_manager.focused_buffer_id()
     }
 
+    pub fn focus_window_by_creation_index(
+        &mut self,
+        index: usize,
+    ) -> Result<BufferId, String> {
+        let ids = self.window_manager.window_ids_by_creation();
+        let Some(window_id) = ids.get(index).copied() else {
+            return Err("Window index out of range".to_string());
+        };
+        self.window_manager.focus_window_id(window_id)?;
+        Ok(self.window_manager.focused_buffer_id())
+    }
+
     /// Returns the pane containing the given terminal coordinates, if any.
     pub fn pane_at(
         &self,

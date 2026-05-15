@@ -508,6 +508,23 @@ where
         ids
     }
 
+    /// Window IDs sorted ascending by their numeric id, i.e. by creation
+    /// order. Each split allocates a strictly increasing `next_window_id`,
+    /// so the smallest id is the oldest still-open window.
+    pub fn window_ids_by_creation(&self) -> Vec<WindowId> {
+        let mut ids: Vec<WindowId> = self.windows.keys().copied().collect();
+        ids.sort();
+        ids
+    }
+
+    pub fn focus_window_id(&mut self, window_id: WindowId) -> Result<(), String> {
+        if !self.windows.contains_key(&window_id) {
+            return Err("Window not found".to_string());
+        }
+        self.focused_window = window_id;
+        Ok(())
+    }
+
     pub fn ordered_item_ids(&self) -> Vec<ItemId> {
         self.ordered_window_ids()
             .into_iter()
@@ -1207,5 +1224,37 @@ mod tests {
 
         assert!(outer_after.x > outer_divider.x);
         assert!(primary_after > primary_before);
+    }
+
+    #[test]
+    fn window_ids_by_creation_returns_open_windows_sorted_ascending() {
+        let mut tree = WindowTree::new(1usize);
+        tree.split_focused(SplitAxis::Vertical, 2);
+        tree.split_focused(SplitAxis::Horizontal, 3);
+        tree.split_focused(SplitAxis::Vertical, 4);
+
+        let ids = tree.window_ids_by_creation();
+        assert_eq!(ids, vec![1, 2, 3, 4]);
+
+        // Close the second-created window; surviving ids stay in creation order.
+        tree.focus_item_id(2).expect("focus item 2");
+        tree.close_focused().expect("close");
+        let ids = tree.window_ids_by_creation();
+        assert_eq!(ids, vec![1, 3, 4]);
+    }
+
+    #[test]
+    fn focus_window_id_sets_focus_or_errors() {
+        let mut tree = WindowTree::new(1usize);
+        tree.split_focused(SplitAxis::Vertical, 2);
+        let ids = tree.window_ids_by_creation();
+        let first = ids[0];
+        tree.focus_window_id(first).expect("focus first window");
+        assert_eq!(tree.focused_window_id(), first);
+
+        let err = tree
+            .focus_window_id(9999)
+            .expect_err("focusing unknown window should fail");
+        assert_eq!(err, "Window not found");
     }
 }
