@@ -133,8 +133,7 @@ fn unified_github_server_serves_code_diffs_compare_commits_and_events() {
     assert!(root_html.contains(r#"<span class="repo-owner">aplio</span>"#));
     assert!(root_html.contains("README.md"));
 
-    let blob_html =
-        get_text_with_retry(&format!("{base_url}/aplio/gargo/blob/master/README.md"));
+    let blob_html = get_text_with_retry(&format!("{base_url}/aplio/gargo/blob/master/README.md"));
     assert!(blob_html.contains("Test Repo"));
     assert!(blob_html.contains(r#"<pre class="mermaid">"#));
     assert!(blob_html.contains(r#"<script src="/assets/mermaid.min.js"></script>"#));
@@ -266,8 +265,7 @@ fn unified_github_server_serves_code_diffs_compare_commits_and_events() {
             .unwrap_or("")
             .contains("Test Repo")
     );
-    let commit_html =
-        get_text_with_retry(&format!("{base_url}/aplio/gargo/commit/{first_hash}"));
+    let commit_html = get_text_with_retry(&format!("{base_url}/aplio/gargo/commit/{first_hash}"));
     assert!(commit_html.contains("Commit"));
     // Commit view collapses huge file diffs by default and defers fetching
     // their bodies so the browser stays light on big commits.

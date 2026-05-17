@@ -441,7 +441,10 @@ async fn run_server(
 
     let github_routes = Router::new()
         .route("/{owner}/{repo}/commits", get(handle_commits_html))
-        .route("/{owner}/{repo}/commits/{*branch}", get(handle_commits_html))
+        .route(
+            "/{owner}/{repo}/commits/{*branch}",
+            get(handle_commits_html),
+        )
         .route("/{owner}/{repo}/commit/{hash}", get(handle_commit_html))
         .route("/api/tree/{*path}", get(handle_api_tree))
         .route("/api/blob/{*path}", get(handle_api_blob))
@@ -913,7 +916,11 @@ fn github_page_header(
         tab("code", "Code", &github_preview_server::repo_home_url(ctx)),
         tab("status", "Status", "/status"),
         tab("branches", "Branches", "/branches"),
-        tab("commits", "Commits", &github_preview_server::commits_url(ctx)),
+        tab(
+            "commits",
+            "Commits",
+            &github_preview_server::commits_url(ctx)
+        ),
     )
 }
 

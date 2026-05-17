@@ -679,7 +679,12 @@ pub(crate) struct RepoUrlContext {
 pub(crate) fn owner_repo_for_root(root_path: &str, repo_url: Option<&str>) -> (String, String) {
     repo_url
         .and_then(github_owner_repo_from_url)
-        .unwrap_or_else(|| ("local".to_string(), repo_name_from_root(root_path).to_string()))
+        .unwrap_or_else(|| {
+            (
+                "local".to_string(),
+                repo_name_from_root(root_path).to_string(),
+            )
+        })
 }
 
 /// Resolve the owner/repo/branch for a repository (runs git).
@@ -718,13 +723,19 @@ pub(crate) fn tree_url(ctx: &RepoUrlContext, rel_path: &str) -> String {
     if rel_path.is_empty() || rel_path == "." {
         format!("/{}/{}/tree/{}", ctx.owner, ctx.repo, ctx.branch)
     } else {
-        format!("/{}/{}/tree/{}/{}", ctx.owner, ctx.repo, ctx.branch, rel_path)
+        format!(
+            "/{}/{}/tree/{}/{}",
+            ctx.owner, ctx.repo, ctx.branch, rel_path
+        )
     }
 }
 
 /// `/{owner}/{repo}/blob/{branch}/{path}` — a file view.
 pub(crate) fn blob_url(ctx: &RepoUrlContext, rel_path: &str) -> String {
-    format!("/{}/{}/blob/{}/{}", ctx.owner, ctx.repo, ctx.branch, rel_path)
+    format!(
+        "/{}/{}/blob/{}/{}",
+        ctx.owner, ctx.repo, ctx.branch, rel_path
+    )
 }
 
 /// `/{owner}/{repo}/commits/{branch}` — the commit history.

@@ -288,10 +288,7 @@ impl Plugin for GithubServerPlugin {
                     self.clear_external_change_probe_state();
                     self.clear_buffer_push_state();
                     self.refresh_file_signature_baseline(ctx);
-                    out.push(PluginOutput::Message(format!(
-                        "Gargo server: {}",
-                        root_url
-                    )));
+                    out.push(PluginOutput::Message(format!("Gargo server: {}", root_url)));
                     if self.auto_open_browser {
                         out.push(PluginOutput::OpenUrl(root_url));
                     }
