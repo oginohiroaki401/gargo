@@ -961,6 +961,26 @@ const DIRECTORY_TEMPLATE: &str = r#"<!DOCTYPE html>
             border: 1px solid #d0d7de;
             border-radius: 6px;
         }
+        .markdown-body code {
+            background: rgba(175, 184, 193, 0.2);
+            padding: 0.2em 0.4em;
+            border-radius: 6px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 85%;
+        }
+        .markdown-body pre {
+            background: #f6f8fa;
+            padding: 16px;
+            border-radius: 6px;
+            overflow: auto;
+            line-height: 1.45;
+        }
+        .markdown-body pre code {
+            background: transparent;
+            padding: 0;
+            border-radius: 0;
+            font-size: 100%;
+        }
         .error {
             background: #ffffff;
             color: #cf222e;
@@ -1152,6 +1172,26 @@ const FILE_TEMPLATE: &str = r#"<!DOCTYPE html>
             padding: 20px;
             border: 1px solid #d0d7de;
             border-radius: 6px;
+        }
+        .markdown-body code {
+            background: rgba(175, 184, 193, 0.2);
+            padding: 0.2em 0.4em;
+            border-radius: 6px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 85%;
+        }
+        .markdown-body pre {
+            background: #f6f8fa;
+            padding: 16px;
+            border-radius: 6px;
+            overflow: auto;
+            line-height: 1.45;
+        }
+        .markdown-body pre code {
+            background: transparent;
+            padding: 0;
+            border-radius: 0;
+            font-size: 100%;
         }
         .file-content {
             background: #ffffff;
