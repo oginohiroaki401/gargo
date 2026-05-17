@@ -369,6 +369,8 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         }
         .gr-file-collapsed .gr-file-body { display: none; }
         .gr-file-collapsed .gr-file-header { border-bottom: none; }
+        .gr-large-tag { display: none; flex-shrink: 0; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #fff1e5; color: #bc4c00; }
+        .gr-file-large.gr-file-collapsed .gr-large-tag { display: inline-flex; }
         .gr-file-viewed .gr-file-header { background: #eef2f7; opacity: 0.85; }
         .gr-file-name-wrapper {
             flex: 1 1 auto;
@@ -504,12 +506,18 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         const GO_TOP_SHOW_SCROLL_Y = 240;
         const STORAGE_ROOT = rootPathCode ? rootPathCode.textContent : "unknown-root";
         const COLLAPSED_FILES_STORAGE_KEY = `gargo.diff.collapsed.v3:${STORAGE_ROOT}`;
+        const EXPANDED_FILES_STORAGE_KEY = `gargo.diff.expanded.v1:${STORAGE_ROOT}`;
         const VIEWED_FILES_STORAGE_KEY = `gargo.diff.viewed.v2:${STORAGE_ROOT}`;
         const SIDEBAR_COLLAPSED_KEY = `gargo.diff.sidebar.collapsed.v1:${STORAGE_ROOT}`;
+        // Diffs with at least this many changed lines (additions + deletions)
+        // are collapsed by default so the browser stays responsive. The user
+        // can still expand them, and that choice is remembered per session.
+        const HUGE_DIFF_LINES = 1000;
 
         showUntrackedToggle.checked = parseBoolParam(urlParams.get("show_untracked"), true);
 
         let collapsedFileIds = loadIdSet(sessionStorage, COLLAPSED_FILES_STORAGE_KEY);
+        let expandedFileIds = loadIdSet(sessionStorage, EXPANDED_FILES_STORAGE_KEY);
         let viewedFileIds = loadIdSet(localStorage, VIEWED_FILES_STORAGE_KEY);
         let sidebarCollapsedDirs = loadIdSet(sessionStorage, SIDEBAR_COLLAPSED_KEY);
         const bodyCache = new Map();
@@ -540,8 +548,18 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             try { storage.setItem(key, JSON.stringify(Array.from(set))); } catch (_e) {}
         };
         const persistCollapsedFileIds = () => persistIdSet(sessionStorage, COLLAPSED_FILES_STORAGE_KEY, collapsedFileIds);
+        const persistExpandedFileIds = () => persistIdSet(sessionStorage, EXPANDED_FILES_STORAGE_KEY, expandedFileIds);
         const persistViewedFileIds = () => persistIdSet(localStorage, VIEWED_FILES_STORAGE_KEY, viewedFileIds);
         const persistSidebarCollapsedDirs = () => persistIdSet(sessionStorage, SIDEBAR_COLLAPSED_KEY, sidebarCollapsedDirs);
+        // A diff is "huge" once its changed-line count crosses the threshold.
+        const isHugeDiff = (meta) => !!meta
+            && ((meta.additions || 0) + (meta.deletions || 0)) >= HUGE_DIFF_LINES;
+        // Whether a file should start collapsed: explicitly collapsed, viewed,
+        // or a huge diff the user has not explicitly chosen to expand.
+        const shouldCollapseByDefault = (fileId, meta, isViewed) =>
+            isViewed
+            || collapsedFileIds.has(fileId)
+            || (isHugeDiff(meta) && !expandedFileIds.has(fileId));
 
         const fileObserver = (typeof IntersectionObserver !== "undefined")
             ? new IntersectionObserver((entries) => {
@@ -622,6 +640,11 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             tag.className = `gr-status-tag ${STATUS_CSS[status] || STATUS_CSS.modified}`;
             tag.textContent = STATUS_LABELS[status] || status.toUpperCase();
             nameWrapper.appendChild(tag);
+            const largeTag = document.createElement("span");
+            largeTag.className = "gr-large-tag";
+            largeTag.textContent = "large diff";
+            largeTag.title = "Large diff — collapsed by default to keep the page light";
+            nameWrapper.appendChild(largeTag);
             header.appendChild(nameWrapper);
 
             const stats = document.createElement("span");
@@ -687,11 +710,14 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             if (button) renderDiffToggleButtonLabel(button, isCollapsed);
             if (isCollapsed) {
                 collapsedFileIds.add(fileId);
+                expandedFileIds.delete(fileId);
             } else {
                 collapsedFileIds.delete(fileId);
+                expandedFileIds.add(fileId);
                 ensureBodyLoaded(wrapper).catch((e) => showError(e.message));
             }
             persistCollapsedFileIds();
+            persistExpandedFileIds();
         }
 
         function setFileViewed(wrapper, isViewed) {
@@ -710,8 +736,11 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                 if (body) { body.innerHTML = ""; delete body.dataset.loaded; }
             } else {
                 viewedFileIds.delete(fileId);
-                if (!collapsedFileIds.has(fileId)) {
-                    // Default-expand on un-viewed
+                // Default-expand on un-viewed, unless explicitly collapsed or
+                // a huge diff the user has not chosen to expand.
+                const keepCollapsed = collapsedFileIds.has(fileId)
+                    || (wrapper.classList.contains("gr-file-large") && !expandedFileIds.has(fileId));
+                if (!keepCollapsed) {
                     wrapper.classList.remove("diff-file-collapsed");
                     wrapper.classList.remove("gr-file-collapsed");
                     const button = wrapper.querySelector(".diff-toggle-btn");
@@ -955,7 +984,11 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             for (const id of Array.from(collapsedFileIds)) {
                 if (!presentIds.has(id)) collapsedFileIds.delete(id);
             }
+            for (const id of Array.from(expandedFileIds)) {
+                if (!presentIds.has(id)) expandedFileIds.delete(id);
+            }
             persistCollapsedFileIds();
+            persistExpandedFileIds();
 
             let anchor = null;
             for (const { section, meta } of allEntries) {
@@ -974,7 +1007,9 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                 }
                 anchor = wrapper;
                 const isViewed = viewedFileIds.has(fileId);
-                const isCollapsed = isViewed || collapsedFileIds.has(fileId);
+                const isLarge = isHugeDiff(meta);
+                const isCollapsed = shouldCollapseByDefault(fileId, meta, isViewed);
+                wrapper.classList.toggle("gr-file-large", isLarge);
                 wrapper.classList.toggle("gr-file-viewed", isViewed);
                 wrapper.classList.toggle("diff-file-viewed", isViewed);
                 wrapper.classList.toggle("gr-file-collapsed", isCollapsed);
@@ -1243,6 +1278,8 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         }
         .gr-file-collapsed .gr-file-body { display: none; }
         .gr-file-collapsed .gr-file-header { border-bottom: none; }
+        .gr-large-tag { display: none; flex-shrink: 0; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #fff1e5; color: #bc4c00; }
+        .gr-file-large.gr-file-collapsed .gr-large-tag { display: inline-flex; }
         .gr-file-viewed .gr-file-header { background: #eef2f7; opacity: 0.85; }
         .gr-file-name-wrapper {
             flex: 1 1 auto;
@@ -1384,10 +1421,16 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         const GO_TOP_SHOW_SCROLL_Y = 240;
         const STORAGE_ROOT = rootPathCode ? rootPathCode.textContent : "unknown-root";
         const COLLAPSED_FILES_STORAGE_KEY = `gargo.compare.collapsed.v3:${STORAGE_ROOT}`;
+        const EXPANDED_FILES_STORAGE_KEY = `gargo.compare.expanded.v1:${STORAGE_ROOT}`;
         const VIEWED_FILES_STORAGE_KEY = `gargo.compare.viewed.v2:${STORAGE_ROOT}`;
         const SIDEBAR_COLLAPSED_KEY = `gargo.compare.sidebar.collapsed.v1:${STORAGE_ROOT}`;
+        // Diffs with at least this many changed lines (additions + deletions)
+        // are collapsed by default so the browser stays responsive. The user
+        // can still expand them, and that choice is remembered per session.
+        const HUGE_DIFF_LINES = 1000;
 
         let collapsedFileIds = loadIdSet(sessionStorage, COLLAPSED_FILES_STORAGE_KEY);
+        let expandedFileIds = loadIdSet(sessionStorage, EXPANDED_FILES_STORAGE_KEY);
         let viewedFileIds = loadIdSet(localStorage, VIEWED_FILES_STORAGE_KEY);
         let sidebarCollapsedDirs = loadIdSet(sessionStorage, SIDEBAR_COLLAPSED_KEY);
         const bodyCache = new Map();
@@ -1416,8 +1459,18 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             try { storage.setItem(key, JSON.stringify(Array.from(set))); } catch (_e) {}
         };
         const persistCollapsedFileIds = () => persistIdSet(sessionStorage, COLLAPSED_FILES_STORAGE_KEY, collapsedFileIds);
+        const persistExpandedFileIds = () => persistIdSet(sessionStorage, EXPANDED_FILES_STORAGE_KEY, expandedFileIds);
         const persistViewedFileIds = () => persistIdSet(localStorage, VIEWED_FILES_STORAGE_KEY, viewedFileIds);
         const persistSidebarCollapsedDirs = () => persistIdSet(sessionStorage, SIDEBAR_COLLAPSED_KEY, sidebarCollapsedDirs);
+        // A diff is "huge" once its changed-line count crosses the threshold.
+        const isHugeDiff = (meta) => !!meta
+            && ((meta.additions || 0) + (meta.deletions || 0)) >= HUGE_DIFF_LINES;
+        // Whether a file should start collapsed: explicitly collapsed, viewed,
+        // or a huge diff the user has not explicitly chosen to expand.
+        const shouldCollapseByDefault = (fileId, meta, isViewed) =>
+            isViewed
+            || collapsedFileIds.has(fileId)
+            || (isHugeDiff(meta) && !expandedFileIds.has(fileId));
 
         const fileObserver = (typeof IntersectionObserver !== "undefined")
             ? new IntersectionObserver((entries) => {
@@ -1487,6 +1540,11 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             tag.className = `gr-status-tag ${STATUS_CSS[status] || STATUS_CSS.modified}`;
             tag.textContent = STATUS_LABELS[status] || status.toUpperCase();
             nameWrapper.appendChild(tag);
+            const largeTag = document.createElement("span");
+            largeTag.className = "gr-large-tag";
+            largeTag.textContent = "large diff";
+            largeTag.title = "Large diff — collapsed by default to keep the page light";
+            nameWrapper.appendChild(largeTag);
             header.appendChild(nameWrapper);
 
             const stats = document.createElement("span");
@@ -1547,11 +1605,14 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             if (button) renderDiffToggleButtonLabel(button, isCollapsed);
             if (isCollapsed) {
                 collapsedFileIds.add(fileId);
+                expandedFileIds.delete(fileId);
             } else {
                 collapsedFileIds.delete(fileId);
+                expandedFileIds.add(fileId);
                 ensureBodyLoaded(wrapper).catch((e) => showError(e.message));
             }
             persistCollapsedFileIds();
+            persistExpandedFileIds();
         }
 
         function setFileViewed(wrapper, isViewed) {
@@ -1570,7 +1631,11 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                 if (body) { body.innerHTML = ""; delete body.dataset.loaded; }
             } else {
                 viewedFileIds.delete(fileId);
-                if (!collapsedFileIds.has(fileId)) {
+                // Default-expand on un-viewed, unless explicitly collapsed or
+                // a huge diff the user has not chosen to expand.
+                const keepCollapsed = collapsedFileIds.has(fileId)
+                    || (wrapper.classList.contains("gr-file-large") && !expandedFileIds.has(fileId));
+                if (!keepCollapsed) {
                     wrapper.classList.remove("diff-file-collapsed");
                     wrapper.classList.remove("gr-file-collapsed");
                     const button = wrapper.querySelector(".diff-toggle-btn");
@@ -1793,7 +1858,11 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             for (const id of Array.from(collapsedFileIds)) {
                 if (!presentIds.has(id)) collapsedFileIds.delete(id);
             }
+            for (const id of Array.from(expandedFileIds)) {
+                if (!presentIds.has(id)) expandedFileIds.delete(id);
+            }
             persistCollapsedFileIds();
+            persistExpandedFileIds();
 
             let anchor = null;
             for (const meta of files) {
@@ -1812,7 +1881,9 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                 }
                 anchor = wrapper;
                 const isViewed = viewedFileIds.has(fileId);
-                const isCollapsed = isViewed || collapsedFileIds.has(fileId);
+                const isLarge = isHugeDiff(meta);
+                const isCollapsed = shouldCollapseByDefault(fileId, meta, isViewed);
+                wrapper.classList.toggle("gr-file-large", isLarge);
                 wrapper.classList.toggle("gr-file-viewed", isViewed);
                 wrapper.classList.toggle("diff-file-viewed", isViewed);
                 wrapper.classList.toggle("gr-file-collapsed", isCollapsed);
@@ -2002,6 +2073,47 @@ fn html_escape(text: &str) -> String {
         .replace('\'', "&#39;")
 }
 
+/// Count the lines in an untracked file so the status view can decide
+/// whether its (all-additions) diff is large enough to collapse by default.
+///
+/// Returns `(line_count, is_binary)`. The scan is capped at `MAX_SCAN_BYTES`
+/// to bound memory: a file larger than the cap is certainly huge, and the
+/// newline count within the scanned prefix is already well past the
+/// collapse threshold for text. A file is treated as binary when it
+/// contains a NUL byte, in which case it reports a zero line count.
+async fn untracked_line_count(repo_root: &Path, rel_path: &str) -> (usize, bool) {
+    use tokio::io::AsyncReadExt;
+
+    const MAX_SCAN_BYTES: u64 = 2 * 1024 * 1024;
+
+    let full = repo_root.join(rel_path);
+    let file = match tokio::fs::File::open(&full).await {
+        Ok(f) => f,
+        Err(_) => return (0, false),
+    };
+    let mut buf = Vec::new();
+    if file
+        .take(MAX_SCAN_BYTES)
+        .read_to_end(&mut buf)
+        .await
+        .is_err()
+    {
+        return (0, false);
+    }
+    if buf.contains(&0) {
+        return (0, true);
+    }
+    if buf.is_empty() {
+        return (0, false);
+    }
+    let mut lines = buf.iter().filter(|&&b| b == b'\n').count();
+    // A final line without a trailing newline still counts as a line.
+    if buf.last() != Some(&b'\n') {
+        lines += 1;
+    }
+    (lines, false)
+}
+
 pub(crate) async fn git_output_in_repo(repo_root: &Path, args: &[&str]) -> Result<String, String> {
     let mut cmd = tokio::process::Command::new("git");
     cmd.args(["-c", "core.quotepath=off"]);
@@ -2071,20 +2183,21 @@ pub(crate) async fn handle_api_status_request(
                 Ok(output) => output,
                 Err(error) => return bad_request(error),
             };
-        raw.lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .map(|path| {
-                serde_json::json!({
-                    "path": path,
-                    "old_path": serde_json::Value::Null,
-                    "status": "untracked",
-                    "binary": false,
-                    "additions": 0,
-                    "deletions": 0,
-                })
-            })
-            .collect()
+        let mut entries = Vec::new();
+        for path in raw.lines().map(str::trim).filter(|line| !line.is_empty()) {
+            // A whole untracked file shows up as an all-additions diff, so its
+            // line count drives the client's huge-diff collapse decision.
+            let (additions, binary) = untracked_line_count(repo_root, path).await;
+            entries.push(serde_json::json!({
+                "path": path,
+                "old_path": serde_json::Value::Null,
+                "status": "untracked",
+                "binary": binary,
+                "additions": additions,
+                "deletions": 0,
+            }));
+        }
+        entries
     } else {
         Vec::new()
     };

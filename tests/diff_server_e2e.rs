@@ -333,8 +333,10 @@ fn test_diff_server_start_stop_and_status_api_results() {
         "expected diff UI to embed Rust-rendered diff styles"
     );
     assert!(
-        html.contains("gargo.diff.collapsed.v3:") && !html.contains("gargo.diff.expanded.v1:"),
-        "expected diff UI to default-expand (collapsedFileIds tracks explicit collapse)"
+        html.contains("gargo.diff.collapsed.v3:")
+            && html.contains("gargo.diff.expanded.v1:")
+            && html.contains("HUGE_DIFF_LINES"),
+        "expected diff UI to collapse huge diffs by default and track explicit expansion"
     );
     assert!(
         html.contains("IntersectionObserver") && html.contains("rootMargin"),
@@ -469,13 +471,41 @@ fn test_diff_server_status_sections_and_per_file_lazy_endpoint() {
     fs::write(&untracked_file, "new file\n").expect("write untracked file");
     let with_untracked = get_json_with_retry(&status_url);
     let untracked = with_untracked["untracked"].as_array().unwrap();
+    let untracked_entry = untracked
+        .iter()
+        .find(|f| f["path"].as_str() == Some("new-untracked.txt"));
     assert!(
-        untracked
-            .iter()
-            .any(|f| f["path"].as_str() == Some("new-untracked.txt")),
+        untracked_entry.is_some(),
         "expected untracked file in listing: {}",
         with_untracked
     );
+    // The listing reports the untracked file's line count so the client can
+    // collapse huge new files by default.
+    assert_eq!(
+        untracked_entry.unwrap()["additions"].as_u64(),
+        Some(1),
+        "expected untracked file to report its line count: {}",
+        with_untracked
+    );
+
+    // A huge untracked file reports a line count past the collapse threshold.
+    let huge_untracked = repo.join("huge-untracked.txt");
+    fs::write(&huge_untracked, "line\n".repeat(5000)).expect("write huge untracked file");
+    let with_huge = get_json_with_retry(&status_url);
+    let huge_entry = with_huge["untracked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["path"].as_str() == Some("huge-untracked.txt"))
+        .expect("huge untracked file in listing");
+    assert_eq!(
+        huge_entry["additions"].as_u64(),
+        Some(5000),
+        "expected huge untracked file to report its full line count: {}",
+        with_huge
+    );
+    fs::remove_file(&huge_untracked).expect("remove huge untracked file");
+
     let untracked_file_body = get_json_with_retry(&format!(
         "http://127.0.0.1:{}/api/status/file?section=untracked&path=new-untracked.txt",
         port
@@ -881,8 +911,9 @@ fn test_diff_server_compare_html_page() {
     );
     assert!(
         html.contains("gargo.compare.collapsed.v3:")
-            && !html.contains("gargo.compare.expanded.v1:"),
-        "expected /compare HTML to default-expand (collapsedFileIds tracks explicit collapse)"
+            && html.contains("gargo.compare.expanded.v1:")
+            && html.contains("HUGE_DIFF_LINES"),
+        "expected /compare HTML to collapse huge diffs by default and track explicit expansion"
     );
     assert!(
         html.contains("IntersectionObserver") && html.contains("rootMargin"),

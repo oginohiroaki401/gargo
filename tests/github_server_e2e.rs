@@ -269,6 +269,14 @@ fn unified_github_server_serves_code_diffs_compare_commits_and_events() {
     let commit_html =
         get_text_with_retry(&format!("{base_url}/aplio/gargo/commit/{first_hash}"));
     assert!(commit_html.contains("Commit"));
+    // Commit view collapses huge file diffs by default and defers fetching
+    // their bodies so the browser stays light on big commits.
+    assert!(
+        commit_html.contains("HUGE_DIFF_LINES")
+            && commit_html.contains("gr-file-collapsed")
+            && commit_html.contains("gr-collapsed-note"),
+        "expected commit view to collapse huge diffs by default"
+    );
 
     handle
         .command_tx

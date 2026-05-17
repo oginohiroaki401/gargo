@@ -531,6 +531,9 @@ function statusBadgeChar(s) {{
   }}
 }}
 function fileAnchorFor(path) {{ return 'f-' + path.replace(/[^A-Za-z0-9_-]/g, '_'); }}
+// Diffs with at least this many changed lines are collapsed by default and
+// not fetched until expanded, so a commit touching huge files stays light.
+const HUGE_DIFF_LINES = 1000;
 
 function renderSummary(data) {{
   const message = String(data.message || '');
@@ -563,26 +566,68 @@ function renderSidebar(files) {{
   }}).join('') + '</ul>';
 }}
 
-function renderMain(files) {{
+function renderMain(files, statsByPath) {{
   if (!files.length) {{ filesMainEl.innerHTML = '<div class="empty">No files changed</div>'; return; }}
   filesMainEl.innerHTML = files.map(f => {{
     const status = statusToText(f.status);
     const anchor = fileAnchorFor(f.path);
-    return `<section class="gr-file" id="${{anchor}}"><div class="gr-file-header"><span class="gr-status-tag gr-status-${{status}}">${{status}}</span><div class="gr-file-name-wrapper"><span class="gr-file-name" title="${{escapeHtml(f.path)}}">${{escapeHtml(f.path)}}</span></div></div><div class="gr-file-body" data-path="${{escapeHtml(f.path)}}"><div class="loading">Loading diff...</div></div></section>`;
+    const st = statsByPath[f.path] || {{}};
+    const adds = st.additions || 0;
+    const dels = st.deletions || 0;
+    const changed = adds + dels;
+    const huge = changed >= HUGE_DIFF_LINES;
+    const sectionCls = huge ? 'gr-file gr-file-collapsed' : 'gr-file';
+    const toggleChar = huge ? '▸' : '▾';
+    const largeTag = huge ? '<span class="gr-large-tag" title="Large diff — collapsed by default to keep the page light">large diff</span>' : '';
+    const bodyInner = huge
+      ? `<div class="gr-collapsed-note"><span>Large diff (${{changed}} changed lines) collapsed to keep the page light.</span><button type="button" class="gr-load-btn">Show diff</button></div>`
+      : '<div class="loading">Loading diff...</div>';
+    return `<section class="${{sectionCls}}" id="${{anchor}}">`
+      + `<div class="gr-file-header">`
+      + `<button type="button" class="diff-toggle-btn" aria-label="Toggle diff" aria-expanded="${{huge ? 'false' : 'true'}}">${{toggleChar}}</button>`
+      + `<div class="gr-file-name-wrapper"><span class="gr-status-tag gr-status-${{status}}">${{status}}</span><span class="gr-file-name" title="${{escapeHtml(f.path)}}">${{escapeHtml(f.path)}}</span>${{largeTag}}</div>`
+      + `<span class="gr-file-stats"><span class="gr-additions">+${{adds}}</span><span class="gr-deletions">-${{dels}}</span></span>`
+      + `</div>`
+      + `<div class="gr-file-body" data-path="${{escapeHtml(f.path)}}">${{bodyInner}}</div>`
+      + `</section>`;
   }}).join('');
-  for (const el of filesMainEl.querySelectorAll('.gr-file-body[data-path]')) {{
-    fetch(`/api/commit/${{hash}}/file?path=${{encodeURIComponent(el.dataset.path)}}`, {{cache:'no-store'}})
-      .then(r => r.json())
-      .then(file => {{ el.innerHTML = file.html || ''; }})
-      .catch(e => {{ el.innerHTML = `<div class="loading">Error: ${{escapeHtml(e.message)}}</div>`; }});
+  for (const section of filesMainEl.querySelectorAll('section.gr-file')) {{
+    const body = section.querySelector('.gr-file-body');
+    const toggleBtn = section.querySelector('.diff-toggle-btn');
+    if (!body || !toggleBtn) continue;
+    const loadDiff = () => {{
+      if (body.dataset.loaded || body.dataset.loading) return;
+      body.dataset.loading = '1';
+      body.innerHTML = '<div class="loading">Loading diff...</div>';
+      fetch(`/api/commit/${{hash}}/file?path=${{encodeURIComponent(body.dataset.path)}}`, {{cache:'no-store'}})
+        .then(r => r.json())
+        .then(file => {{ body.innerHTML = file.html || ''; body.dataset.loaded = '1'; }})
+        .catch(e => {{ body.innerHTML = `<div class="loading">Error: ${{escapeHtml(e.message)}}</div>`; }})
+        .finally(() => {{ delete body.dataset.loading; }});
+    }};
+    const setCollapsed = (collapsed) => {{
+      section.classList.toggle('gr-file-collapsed', collapsed);
+      toggleBtn.textContent = collapsed ? '▸' : '▾';
+      toggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      if (!collapsed) loadDiff();
+    }};
+    toggleBtn.addEventListener('click', () => {{
+      setCollapsed(!section.classList.contains('gr-file-collapsed'));
+    }});
+    body.addEventListener('click', (e) => {{
+      if (e.target && e.target.classList.contains('gr-load-btn')) setCollapsed(false);
+    }});
+    if (!section.classList.contains('gr-file-collapsed')) loadDiff();
   }}
 }}
 
 fetch(`/api/commit/${{hash}}`, {{cache:'no-store'}}).then(r=>r.json()).then(data=>{{
   renderSummary(data);
   const files = data.files || [];
+  const statsByPath = {{}};
+  for (const df of (data.diff_files || [])) {{ if (df && df.path) statsByPath[df.path] = df; }}
   renderSidebar(files);
-  renderMain(files);
+  renderMain(files, statsByPath);
 }}).catch(e=>{{ summaryEl.innerHTML = `<div class="loading">Error: ${{escapeHtml(e.message)}}</div>`; }});
 </script></body></html>"##,
         css = app_css(),
@@ -961,5 +1006,16 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Libe
 .gr-status-tag.gr-status-untracked { background: #eaeef2; color: #57606a; }
 .gr-file-body { background: #fff; }
 .gr-file-body .loading, .gr-file-body .empty { padding: 12px; color: #57606a; font-size: 12px; }
+.gr-file-collapsed .gr-file-body { display: none; }
+.gr-file-collapsed .gr-file-header { border-bottom: none; }
+.diff-toggle-btn { flex-shrink: 0; cursor: pointer; width: 22px; height: 22px; padding: 0; line-height: 1; border: 1px solid #d0d7de; border-radius: 4px; background: #fff; color: #57606a; font-size: 11px; }
+.diff-toggle-btn:hover { background: #eef2f7; }
+.gr-file-stats { flex-shrink: 0; display: inline-flex; gap: 8px; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+.gr-additions { color: #1a7f37; }
+.gr-deletions { color: #cf222e; }
+.gr-large-tag { flex-shrink: 0; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #fff1e5; color: #bc4c00; }
+.gr-collapsed-note { padding: 12px; color: #57606a; font-size: 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.gr-collapsed-note button { cursor: pointer; border: 1px solid #d0d7de; border-radius: 4px; background: #f6f8fa; padding: 3px 10px; font-size: 12px; color: #24292f; }
+.gr-collapsed-note button:hover { background: #eef2f7; }
 </style>"#
 }
