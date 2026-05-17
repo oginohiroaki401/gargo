@@ -504,6 +504,7 @@ async fn handle_commit_html(
  </aside>
  <main class="content"><div id="files-main"><div class="loading">Loading files...</div></div></main>
 </div>
+<button id="go-top-btn" type="button" aria-label="Go to top">Go top</button>
 <script>
 const hash = "{hash}";
 const summaryEl = document.getElementById('commit-summary');
@@ -629,6 +630,16 @@ fetch(`/api/commit/${{hash}}`, {{cache:'no-store'}}).then(r=>r.json()).then(data
   renderSidebar(files);
   renderMain(files, statsByPath);
 }}).catch(e=>{{ summaryEl.innerHTML = `<div class="loading">Error: ${{escapeHtml(e.message)}}</div>`; }});
+
+const goTopButton = document.getElementById('go-top-btn');
+const GO_TOP_SHOW_SCROLL_Y = 240;
+function updateGoTopButtonVisibility() {{
+  if (window.scrollY > GO_TOP_SHOW_SCROLL_Y) goTopButton.classList.add('visible');
+  else goTopButton.classList.remove('visible');
+}}
+goTopButton.addEventListener('click', () => {{ window.scrollTo({{ top: 0, behavior: 'smooth' }}); }});
+window.addEventListener('scroll', updateGoTopButtonVisibility, {{ passive: true }});
+updateGoTopButtonVisibility();
 </script></body></html>"##,
         css = app_css(),
         diff_styles = diff_styles,
@@ -1017,5 +1028,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Libe
 .gr-collapsed-note { padding: 12px; color: #57606a; font-size: 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .gr-collapsed-note button { cursor: pointer; border: 1px solid #d0d7de; border-radius: 4px; background: #f6f8fa; padding: 3px 10px; font-size: 12px; color: #24292f; }
 .gr-collapsed-note button:hover { background: #eef2f7; }
+#go-top-btn { position: fixed; right: 20px; bottom: 20px; z-index: 1000; padding: 8px 12px; border: 1px solid #ccc; border-radius: 8px; background: #fff; color: #24292f; font-size: 14px; cursor: pointer; opacity: 0; pointer-events: none; transform: translateY(8px); transition: opacity 0.15s ease, transform 0.15s ease; }
+#go-top-btn.visible { opacity: 1; pointer-events: auto; transform: translateY(0); }
+#go-top-btn:hover { background: #eef2f7; }
 </style>"#
 }
