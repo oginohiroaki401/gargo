@@ -558,7 +558,8 @@ pub fn render_diff_styles() -> &'static str {
 }
 .gr-line .gr-ln,
 .gr-line .gr-lnr {
-    flex: 0 0 48px;
+    /* Wide enough for 5-digit line numbers plus padding. */
+    flex: 0 0 calc(5ch + 16px);
     padding: 0 8px;
     text-align: right;
     color: #57606a;
@@ -643,9 +644,12 @@ pub fn render_diff_styles() -> &'static str {
 .code-table td { padding: 0; vertical-align: top; }
 .code-ln {
     width: 1%;
+    /* Never narrower than a 5-digit line number plus padding. */
+    min-width: calc(5ch + 20px);
     white-space: nowrap;
     text-align: right;
     padding: 0 10px;
+    box-sizing: border-box;
     color: #57606a;
     background: #f6f8fa;
     user-select: none;
