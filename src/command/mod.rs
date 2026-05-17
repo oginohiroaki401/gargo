@@ -8,6 +8,7 @@ pub mod git_index_runtime;
 pub mod git_runtime;
 pub mod git_view_diff_runtime;
 pub mod github_preview_server;
+pub mod github_server;
 pub mod global_search_index;
 pub mod history;
 pub mod in_editor_diff;

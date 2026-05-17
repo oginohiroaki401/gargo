@@ -361,12 +361,8 @@ impl Explorer {
             for row in 0..body_h {
                 surface.fill_region(x, body_y + row, width, ' ', &default_style);
             }
-            let (cell_cols, cell_rows) = crate::ui::image::fit_cells(
-                data.width,
-                data.height,
-                width as u16,
-                body_h as u16,
-            );
+            let (cell_cols, cell_rows) =
+                crate::ui::image::fit_cells(data.width, data.height, width as u16, body_h as u16);
             self.pending_image_request = Some(crate::ui::image::ImageRenderRequest {
                 key: path,
                 col: x as u16,
@@ -392,9 +388,7 @@ impl Explorer {
             if line_idx < self.preview_lines.len() {
                 let line = &self.preview_lines[line_idx];
                 let window = slice_display_window(line, self.preview_horizontal_scroll, width);
-                if highlight_enabled
-                    && let Some(spans) = self.preview_spans.get(&line_idx)
-                {
+                if highlight_enabled && let Some(spans) = self.preview_spans.get(&line_idx) {
                     render_highlighted_line_windowed(
                         surface,
                         (screen_row, x),
@@ -1104,9 +1098,7 @@ impl Explorer {
     }
 
     fn go_parent(&mut self) {
-        if self.mode == ExplorerMode::ChangedOnly
-            || self.mode == ExplorerMode::BranchCompare
-        {
+        if self.mode == ExplorerMode::ChangedOnly || self.mode == ExplorerMode::BranchCompare {
             return;
         }
         if let Some(parent) = self.current_dir.parent() {
@@ -1263,17 +1255,21 @@ impl Explorer {
         // Build a render plan. In changed-only mode, each file expands into
         // two display rows (the entry itself + a "+adds -dels" stats row).
         enum RenderRow {
-            Entry { vis_idx: usize },
-            Stats { vis_idx: usize, additions: usize, deletions: usize },
+            Entry {
+                vis_idx: usize,
+            },
+            Stats {
+                vis_idx: usize,
+                additions: usize,
+                deletions: usize,
+            },
         }
         let mut plan: Vec<RenderRow> = Vec::new();
         let mut entry_to_primary: Vec<usize> = Vec::with_capacity(self.visible_entries.len());
         for (vis_idx, &entry_idx) in self.visible_entries.iter().enumerate() {
             entry_to_primary.push(plan.len());
             plan.push(RenderRow::Entry { vis_idx });
-            if self.mode == ExplorerMode::ChangedOnly
-                || self.mode == ExplorerMode::BranchCompare
-            {
+            if self.mode == ExplorerMode::ChangedOnly || self.mode == ExplorerMode::BranchCompare {
                 let entry = &self.entries[entry_idx];
                 if !entry.is_repo_header && !entry.is_dir {
                     let (adds, dels) = entry.diff_stats.unwrap_or((0, 0));
@@ -1288,10 +1284,7 @@ impl Explorer {
 
         // Adjust scroll offset (which counts display rows) to keep the selected
         // entry — and its trailing stats row — visible.
-        let sel_primary = entry_to_primary
-            .get(self.selected)
-            .copied()
-            .unwrap_or(0);
+        let sel_primary = entry_to_primary.get(self.selected).copied().unwrap_or(0);
         let sel_end = entry_to_primary
             .get(self.selected + 1)
             .copied()
@@ -1640,10 +1633,7 @@ fn format_mtime(t: SystemTime) -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
     let year = if m <= 2 { y + 1 } else { y };
 
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}",
-        year, m, d, hour, minute
-    )
+    format!("{:04}-{:02}-{:02} {:02}:{:02}", year, m, d, hour, minute)
 }
 
 /// Map the single-char status from `git diff --name-status` to the
@@ -2019,16 +2009,11 @@ mod tests {
                 deletions: 0,
             },
         ];
-        let explorer =
-            Explorer::new_branch_compare(dir.clone(), "main".to_string(), files);
+        let explorer = Explorer::new_branch_compare(dir.clone(), "main".to_string(), files);
         assert!(explorer.is_branch_compare());
         assert_eq!(explorer.branch_compare_base(), Some("main"));
         // Files appear sorted case-insensitively.
-        let names: Vec<&str> = explorer
-            .entries
-            .iter()
-            .map(|e| e.name.as_str())
-            .collect();
+        let names: Vec<&str> = explorer.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["README.md", "src/a.rs"]);
         // diff_stats are populated.
         assert_eq!(
@@ -2061,8 +2046,7 @@ mod tests {
                 deletions: 0,
             },
         ];
-        let mut explorer =
-            Explorer::new_branch_compare(dir.clone(), "main".to_string(), initial);
+        let mut explorer = Explorer::new_branch_compare(dir.clone(), "main".to_string(), initial);
         // Move selection to b.rs.
         let _ = explorer.handle_key(key(KeyCode::Char('j')), &KeyState::Normal);
         assert_eq!(explorer.selected_name(), Some("b.rs"));

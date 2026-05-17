@@ -205,7 +205,10 @@ fn is_url_body_char(c: char) -> bool {
 }
 
 fn is_url_trailing_punct(c: char) -> bool {
-    matches!(c, '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '\'')
+    matches!(
+        c,
+        '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '\''
+    )
 }
 
 pub fn resolve_link_target(

@@ -692,17 +692,14 @@ impl App {
                 self.compositor.apply(UiAction::ClosePalette);
                 let repo_root = self.active_buffer_repo_root();
 
-                let files = match crate::command::git::git_branch_diff_files_in(
-                    &repo_root,
-                    &base_branch,
-                ) {
-                    Ok(files) => files,
-                    Err(err) => {
-                        self.editor.message =
-                            Some(format!("Branch compare failed: {}", err));
-                        return false;
-                    }
-                };
+                let files =
+                    match crate::command::git::git_branch_diff_files_in(&repo_root, &base_branch) {
+                        Ok(files) => files,
+                        Err(err) => {
+                            self.editor.message = Some(format!("Branch compare failed: {}", err));
+                            return false;
+                        }
+                    };
 
                 // Close any open Explorer first, stashing it.
                 if let Some(explorer) = self.compositor.close_explorer() {

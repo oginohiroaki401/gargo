@@ -248,8 +248,8 @@ impl GitIndexRuntimeWorker {
     fn process_branch_diffs(&mut self) {
         let pending = std::mem::take(&mut self.pending_branch_diffs);
         for (project_root, base_branch) in pending {
-            let files = git::git_branch_diff_files_in(&project_root, &base_branch)
-                .unwrap_or_default();
+            let files =
+                git::git_branch_diff_files_in(&project_root, &base_branch).unwrap_or_default();
             let _ = self.event_tx.send(GitIndexRuntimeEvent::BranchDiffReady {
                 project_root,
                 base_branch,

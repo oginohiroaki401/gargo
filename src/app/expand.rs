@@ -5,8 +5,8 @@
 use super::*;
 
 use crate::core::buffer::BufferId;
-use crate::core::document::expand::{enclosing_brackets, line_range_at, word_range_at};
 use crate::core::document::Selection;
+use crate::core::document::expand::{enclosing_brackets, line_range_at, word_range_at};
 use crate::core::editor::Editor;
 
 /// Per-buffer state for an in-flight expand chain. Both mouse clicks and
@@ -146,11 +146,7 @@ impl App {
 /// The filter in `expand_selection` will only pick a node if it's the
 /// smallest candidate strictly larger than the current selection, so the
 /// selection walks the tree at whatever granularity the tree actually has.
-fn ast_ancestor_ranges(
-    editor: &Editor,
-    buffer_id: BufferId,
-    origin: usize,
-) -> Vec<(usize, usize)> {
+fn ast_ancestor_ranges(editor: &Editor, buffer_id: BufferId, origin: usize) -> Vec<(usize, usize)> {
     let Some(tree) = editor.highlight_manager.tree(buffer_id) else {
         return Vec::new();
     };
@@ -279,7 +275,8 @@ mod tests {
         // that contains the previous one — the core invariant of the
         // dynamic ladder.
         let mut e = Editor::new();
-        e.active_buffer_mut().insert_text("fn f() { let x = 1 + 2; }\n");
+        e.active_buffer_mut()
+            .insert_text("fn f() { let x = 1 + 2; }\n");
         e.register_highlights_for_extension("rs");
         e.update_highlights_if_dirty();
         let id = e.active_buffer().id;

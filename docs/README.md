@@ -89,8 +89,10 @@ src/
     in_editor_diff.rs  In-editor diff text builder and diff-line jump target mapper.
     git_backend.rs  Git library (gix) wrapper.
     git_runtime.rs  Async git worker with debouncing.
+    github_server.rs  Unified local GitHub-style repository browser, diff, compare, and commit server.
     lsp.rs          LSP client.
-    diff_server.rs  Async diff computation.
+    diff_server.rs  Legacy async diff computation used by the unified server.
+    github_preview_server.rs  Legacy repository preview routes used by the unified server.
     async_runtime.rs  Tokio runtime management.
 
   plugin/           Plugin system
@@ -98,8 +100,9 @@ src/
     registry.rs     Plugin registry builder.
     types.rs        Plugin trait and event/output types.
     lsp.rs          LSP plugin implementation.
-    diff_ui.rs      Diff UI plugin.
-    github_preview.rs  GitHub markdown preview plugin.
+    github_server.rs  Unified GitHub server plugin.
+    diff_ui.rs      Legacy Diff UI plugin.
+    github_preview.rs  Legacy GitHub markdown preview plugin.
 
   io/               I/O utilities
     file_io.rs      File collection (git-aware, respects .git boundaries in nested repos).
@@ -295,6 +298,7 @@ Command palette includes `project.change_root` (`Change Project Root`) and `proj
 Cursor commands include `cursor.add_next_match` (`Add Cursor to Next Match`) and `cursor.add_prev_match` (`Add Cursor to Previous Match`).
 Diff commands `diff.open_in_editor` and `diff.refresh_in_editor` open/refresh the in-editor diff buffer.
 Git commands include `git.switch_branch` (`Git: Switch Branch`), which opens a branch picker backed by fzf-style filtering. The right preview panel shows working tree status plus recent commits for the selected branch.
+Server commands include `server.start_github` (`Start GitHub Server`) and `server.stop_github` (`Stop GitHub Server`). Starting the server opens the repository root at a dynamic `127.0.0.1` port. The browser UI is read-only and serves local/offline pages for code browsing, file previews, working-tree changes, branch compare, commit log, and commit diffs. Legacy visible commands for the separate diff server, compare page, and GitHub preview server are no longer registered by the default plugin set.
 The command list includes `Save current buffer as ...`, which opens `SaveAsPopup`. The popup accepts absolute and project-root-relative paths, and save creates missing parent directories.
 
 Command palette includes `project.change_root` (`Change Project Root`), which opens a project root path popup.

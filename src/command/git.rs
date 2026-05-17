@@ -213,10 +213,7 @@ fn git_status_files_in_impl(
     Ok((changed, staged))
 }
 
-fn numstat_map(
-    project_root: Option<&Path>,
-    cached: bool,
-) -> HashMap<String, (usize, usize)> {
+fn numstat_map(project_root: Option<&Path>, cached: bool) -> HashMap<String, (usize, usize)> {
     let args: &[&str] = if cached {
         &["diff", "--cached", "--numstat"]
     } else {
@@ -335,12 +332,9 @@ pub fn git_branch_diff_files_in(
     }
 
     // Per-file numstat for additions/deletions.
-    let numstat_raw = git_output_in_allow_codes(
-        Some(project_root),
-        &["diff", "--numstat", &range],
-        &[0, 1],
-    )
-    .unwrap_or_default();
+    let numstat_raw =
+        git_output_in_allow_codes(Some(project_root), &["diff", "--numstat", &range], &[0, 1])
+            .unwrap_or_default();
     let mut stats: HashMap<String, (usize, usize)> = HashMap::new();
     for line in numstat_raw.lines() {
         let mut parts = line.splitn(3, '\t');
@@ -363,7 +357,6 @@ pub fn git_branch_diff_files_in(
 
     Ok(entries)
 }
-
 
 pub fn git_local_branches_in(project_root: &Path) -> Result<Vec<(String, bool)>, String> {
     let raw = git_output_in(
@@ -683,7 +676,9 @@ fn open_url(url: &str) -> Result<(), String> {
     let result = if cfg!(target_os = "macos") {
         ProcessCommand::new("open").arg(url).spawn()
     } else if cfg!(target_os = "windows") {
-        ProcessCommand::new("cmd").args(["/C", "start", "", url]).spawn()
+        ProcessCommand::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()
     } else {
         ProcessCommand::new("xdg-open").arg(url).spawn()
     };

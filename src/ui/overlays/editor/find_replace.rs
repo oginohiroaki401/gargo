@@ -256,7 +256,8 @@ impl FindReplacePopup {
 
         // Popup size from config (default 80% × 80%), with absolute floors so the
         // input/preview layout stays usable on small terminals.
-        let (configured_w, configured_h) = crate::ui::popup_layout::popup_size(term_width, term_height);
+        let (configured_w, configured_h) =
+            crate::ui::popup_layout::popup_size(term_width, term_height);
         let popup_width = configured_w.max(40).min(term_width);
         let popup_height = configured_h.max(15).min(term_height);
         let popup_x = (term_width.saturating_sub(popup_width)) / 2;

@@ -51,7 +51,8 @@ pub fn supports_kitty_graphics() -> bool {
         {
             return false;
         }
-        if std::env::var("GARGO_FORCE_IMAGES").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        if std::env::var("GARGO_FORCE_IMAGES")
+            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         {
             return true;
         }
@@ -168,7 +169,14 @@ pub fn emit_kitty_image<W: Write>(
 
     debug_log(&format!(
         "emit_kitty_image id={} col={} row={} cells={}x{} png_bytes={} b64_bytes={} tmux={}",
-        image_id, col, row, cell_cols, cell_rows, image.png.len(), total, in_tmux()
+        image_id,
+        col,
+        row,
+        cell_cols,
+        cell_rows,
+        image.png.len(),
+        total,
+        in_tmux()
     ));
 
     while offset < total {

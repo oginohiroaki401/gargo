@@ -89,7 +89,11 @@ fn file_picker_renders_japanese_filename_correctly() {
         let row_text: String = (0..surface.width)
             .map(|x| {
                 let s = surface.get(x, y).symbol.as_str();
-                if s.is_empty() { String::new() } else { s.to_string() }
+                if s.is_empty() {
+                    String::new()
+                } else {
+                    s.to_string()
+                }
             })
             .collect();
         if row_text.contains("テスト.md") {
@@ -112,7 +116,9 @@ fn file_picker_renders_japanese_filename_correctly() {
         }
         found_text.push_str(s);
         let ch = s.chars().next().unwrap();
-        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1).max(1);
+        let w = unicode_width::UnicodeWidthChar::width(ch)
+            .unwrap_or(1)
+            .max(1);
         if w == 2 {
             // Continuation must be empty.
             assert_eq!(
@@ -126,7 +132,11 @@ fn file_picker_renders_japanese_filename_correctly() {
         }
         col += w;
     }
-    assert!(found_text.contains("テスト.md"), "rendered row {:?}", found_text);
+    assert!(
+        found_text.contains("テスト.md"),
+        "rendered row {:?}",
+        found_text
+    );
 }
 
 #[test]

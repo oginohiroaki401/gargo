@@ -394,7 +394,9 @@ pub fn render_file_body_html_with_highlights(
 
 fn push_marker_line(out: &mut String, text: &str) {
     out.push_str(r#"<div class="gr-line gr-line-hunk">"#);
-    out.push_str(r#"<span class="gr-ln"></span><span class="gr-lnr"></span><span class="gr-sign"></span>"#);
+    out.push_str(
+        r#"<span class="gr-ln"></span><span class="gr-lnr"></span><span class="gr-sign"></span>"#,
+    );
     out.push_str(r#"<span class="gr-text">"#);
     out.push_str(&html_escape(text));
     out.push_str("</span></div>");
@@ -402,7 +404,9 @@ fn push_marker_line(out: &mut String, text: &str) {
 
 fn push_hunk_header(out: &mut String, header: &str) {
     out.push_str(r#"<div class="gr-line gr-line-hunk">"#);
-    out.push_str(r#"<span class="gr-ln"></span><span class="gr-lnr"></span><span class="gr-sign"></span>"#);
+    out.push_str(
+        r#"<span class="gr-ln"></span><span class="gr-lnr"></span><span class="gr-sign"></span>"#,
+    );
     out.push_str(r#"<span class="gr-text">"#);
     out.push_str(&html_escape(header));
     out.push_str("</span></div>");
@@ -497,7 +501,7 @@ fn push_highlighted_text(out: &mut String, content: &str, spans: &[(usize, usize
 ///
 /// `"function.method"` → `"gr-hl-function gr-hl-function-method"` so CSS
 /// can target the general or specific level without duplicating colors.
-fn hl_class_attr(capture: &str) -> String {
+pub(crate) fn hl_class_attr(capture: &str) -> String {
     let parts: Vec<&str> = capture.split('.').collect();
     let mut out = String::with_capacity(capture.len() + 16);
     for i in 0..parts.len() {
@@ -625,6 +629,45 @@ pub fn render_diff_styles() -> &'static str {
 .gr-hl-text-emphasis { font-style: italic; }
 .gr-hl-text-strong { font-weight: 600; }
 .gr-hl-punctuation-special { color: #6e7781; font-weight: 600; }
+
+/* Code preview with line-number gutter (blob view, raw markdown view) */
+.code-view { overflow-x: auto; }
+.code-table {
+    border-collapse: collapse;
+    width: 100%;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    color: #1f2328;
+}
+.code-table td { padding: 0; vertical-align: top; }
+.code-ln {
+    width: 1%;
+    white-space: nowrap;
+    text-align: right;
+    padding: 0 10px;
+    color: #57606a;
+    background: #f6f8fa;
+    user-select: none;
+    border-right: 1px solid #eaeef2;
+}
+.code-ln::before { content: attr(data-line-number); }
+.code-text { padding: 0 10px; white-space: pre; width: 100%; }
+.code-table tr:target { background: #fff8c5; }
+
+/* Markdown raw/preview toggle */
+.md-view-toggle { display: flex; margin: 0 0 12px; }
+.md-toggle-btn {
+    padding: 5px 12px;
+    font-size: 13px;
+    border: 1px solid #d0d7de;
+    color: #0969da;
+    background: #f6f8fa;
+    text-decoration: none;
+}
+.md-toggle-btn:first-child { border-radius: 6px 0 0 6px; }
+.md-toggle-btn:last-child { border-radius: 0 6px 6px 0; border-left: 0; }
+.md-toggle-btn.active { background: #0969da; color: #fff; border-color: #0969da; font-weight: 600; }
 "#
 }
 
@@ -935,12 +978,20 @@ rename to new
     fn highlighted_text_emits_spans_and_escapes() {
         let mut out = String::new();
         let spans = vec![
-            (0, 2, "keyword".to_string()),     // "fn"
-            (3, 4, "function".to_string()),    // "f"
+            (0, 2, "keyword".to_string()),  // "fn"
+            (3, 4, "function".to_string()), // "f"
         ];
         push_highlighted_text(&mut out, "fn f()", &spans);
-        assert!(out.contains(r#"<span class="gr-hl-keyword">fn</span>"#), "{}", out);
-        assert!(out.contains(r#"<span class="gr-hl-function">f</span>"#), "{}", out);
+        assert!(
+            out.contains(r#"<span class="gr-hl-keyword">fn</span>"#),
+            "{}",
+            out
+        );
+        assert!(
+            out.contains(r#"<span class="gr-hl-function">f</span>"#),
+            "{}",
+            out
+        );
         // The unstyled "()" tail and the space between are preserved.
         assert!(out.ends_with("()"), "{}", out);
     }
@@ -956,9 +1007,21 @@ rename to new
         ];
         push_highlighted_text(&mut out, "0123abc789", &spans);
         // Three regions: function "0123", keyword "abc", function "789".
-        assert!(out.contains(r#"<span class="gr-hl-function">0123</span>"#), "{}", out);
-        assert!(out.contains(r#"<span class="gr-hl-keyword">abc</span>"#), "{}", out);
-        assert!(out.contains(r#"<span class="gr-hl-function">789</span>"#), "{}", out);
+        assert!(
+            out.contains(r#"<span class="gr-hl-function">0123</span>"#),
+            "{}",
+            out
+        );
+        assert!(
+            out.contains(r#"<span class="gr-hl-keyword">abc</span>"#),
+            "{}",
+            out
+        );
+        assert!(
+            out.contains(r#"<span class="gr-hl-function">789</span>"#),
+            "{}",
+            out
+        );
     }
 
     #[test]
@@ -1005,8 +1068,16 @@ index 1..2 100644
             },
         );
         let html = render_file_body_html_with_highlights(&f, &highlights);
-        assert!(html.contains(r#"<span class="gr-hl-keyword">fn</span>"#), "{}", html);
-        assert!(html.contains(r#"<span class="gr-hl-function">new</span>"#), "{}", html);
+        assert!(
+            html.contains(r#"<span class="gr-hl-keyword">fn</span>"#),
+            "{}",
+            html
+        );
+        assert!(
+            html.contains(r#"<span class="gr-hl-function">new</span>"#),
+            "{}",
+            html
+        );
         // The diff line wrappers are still there.
         assert!(html.contains(r#"<div class="gr-line gr-line-add">"#));
         assert!(html.contains(r#"<div class="gr-line gr-line-remove">"#));
@@ -1029,8 +1100,7 @@ index 1..2 100644
 ";
         let f = one_file(input);
         let legacy = render_file_body_html(&f);
-        let with_empty =
-            render_file_body_html_with_highlights(&f, &DiffHighlights::new());
+        let with_empty = render_file_body_html_with_highlights(&f, &DiffHighlights::new());
         assert_eq!(legacy, with_empty);
     }
 }

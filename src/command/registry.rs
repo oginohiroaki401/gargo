@@ -354,9 +354,7 @@ pub fn register_builtins(registry: &mut CommandRegistry) {
             Some(path) => {
                 let path_str = path.display().to_string();
                 let result = if cfg!(target_os = "macos") {
-                    ProcessCommand::new("open")
-                        .args(["-R", &path_str])
-                        .spawn()
+                    ProcessCommand::new("open").args(["-R", &path_str]).spawn()
                 } else {
                     let dir = path.parent().unwrap_or(path).display().to_string();
                     ProcessCommand::new("xdg-open").arg(&dir).spawn()

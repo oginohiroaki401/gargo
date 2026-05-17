@@ -160,8 +160,8 @@ impl DiffServerWorker {
 }
 
 #[derive(Debug)]
-struct DiffServerState {
-    project_root: PathBuf,
+pub(crate) struct DiffServerState {
+    pub(crate) project_root: PathBuf,
 }
 
 /// HTML template with diff2html integration
@@ -179,16 +179,19 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             background-color: #f5f5f5;
             color: #333;
         }
-        .header {
-            background: white;
-            padding: 20px;
-            margin-bottom: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
+        .header { margin-bottom: 20px; }
+        .repo-header { background: #fff; border: 1px solid #d0d7de; border-radius: 6px; margin-bottom: 16px; overflow: hidden; }
+        .repo-title { display: flex; align-items: center; gap: 4px; padding: 14px 16px 8px; font-size: 20px; }
+        .repo-title-link { display: inline-flex; align-items: center; gap: 4px; color: inherit; text-decoration: none; }
+        .repo-title-link:hover strong { text-decoration: underline; }
+        .repo-owner, .repo-sep { color: #57606a; font-weight: 400; }
+        .repo-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 0 16px 12px; font-size: 13px; color: #57606a; }
+        .repo-meta code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; padding: 0; background: transparent; border: 0; }
+        .repo-tabs { display: flex; gap: 4px; padding: 0 8px; border-top: 1px solid #d8dee4; }
+        .repo-tab { display: inline-flex; padding: 10px 12px; color: #24292f; text-decoration: none; border-bottom: 2px solid transparent; font-size: 14px; }
+        .repo-tab:hover { background: #f6f8fa; text-decoration: none; }
+        .repo-tab-active { font-weight: 600; border-bottom-color: #fd8c73; }
+        .repo-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 12px 16px; border-top: 1px solid #d8dee4; background: #f6f8fa; }
         .context-label {
             margin: 0;
             font-size: 13px;
@@ -457,9 +460,8 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
 </head>
 <body>
     <div class="header">
-        <div class="context-label">Git diff</div>
-        <div class="context-row"><span class="context-key">Root</span><code id="root-path">{{ROOT_PATH}}</code></div>
-        <div class="controls">
+        {{REPO_HEADER}}
+        <div class="repo-controls">
             <label>
                 <input type="checkbox" id="show-untracked">
                 Show untracked files
@@ -1054,16 +1056,19 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             background-color: #f5f5f5;
             color: #333;
         }
-        .header {
-            background: white;
-            padding: 20px;
-            margin-bottom: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
+        .header { margin-bottom: 20px; }
+        .repo-header { background: #fff; border: 1px solid #d0d7de; border-radius: 6px; margin-bottom: 16px; overflow: hidden; }
+        .repo-title { display: flex; align-items: center; gap: 4px; padding: 14px 16px 8px; font-size: 20px; }
+        .repo-title-link { display: inline-flex; align-items: center; gap: 4px; color: inherit; text-decoration: none; }
+        .repo-title-link:hover strong { text-decoration: underline; }
+        .repo-owner, .repo-sep { color: #57606a; font-weight: 400; }
+        .repo-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 0 16px 12px; font-size: 13px; color: #57606a; }
+        .repo-meta code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; padding: 0; background: transparent; border: 0; }
+        .repo-tabs { display: flex; gap: 4px; padding: 0 8px; border-top: 1px solid #d8dee4; }
+        .repo-tab { display: inline-flex; padding: 10px 12px; color: #24292f; text-decoration: none; border-bottom: 2px solid transparent; font-size: 14px; }
+        .repo-tab:hover { background: #f6f8fa; text-decoration: none; }
+        .repo-tab-active { font-weight: 600; border-bottom-color: #fd8c73; }
+        .repo-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 12px 16px; border-top: 1px solid #d8dee4; background: #f6f8fa; }
         .context-label {
             margin: 0;
             font-size: 13px;
@@ -1329,9 +1334,8 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
 </head>
 <body>
     <div class="header">
-        <div class="context-label">Compare branches</div>
-        <div class="context-row"><span class="context-key">Root</span><code id="root-path">{{ROOT_PATH}}</code></div>
-        <div class="controls">
+        {{REPO_HEADER}}
+        <div class="repo-controls">
             <label>
                 Base
                 <select id="base-select"><option value="">(loading...)</option></select>
@@ -1969,11 +1973,15 @@ async fn run_server(
 }
 
 /// Serve the HTML page with diff2html
-async fn handle_html_request(State(state): State<Arc<DiffServerState>>) -> impl IntoResponse {
+pub(crate) async fn handle_html_request(
+    State(state): State<Arc<DiffServerState>>,
+) -> impl IntoResponse {
     let root_path = state.project_root.display().to_string();
+    let repo_header = repo_header_html(&state.project_root, "status").await;
     Html(
         DIFF_HTML_TEMPLATE
             .replace("{{ROOT_PATH}}", &html_escape(&root_path))
+            .replace("{{REPO_HEADER}}", &repo_header)
             .replace("{{DIFF_STYLES}}", render_diff_styles()),
     )
 }
@@ -1994,7 +2002,7 @@ fn html_escape(text: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-async fn git_output_in_repo(repo_root: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) async fn git_output_in_repo(repo_root: &Path, args: &[&str]) -> Result<String, String> {
     let mut cmd = tokio::process::Command::new("git");
     cmd.args(["-c", "core.quotepath=off"]);
     cmd.args(args);
@@ -2030,7 +2038,7 @@ async fn git_output_from_command(
 }
 
 /// API endpoint that returns unstaged/staged diffs and untracked files.
-async fn handle_api_status_request(
+pub(crate) async fn handle_api_status_request(
     State(state): State<Arc<DiffServerState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
@@ -2056,15 +2064,13 @@ async fn handle_api_status_request(
         .collect();
 
     let untracked_files: Vec<serde_json::Value> = if show_untracked {
-        let raw = match git_output_in_repo(
-            repo_root,
-            &["ls-files", "--others", "--exclude-standard"],
-        )
-        .await
-        {
-            Ok(output) => output,
-            Err(error) => return bad_request(error),
-        };
+        let raw =
+            match git_output_in_repo(repo_root, &["ls-files", "--others", "--exclude-standard"])
+                .await
+            {
+                Ok(output) => output,
+                Err(error) => return bad_request(error),
+            };
         raw.lines()
             .map(str::trim)
             .filter(|line| !line.is_empty())
@@ -2090,7 +2096,7 @@ async fn handle_api_status_request(
     }))
 }
 
-async fn handle_api_status_file_request(
+pub(crate) async fn handle_api_status_file_request(
     State(state): State<Arc<DiffServerState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
@@ -2165,7 +2171,7 @@ async fn handle_api_status_file_request(
     }
 }
 
-fn file_metadata_json(file: &DiffFile) -> serde_json::Value {
+pub(crate) fn file_metadata_json(file: &DiffFile) -> serde_json::Value {
     serde_json::json!({
         "path": file.path,
         "old_path": file.old_path,
@@ -2176,7 +2182,7 @@ fn file_metadata_json(file: &DiffFile) -> serde_json::Value {
     })
 }
 
-fn empty_diff_html() -> String {
+pub(crate) fn empty_diff_html() -> String {
     r#"<div class="gr-diff-body"><div class="gr-line gr-line-hunk"><span class="gr-ln"></span><span class="gr-lnr"></span><span class="gr-sign"></span><span class="gr-text">(no content changes)</span></div></div>"#
         .to_string()
 }
@@ -2184,7 +2190,7 @@ fn empty_diff_html() -> String {
 /// Render `file` to HTML, applying tree-sitter syntax highlighting when
 /// the file's extension maps to a known language. Falls back to plain
 /// rendering for unknown languages, binary files, or rename-only entries.
-fn render_highlighted(file: &DiffFile) -> String {
+pub(crate) fn render_highlighted(file: &DiffFile) -> String {
     if file.binary || file.hunks.is_empty() {
         return render_file_body_html(file);
     }
@@ -2231,9 +2237,7 @@ fn compute_diff_highlights(file: &DiffFile, lang: &LanguageDef) -> DiffHighlight
                 let start = s.start.min(content_len);
                 let end = s.end.min(content_len);
                 if start < end {
-                    entry
-                        .spans
-                        .push((start, end, s.capture_name.clone()));
+                    entry.spans.push((start, end, s.capture_name.clone()));
                 }
             }
         }
@@ -2267,9 +2271,7 @@ fn compute_diff_highlights(file: &DiffFile, lang: &LanguageDef) -> DiffHighlight
                 let start = s.start.min(content_len);
                 let end = s.end.min(content_len);
                 if start < end {
-                    entry
-                        .spans
-                        .push((start, end, s.capture_name.clone()));
+                    entry.spans.push((start, end, s.capture_name.clone()));
                 }
             }
         }
@@ -2283,7 +2285,7 @@ fn compute_diff_highlights(file: &DiffFile, lang: &LanguageDef) -> DiffHighlight
 /// We always pass paths after `--` so flag injection is structurally blocked,
 /// but we still reject control characters, path traversal, absolute paths,
 /// and unreasonably long inputs to keep the API surface tight.
-fn parse_diff_path(value: &str) -> Option<String> {
+pub(crate) fn parse_diff_path(value: &str) -> Option<String> {
     if value.is_empty() || value.len() > 4096 {
         return None;
     }
@@ -2322,7 +2324,7 @@ fn parse_branch_name(value: &str) -> Option<String> {
     Some(value.to_string())
 }
 
-fn bad_request(message: impl Into<String>) -> Response {
+pub(crate) fn bad_request(message: impl Into<String>) -> Response {
     let payload = serde_json::json!({ "error": message.into() });
     let mut response = (StatusCode::BAD_REQUEST, Json(payload)).into_response();
     response.headers_mut().insert(
@@ -2332,7 +2334,7 @@ fn bad_request(message: impl Into<String>) -> Response {
     response
 }
 
-fn ok_json(payload: serde_json::Value) -> Response {
+pub(crate) fn ok_json(payload: serde_json::Value) -> Response {
     let mut response = (StatusCode::OK, Json(payload)).into_response();
     response.headers_mut().insert(
         header::CACHE_CONTROL,
@@ -2341,28 +2343,60 @@ fn ok_json(payload: serde_json::Value) -> Response {
     response
 }
 
+async fn repo_header_html(repo_root: &Path, active_tab: &str) -> String {
+    use crate::command::github_preview_server as gh;
+    let root_path = repo_root.display().to_string();
+    let repo_url = gh::github_repo_url(repo_root).await;
+    let title = gh::repo_title_html(&root_path, repo_url.as_deref());
+    let ctx = gh::resolve_repo_url_context(repo_root).await;
+    let tab = |id: &str, label: &str, href: &str| {
+        let class_name = if id == active_tab {
+            "repo-tab repo-tab-active"
+        } else {
+            "repo-tab"
+        };
+        format!(
+            r#"<a class="{class_name}" href="{}">{}</a>"#,
+            html_escape(href),
+            html_escape(label)
+        )
+    };
+    format!(
+        r#"<div class="repo-header">
+            <div class="repo-title">{}</div>
+            <div class="repo-meta"><span class="context-key">Root</span><code id="root-path">{}</code></div>
+            <nav class="repo-tabs" aria-label="Repository views">{}{}{}{}</nav>
+        </div>"#,
+        title,
+        html_escape(&root_path),
+        tab("code", "Code", &gh::repo_home_url(&ctx)),
+        tab("status", "Status", "/status"),
+        tab("branches", "Branches", "/branches"),
+        tab("commits", "Commits", &gh::commits_url(&ctx)),
+    )
+}
+
 /// Serve the compare-branches HTML page.
-async fn handle_compare_html_request(
+pub(crate) async fn handle_compare_html_request(
     State(state): State<Arc<DiffServerState>>,
 ) -> impl IntoResponse {
     let root_path = state.project_root.display().to_string();
+    let repo_header = repo_header_html(&state.project_root, "branches").await;
     Html(
         COMPARE_HTML_TEMPLATE
             .replace("{{ROOT_PATH}}", &html_escape(&root_path))
+            .replace("{{REPO_HEADER}}", &repo_header)
             .replace("{{DIFF_STYLES}}", render_diff_styles()),
     )
 }
 
 /// List the local branches in the repo and the current HEAD branch.
-async fn handle_api_branches_request(
+pub(crate) async fn handle_api_branches_request(
     State(state): State<Arc<DiffServerState>>,
 ) -> Response {
     let repo_root = &state.project_root;
-    let raw = match git_output_in_repo(
-        repo_root,
-        &["branch", "--format=%(refname:short)|%(HEAD)"],
-    )
-    .await
+    let raw = match git_output_in_repo(repo_root, &["branch", "--format=%(refname:short)|%(HEAD)"])
+        .await
     {
         Ok(output) => output,
         Err(error) => return bad_request(error),
@@ -2427,7 +2461,7 @@ async fn detect_default_branch(repo_root: &Path, known: &[String]) -> Option<Str
 }
 
 /// Compute `git diff base...compare` for the requested branches.
-async fn handle_api_compare_request(
+pub(crate) async fn handle_api_compare_request(
     State(state): State<Arc<DiffServerState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
@@ -2454,7 +2488,7 @@ async fn handle_api_compare_request(
     }))
 }
 
-async fn handle_api_compare_file_request(
+pub(crate) async fn handle_api_compare_file_request(
     State(state): State<Arc<DiffServerState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
@@ -2472,8 +2506,7 @@ async fn handle_api_compare_file_request(
     };
 
     let range = format!("{}...{}", base, compare);
-    let diff = match git_output_in_repo(&state.project_root, &["diff", &range, "--", &path]).await
-    {
+    let diff = match git_output_in_repo(&state.project_root, &["diff", &range, "--", &path]).await {
         Ok(output) => output,
         Err(error) => return bad_request(error),
     };
@@ -2502,9 +2535,7 @@ async fn handle_api_compare_file_request(
 }
 
 #[allow(clippy::result_large_err)]
-fn parse_compare_branches(
-    params: &HashMap<String, String>,
-) -> Result<(String, String), Response> {
+fn parse_compare_branches(params: &HashMap<String, String>) -> Result<(String, String), Response> {
     let base_raw = params
         .get("base")
         .ok_or_else(|| bad_request("missing `base` query parameter"))?;

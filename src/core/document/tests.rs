@@ -1855,11 +1855,7 @@ fn extend_word_forward_per_cursor_anchors_independently() {
     doc.move_word_forward();
 
     // Both selections extend from their own anchor through the first word.
-    let anchors: Vec<usize> = doc
-        .selections
-        .iter()
-        .map(|s| s.unwrap().anchor)
-        .collect();
+    let anchors: Vec<usize> = doc.selections.iter().map(|s| s.unwrap().anchor).collect();
     assert!(anchors.contains(&0));
     assert!(anchors.contains(&12));
 }
@@ -1883,8 +1879,16 @@ fn clear_anchor_per_cursor_forward_adjustment() {
 
     // Forward selection: cursor stepped back by one (3 -> 2).
     // Backward selection: cursor unchanged (7).
-    assert!(doc.cursors.contains(&2), "forward steps back: {:?}", doc.cursors);
-    assert!(doc.cursors.contains(&7), "backward unchanged: {:?}", doc.cursors);
+    assert!(
+        doc.cursors.contains(&2),
+        "forward steps back: {:?}",
+        doc.cursors
+    );
+    assert!(
+        doc.cursors.contains(&7),
+        "backward unchanged: {:?}",
+        doc.cursors
+    );
     assert!(!doc.has_selection());
 }
 
@@ -1957,7 +1961,8 @@ fn selection_text_combined_concatenates_line_selections() {
     doc.cursors = vec![5];
     doc.selections = vec![Some(Selection::tail_on_forward(0, 5))];
     doc.cursors.push(15);
-    doc.selections.push(Some(Selection::tail_on_forward(10, 15)));
+    doc.selections
+        .push(Some(Selection::tail_on_forward(10, 15)));
 
     assert_eq!(
         doc.selection_text_combined(),
@@ -2022,10 +2027,7 @@ fn selection_text_combined_overlap_yields_union_text_once() {
     doc.cursors.push(7);
     doc.selections.push(Some(Selection::tail_on_forward(3, 7)));
 
-    assert_eq!(
-        doc.selection_text_combined(),
-        Some("abcdefg".to_string())
-    );
+    assert_eq!(doc.selection_text_combined(), Some("abcdefg".to_string()));
 }
 
 /// End-to-end scenario from the user's example: two cursors on `##` markers,
@@ -2057,4 +2059,3 @@ fn user_scenario_select_line_grows_into_unified_selection() {
     assert!(anchors.contains(&0));
     assert!(anchors.contains(&10));
 }
-

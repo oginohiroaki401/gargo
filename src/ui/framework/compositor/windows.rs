@@ -96,10 +96,7 @@ impl Compositor {
         self.window_manager.focused_buffer_id()
     }
 
-    pub fn focus_window_by_creation_index(
-        &mut self,
-        index: usize,
-    ) -> Result<BufferId, String> {
+    pub fn focus_window_by_creation_index(&mut self, index: usize) -> Result<BufferId, String> {
         let ids = self.window_manager.window_ids_by_creation();
         let Some(window_id) = ids.get(index).copied() else {
             return Err("Window index out of range".to_string());
@@ -119,11 +116,15 @@ impl Compositor {
         let area = self.editor_rect_for_dims(cols, rows)?;
         let col = usize::from(col);
         let row = usize::from(row);
-        self.window_manager.layout(area).panes.into_iter().find(|p| {
-            col >= p.rect.x
-                && col < p.rect.x + p.rect.width
-                && row >= p.rect.y
-                && row < p.rect.y + p.rect.height
-        })
+        self.window_manager
+            .layout(area)
+            .panes
+            .into_iter()
+            .find(|p| {
+                col >= p.rect.x
+                    && col < p.rect.x + p.rect.width
+                    && row >= p.rect.y
+                    && row < p.rect.y + p.rect.height
+            })
     }
 }

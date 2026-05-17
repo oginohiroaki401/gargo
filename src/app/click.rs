@@ -7,7 +7,7 @@ use crate::ui::text::{char_display_width, slice_display_window};
 use crate::ui::views::text_view::reserved_left_gutter_width;
 use std::time::{Duration, Instant};
 
-use super::expand::{expand_selection, ExpandChain};
+use super::expand::{ExpandChain, expand_selection};
 
 const MULTI_CLICK_WINDOW: Duration = Duration::from_millis(400);
 const MULTI_CLICK_RADIUS_CHARS: usize = 1;
@@ -103,8 +103,7 @@ impl App {
         // then call the shared expand engine.
         self.editor.update_highlights_if_dirty();
         let chain = self.expand_chain.expect("chain checked above");
-        let new_range =
-            expand_selection(&self.editor, buffer_id, chain.origin, chain.last_range);
+        let new_range = expand_selection(&self.editor, buffer_id, chain.origin, chain.last_range);
         if let Some((s, e)) = new_range {
             let doc = self.editor.active_buffer_mut();
             doc.selections[0] = Some(Selection::tail_on_forward(s, e));
@@ -151,9 +150,7 @@ impl App {
         if pane.buffer_id != buffer_id {
             return;
         }
-        if self.editor.active_buffer().id != buffer_id
-            && !self.editor.switch_to_buffer(buffer_id)
-        {
+        if self.editor.active_buffer().id != buffer_id && !self.editor.switch_to_buffer(buffer_id) {
             return;
         }
 

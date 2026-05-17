@@ -107,7 +107,10 @@ pub enum CoreAction {
     VisualExpand,
     Indent,
     Dedent,
-    WrapSelection { open: char, close: char },
+    WrapSelection {
+        open: char,
+        close: char,
+    },
 
     // Macros
     MacroRecord(char),

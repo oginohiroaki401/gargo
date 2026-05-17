@@ -48,8 +48,15 @@ pub struct LspServerConfig {
 #[derive(Debug, Deserialize, Serialize, Default)]
 #[serde(default)]
 pub struct PluginConfig {
+    pub github_server: PluginGithubServerConfig,
     pub diff_ui: PluginDiffUiConfig,
     pub github_preview: PluginGithubPreviewConfig,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct PluginGithubServerConfig {
+    pub auto_open_browser: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -146,6 +153,14 @@ impl Default for PluginDiffUiConfig {
     }
 }
 
+impl Default for PluginGithubServerConfig {
+    fn default() -> Self {
+        Self {
+            auto_open_browser: true,
+        }
+    }
+}
+
 impl Default for PluginGithubPreviewConfig {
     fn default() -> Self {
         Self {
@@ -187,11 +202,7 @@ impl Default for ThemeConfig {
 impl Default for PluginsConfig {
     fn default() -> Self {
         Self {
-            enabled: vec![
-                "lsp".to_string(),
-                "diff_ui".to_string(),
-                "github_preview".to_string(),
-            ],
+            enabled: vec!["lsp".to_string(), "github_server".to_string()],
         }
     }
 }
@@ -300,7 +311,25 @@ impl Config {
         let Some(path) = Self::path() else {
             return Self::default();
         };
-        load_toml_with_default(&path).unwrap_or_default()
+        let mut config: Self = load_toml_with_default(&path).unwrap_or_default();
+        config.plugins.enabled = config.plugins.normalized_enabled();
+        config
+    }
+}
+
+impl PluginsConfig {
+    pub fn normalized_enabled(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for id in &self.enabled {
+            let normalized = match id.as_str() {
+                "diff_ui" | "github_preview" => "github_server",
+                other => other,
+            };
+            if !out.iter().any(|existing| existing == normalized) {
+                out.push(normalized.to_string());
+            }
+        }
+        out
     }
 }
 
@@ -443,8 +472,8 @@ markdown_link_hover_selected_bg = "grey"
         assert_eq!(parsed.horizontal_scroll_margin, 5);
         assert!(parsed.show_line_number);
         assert_eq!(
-            parsed.plugin.diff_ui.auto_open_browser,
-            cfg.plugin.diff_ui.auto_open_browser
+            parsed.plugin.github_server.auto_open_browser,
+            cfg.plugin.github_server.auto_open_browser
         );
         assert_eq!(parsed.git.gutter_debounce_high_priority_ms, 1);
         assert_eq!(parsed.performance.file_index.mode, FileIndexMode::Lazy);
@@ -593,5 +622,20 @@ popup_width_percent = 92
         let cfg: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.ui.popup_width_percent, 92);
         assert_eq!(cfg.ui.popup_height_percent, 90);
+    }
+
+    #[test]
+    fn test_plugin_normalization_maps_old_server_plugins_to_unified_server() {
+        let cfg: Config = toml::from_str(
+            r#"
+[plugins]
+enabled = ["lsp", "diff_ui", "github_preview", "github_server"]
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.plugins.normalized_enabled(),
+            vec!["lsp".to_string(), "github_server".to_string()]
+        );
     }
 }

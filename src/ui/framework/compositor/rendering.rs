@@ -71,7 +71,14 @@ impl Compositor {
                 && editor_w > 0
             {
                 let editor_h = rows.saturating_sub(2);
-                explorer.render_preview(&mut self.current, editor_x, 0, editor_w, editor_h, ctx.theme);
+                explorer.render_preview(
+                    &mut self.current,
+                    editor_x,
+                    0,
+                    editor_w,
+                    editor_h,
+                    ctx.theme,
+                );
                 explorer_image_request = explorer.take_pending_image_request();
             } else {
                 self.render_windows(ctx);
@@ -298,7 +305,6 @@ impl Compositor {
             std::mem::swap(&mut self.current, &mut self.previous);
             return Ok(());
         }
-
 
         if let Some(ref hover) = self.markdown_link_hover
             && let Some((cursor_x, cursor_y, _)) = self.focused_window_cursor(ctx)

@@ -993,23 +993,13 @@ mod tests {
         for mode in [Mode::Insert, Mode::Normal, Mode::Visual] {
             let mut state = KeyState::Normal;
             assert_eq!(
-                resolve(
-                    ctrl_shift_key(KeyCode::Char('a')),
-                    &mut state,
-                    &mode,
-                    false
-                ),
+                resolve(ctrl_shift_key(KeyCode::Char('a')), &mut state, &mode, false),
                 core(CoreAction::ExtendToLineStart)
             );
             assert_eq!(state, KeyState::Normal);
 
             assert_eq!(
-                resolve(
-                    ctrl_shift_key(KeyCode::Char('e')),
-                    &mut state,
-                    &mode,
-                    false
-                ),
+                resolve(ctrl_shift_key(KeyCode::Char('e')), &mut state, &mode, false),
                 core(CoreAction::ExtendToLineEnd)
             );
             assert_eq!(state, KeyState::Normal);
@@ -1516,7 +1506,12 @@ mod tests {
         for n in 1u32..=9 {
             let ch = char::from_digit(n, 10).unwrap();
             let mut state = KeyState::Normal;
-            let action = resolve(ctrl_key(KeyCode::Char(ch)), &mut state, &Mode::Normal, false);
+            let action = resolve(
+                ctrl_key(KeyCode::Char(ch)),
+                &mut state,
+                &Mode::Normal,
+                false,
+            );
             assert_eq!(
                 action,
                 app(AppAction::Window(WindowAction::WindowFocusByCreationIndex(
@@ -1531,7 +1526,12 @@ mod tests {
     #[test]
     fn ctrl_zero_shows_last_used_sidebar() {
         let mut state = KeyState::Normal;
-        let action = resolve(ctrl_key(KeyCode::Char('0')), &mut state, &Mode::Normal, false);
+        let action = resolve(
+            ctrl_key(KeyCode::Char('0')),
+            &mut state,
+            &Mode::Normal,
+            false,
+        );
         assert_eq!(
             action,
             app(AppAction::Workspace(WorkspaceAction::ShowLastUsedSidebar))
@@ -1541,10 +1541,17 @@ mod tests {
     #[test]
     fn ctrl_digits_fire_in_insert_mode_too() {
         let mut state = KeyState::Normal;
-        let action = resolve(ctrl_key(KeyCode::Char('3')), &mut state, &Mode::Insert, false);
+        let action = resolve(
+            ctrl_key(KeyCode::Char('3')),
+            &mut state,
+            &Mode::Insert,
+            false,
+        );
         assert_eq!(
             action,
-            app(AppAction::Window(WindowAction::WindowFocusByCreationIndex(2)))
+            app(AppAction::Window(WindowAction::WindowFocusByCreationIndex(
+                2
+            )))
         );
     }
 
@@ -1567,7 +1574,9 @@ mod tests {
         let action = resolve(key('D'), &mut state, &Mode::Normal, false);
         assert_eq!(
             action,
-            app(AppAction::Workspace(WorkspaceAction::OpenBranchComparePicker))
+            app(AppAction::Workspace(
+                WorkspaceAction::OpenBranchComparePicker
+            ))
         );
         assert_eq!(state, KeyState::Normal);
     }

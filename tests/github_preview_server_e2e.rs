@@ -69,6 +69,61 @@ fn run_git_output(repo: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
+/// owner/repo/branch the preview server derives for `repo`, mirroring
+/// `resolve_repo_url_context`: owner/repo from the GitHub remote when present,
+/// else `local`/folder name; branch from `git rev-parse`.
+fn repo_url_parts(repo: &Path) -> (String, String, String) {
+    let remote = Command::new("git")
+        .args(["config", "--get", "remote.origin.url"])
+        .current_dir(repo)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+    let (owner, name) = match remote {
+        Some(r) if r.contains("github.com") => {
+            let path = r
+                .rsplit("github.com")
+                .next()
+                .unwrap_or("")
+                .trim_start_matches([':', '/'])
+                .trim_end_matches(".git");
+            let mut parts = path.split('/');
+            (
+                parts.next().unwrap_or("local").to_string(),
+                parts.next().unwrap_or("repo").to_string(),
+            )
+        }
+        _ => (
+            "local".to_string(),
+            repo.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "repo".to_string()),
+        ),
+    };
+    let branch = run_git_output(repo, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    (owner, name, branch)
+}
+
+/// github.com-style blob URL the rewritten preview server serves.
+fn github_blob_url(port: u16, repo: &Path, rel: &str) -> String {
+    let (owner, name, branch) = repo_url_parts(repo);
+    format!("http://127.0.0.1:{port}/{owner}/{name}/blob/{branch}/{rel}")
+}
+
+/// github.com-style tree URL the rewritten preview server serves.
+fn github_tree_url(port: u16, repo: &Path, rel: &str) -> String {
+    let (owner, name, branch) = repo_url_parts(repo);
+    format!("http://127.0.0.1:{port}/{owner}/{name}/tree/{branch}/{rel}")
+}
+
+/// `/{owner}/{repo}` repo-home path.
+fn github_repo_path(repo: &Path) -> String {
+    let (owner, name, _) = repo_url_parts(repo);
+    format!("/{owner}/{name}")
+}
+
 fn read_event(rx: &std::sync::mpsc::Receiver<GithubPreviewEvent>) -> GithubPreviewEvent {
     rx.recv_timeout(Duration::from_secs(5))
         .expect("timed out waiting for github preview server event")
@@ -283,7 +338,6 @@ Regular text after diagram.
 
     run_git(repo, &["add", "README.md"]);
     run_git(repo, &["commit", "-m", "add readme"]);
-    let branch = run_git_output(repo, &["branch", "--show-current"]);
     let repo_root = run_git_output(repo, &["rev-parse", "--show-toplevel"]);
 
     let _cwd_guard = WorkingDirGuard::set(repo);
@@ -294,18 +348,25 @@ Regular text after diagram.
         return;
     };
 
-    // Test: Fetch the README and verify mermaid.js is included
-    let readme_url = format!("http://127.0.0.1:{}/blob/README.md", port);
+    // Test: Fetch the README and verify Markdown renders without CDN dependencies.
+    let readme_url = github_blob_url(port, repo, "README.md");
     let html = get_html_with_retry(&readme_url);
 
     assert!(
-        html.contains("mermaid"),
-        "expected HTML to contain mermaid reference"
+        !html.contains("cdn.jsdelivr.net"),
+        "expected preview HTML to avoid CDN dependencies"
     );
 
     assert!(
-        html.contains("cdn.jsdelivr.net/npm/mermaid"),
-        "expected HTML to include mermaid CDN link"
+        html.contains(r#"<script src="/assets/mermaid.min.js"></script>"#)
+            && !html.contains("type=\"module\""),
+        "expected preview HTML to use a local bundled mermaid asset"
+    );
+    let mermaid_js =
+        get_html_with_retry(&format!("http://127.0.0.1:{}/assets/mermaid.min.js", port));
+    assert!(
+        mermaid_js.contains("startOnLoad"),
+        "expected local mermaid asset response"
     );
     assert!(
         html.contains("fetch(`/events?since=${lastSeenVersion}`"),
@@ -326,42 +387,49 @@ Regular text after diagram.
     );
 
     assert!(
-        readme_html.contains("language-mermaid"),
-        "expected mermaid code block in HTML"
+        readme_html.contains(r#"<pre class="mermaid">"#),
+        "expected mermaid block in HTML"
     );
 
     assert!(
-        readme_html.contains("Repository browser"),
-        "expected context header label in preview UI"
+        readme_html.contains(r#"class="repo-header""#),
+        "expected repository header in preview UI"
     );
 
     assert!(
         readme_html.contains(&format!(r#"<code>{}</code>"#, repo_root)),
-        "expected absolute root path in preview header"
+        "expected absolute root path in repository header"
     );
 
     assert!(
-        readme_html.contains(r#"<span class="context-key">Showing</span><code>README.md</code>"#),
-        "expected current displayed path in preview header"
+        readme_html.contains(&format!(
+            r#"<a class="repo-tab repo-tab-active" href="{}">Code</a>"#,
+            github_repo_path(repo)
+        )),
+        "expected code tab to be active in repository header"
     );
 
     assert!(
-        readme_html.contains(r#"href="/">Root</a>"#),
-        "expected root breadcrumb pill link"
+        readme_html.contains(r#"href="https://github.com/acme/repo""#)
+            && readme_html.contains(r#"<span class="repo-owner">acme</span>"#),
+        "expected owner/repo title to link to GitHub remote"
     );
 
-    let expected_blob_url = format!("https://github.com/acme/repo/blob/{}/README.md", branch);
     assert!(
-        readme_html.contains(&format!(r#"href="{}""#, expected_blob_url)),
-        "expected GitHub blob link in breadcrumb"
+        !readme_html.contains("Repository browser")
+            && !readme_html.contains(r#"<span class="context-key">Showing</span>"#),
+        "expected legacy context header to be omitted"
     );
 
     let root_url = format!("http://127.0.0.1:{}/", port);
     let root_html = get_html_with_retry(&root_url);
-    let expected_tree_url = format!("https://github.com/acme/repo/tree/{}", branch);
     assert!(
-        root_html.contains(&format!(r#"href="{}""#, expected_tree_url)),
-        "expected GitHub tree link for root directory"
+        root_html.contains(r#"class="repo-header""#),
+        "expected repository header for root directory"
+    );
+    assert!(
+        root_html.contains(r#"href="https://github.com/acme/repo""#),
+        "expected root header title to link to GitHub remote"
     );
 
     // Test: Duplicate start should error
@@ -424,7 +492,6 @@ fn test_github_preview_server_serves_tree_view() {
 
     run_git(repo, &["add", "."]);
     run_git(repo, &["commit", "-m", "add files"]);
-    let branch = run_git_output(repo, &["branch", "--show-current"]);
     let repo_root = run_git_output(repo, &["rev-parse", "--show-toplevel"]);
 
     let _cwd_guard = WorkingDirGuard::set(repo);
@@ -453,16 +520,15 @@ fn test_github_preview_server_serves_tree_view() {
         "expected absolute root path in root tree header"
     );
 
-    let nested_url = format!("http://127.0.0.1:{}/tree/docs", port);
+    let nested_url = github_tree_url(port, repo, "docs");
     let nested_html = get_html_with_retry(&nested_url);
-    let expected_nested_tree_url = format!("https://github.com/acme/repo/tree/{}/docs", branch);
     assert!(
-        nested_html.contains(&format!(r#"href="{}""#, expected_nested_tree_url)),
-        "expected GitHub tree link for current directory path"
+        nested_html.contains(r#"class="repo-header""#),
+        "expected repository header for current directory path"
     );
     assert!(
-        nested_html.contains(r#"<span class="context-key">Showing</span><code>docs</code>"#),
-        "expected displayed nested directory path in header"
+        !nested_html.contains(r#"<span class="context-key">Showing</span>"#),
+        "expected legacy displayed nested directory path header to be omitted"
     );
 
     // Cleanup
@@ -561,7 +627,7 @@ fn test_github_preview_server_detaches_when_browser_leaves_active_path() {
         })
         .expect("set active path");
 
-    let active_url = format!("http://127.0.0.1:{}/blob/README.md", port);
+    let active_url = github_blob_url(port, repo, "README.md");
     let _ = get_html_with_retry(&active_url);
     assert!(
         handle
@@ -571,7 +637,7 @@ fn test_github_preview_server_detaches_when_browser_leaves_active_path() {
         "expected no detach event while browsing active path"
     );
 
-    let off_path_url = format!("http://127.0.0.1:{}/blob/docs.md", port);
+    let off_path_url = github_blob_url(port, repo, "docs.md");
     let _ = get_html_with_retry(&off_path_url);
     match read_event(&handle.event_rx) {
         GithubPreviewEvent::Detached { requested_path } => {
@@ -631,7 +697,7 @@ fn test_github_preview_server_events_endpoint_emits_navigate_refresh_and_detache
         })
         .expect("set active path");
     let navigate = wait_for_event_kind(&base_url, 0, "navigate", Some("README.md"));
-    let expected_readme_url = format!("http://127.0.0.1:{}/blob/README.md", port);
+    let expected_readme_url = github_blob_url(port, repo, "README.md");
     assert_eq!(navigate["url"].as_str(), Some(expected_readme_url.as_str()));
     let navigate_version = navigate["version"]
         .as_u64()
@@ -647,7 +713,7 @@ fn test_github_preview_server_events_endpoint_emits_navigate_refresh_and_detache
         .as_u64()
         .expect("refresh event version should be u64");
 
-    let _ = get_html_with_retry(&format!("http://127.0.0.1:{}/blob/docs.md", port));
+    let _ = get_html_with_retry(&github_blob_url(port, repo, "docs.md"));
     let detached = wait_for_event_kind(&base_url, refresh_version, "detached", Some("docs.md"));
     assert_eq!(detached["detached"].as_bool(), Some(true));
 
@@ -689,7 +755,7 @@ fn test_github_preview_plugin_external_file_change_emits_refresh_event() {
     let host = parsed.host_str().expect("preview URL host");
     let port = parsed.port().expect("preview URL port");
     let base_url = format!("{}://{}:{}", parsed.scheme(), host, port);
-    let expected_readme_url = format!("http://127.0.0.1:{}/blob/README.md", port);
+    let expected_readme_url = github_blob_url(port, repo, "README.md");
 
     let navigate = wait_for_event_kind(&base_url, 0, "navigate", Some("README.md"));
     let navigate_version = navigate["version"]

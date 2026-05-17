@@ -12,6 +12,7 @@
 //! - Handle with mpsc channels for communication
 //! - Worker that runs on separate thread with Tokio runtime
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -19,14 +20,18 @@ use std::thread;
 use axum::{
     Router,
     extract::{Path as AxumPath, Query, State},
-    response::{Html, IntoResponse, Json},
+    http::{HeaderValue, StatusCode, header},
+    response::{Html, IntoResponse, Json, Redirect},
     routing::get,
 };
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
 use crate::command::registry::{CommandContext, CommandEffect, CommandEntry, CommandRegistry};
+use crate::diff_render::{hl_class_attr, render_diff_styles};
 use crate::input::action::{Action, AppAction, IntegrationAction};
+use crate::syntax::highlight::{HighlightSpan, highlight_text};
+use crate::syntax::language::LanguageRegistry;
 
 /// Commands that can be sent to the GitHub preview server
 #[derive(Debug, Clone)]
@@ -166,8 +171,12 @@ impl GithubPreviewWorker {
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         self.server_shutdown_tx = Some(shutdown_tx);
 
+        let url_ctx = self
+            .tokio_runtime
+            .block_on(resolve_repo_url_context(&repo_root));
         let server_state = Arc::new(Mutex::new(PreviewServerState {
             repo_root,
+            url_ctx: url_ctx.clone(),
             port,
             active_rel_path: self.pending_active_rel_path.clone(),
             detached: false,
@@ -178,6 +187,7 @@ impl GithubPreviewWorker {
                 path: self.pending_active_rel_path.clone(),
                 url: Some(preview_url_for_rel_path(
                     port,
+                    &url_ctx,
                     self.pending_active_rel_path.as_deref(),
                 )),
                 detached: false,
@@ -227,6 +237,7 @@ impl GithubPreviewWorker {
                 path: state.active_rel_path.clone(),
                 url: Some(preview_url_for_rel_path(
                     state.port,
+                    &state.url_ctx,
                     state.active_rel_path.as_deref(),
                 )),
                 detached: state.detached,
@@ -253,6 +264,7 @@ impl GithubPreviewWorker {
             path: state.active_rel_path.clone(),
             url: Some(preview_url_for_rel_path(
                 state.port,
+                &state.url_ctx,
                 state.active_rel_path.as_deref(),
             )),
             detached: state.detached,
@@ -280,6 +292,7 @@ impl GithubPreviewWorker {
             path: state.active_rel_path.clone(),
             url: Some(preview_url_for_rel_path(
                 state.port,
+                &state.url_ctx,
                 state.active_rel_path.as_deref(),
             )),
             detached: state.detached,
@@ -313,22 +326,23 @@ impl GithubPreviewWorker {
     }
 }
 
-struct PreviewServerState {
-    repo_root: PathBuf,
-    port: u16,
-    active_rel_path: Option<String>,
-    detached: bool,
-    last_detach_path: Option<String>,
-    version: u64,
-    last_browser_event: Option<PreviewBrowserEvent>,
-    event_tx: mpsc::Sender<GithubPreviewEvent>,
-    buffer_content: Option<String>,
-    cursor_line: Option<usize>,
+pub(crate) struct PreviewServerState {
+    pub(crate) repo_root: PathBuf,
+    pub(crate) url_ctx: RepoUrlContext,
+    pub(crate) port: u16,
+    pub(crate) active_rel_path: Option<String>,
+    pub(crate) detached: bool,
+    pub(crate) last_detach_path: Option<String>,
+    pub(crate) version: u64,
+    pub(crate) last_browser_event: Option<PreviewBrowserEvent>,
+    pub(crate) event_tx: mpsc::Sender<GithubPreviewEvent>,
+    pub(crate) buffer_content: Option<String>,
+    pub(crate) cursor_line: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum PreviewBrowserEventKind {
+pub(crate) enum PreviewBrowserEventKind {
     Navigate,
     Refresh,
     Detached,
@@ -336,26 +350,28 @@ enum PreviewBrowserEventKind {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct PreviewBrowserEvent {
-    kind: PreviewBrowserEventKind,
-    path: Option<String>,
-    url: Option<String>,
-    detached: bool,
-    version: u64,
-    cursor_line: Option<usize>,
+pub(crate) struct PreviewBrowserEvent {
+    pub(crate) kind: PreviewBrowserEventKind,
+    pub(crate) path: Option<String>,
+    pub(crate) url: Option<String>,
+    pub(crate) detached: bool,
+    pub(crate) version: u64,
+    pub(crate) cursor_line: Option<usize>,
 }
 
-fn preview_url_for_rel_path(port: u16, rel_path: Option<&str>) -> String {
-    if let Some(rel_path) = rel_path
-        && rel_path != "."
-    {
-        format!("http://127.0.0.1:{}/blob/{}", port, rel_path)
-    } else {
-        format!("http://127.0.0.1:{}/", port)
-    }
+pub(crate) fn preview_url_for_rel_path(
+    port: u16,
+    ctx: &RepoUrlContext,
+    rel_path: Option<&str>,
+) -> String {
+    let path = match rel_path {
+        Some(rel_path) if rel_path != "." => blob_url(ctx, rel_path),
+        _ => repo_home_url(ctx),
+    };
+    format!("http://127.0.0.1:{}{}", port, path)
 }
 
-fn broadcast_preview_event(state: &mut PreviewServerState, event: PreviewBrowserEvent) {
+pub(crate) fn broadcast_preview_event(state: &mut PreviewServerState, event: PreviewBrowserEvent) {
     state.last_browser_event = Some(event);
 }
 
@@ -471,11 +487,15 @@ const LIVE_SYNC_SCRIPT: &str = r#"<script>
         try { window.sessionStorage.setItem(CURSOR_LINE_STORAGE_KEY, String(payload.cursor_line)); } catch (_) {}
       }
       if (payload.url) {
-        const route = toRoute(payload.url);
-        if (route && route !== currentRoute()) {
-          window.location.assign(route);
-          return;
-        }
+        try {
+          const target = new URL(payload.url, window.location.origin);
+          // Navigate only when the file path changed; otherwise reload in
+          // place so query params (e.g. ?plain=1) survive the refresh.
+          if (target.pathname !== window.location.pathname) {
+            window.location.assign(`${target.pathname}${target.search}`);
+            return;
+          }
+        } catch (_) {}
       }
       window.location.reload();
       return;
@@ -551,6 +571,192 @@ const PREVIEW_RELOAD_SCRIPT: &str = r#"<script>
 })();
 </script>"#;
 
+const MERMAID_JS: &str = include_str!("../../assets/mermaid.min.js");
+
+const MERMAID_INIT_SCRIPT: &str = r#"<script>
+(() => {
+  if (!window.mermaid) return;
+  window.mermaid.initialize({ startOnLoad: false, theme: 'default' });
+  window.mermaid.run({ querySelector: 'pre.mermaid' }).catch(() => {});
+})();
+</script>"#;
+
+pub(crate) async fn handle_mermaid_asset() -> impl IntoResponse {
+    let mut response = (StatusCode::OK, MERMAID_JS).into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/javascript; charset=utf-8"),
+    );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=31536000, immutable"),
+    );
+    response
+}
+
+fn repository_header(
+    root_path: &str,
+    active_tab: &str,
+    repo_url: Option<&str>,
+    ctx: &RepoUrlContext,
+) -> String {
+    let tab = |id: &str, label: &str, href: &str| {
+        let class_name = if id == active_tab {
+            "repo-tab repo-tab-active"
+        } else {
+            "repo-tab"
+        };
+        format!(
+            r#"<a class="{class_name}" href="{}">{}</a>"#,
+            html_escape(href),
+            html_escape(label)
+        )
+    };
+    let title = repo_title_html(root_path, repo_url);
+    format!(
+        r#"<div class="repo-header">
+            <div class="repo-title">{}</div>
+            <div class="repo-meta"><span class="context-key">Root</span><code>{}</code></div>
+            <nav class="repo-tabs" aria-label="Repository views">{}{}{}{}</nav>
+        </div>"#,
+        title,
+        html_escape(root_path),
+        tab("code", "Code", &repo_home_url(ctx)),
+        tab("status", "Status", "/status"),
+        tab("branches", "Branches", "/branches"),
+        tab("commits", "Commits", &commits_url(ctx)),
+    )
+}
+
+pub(crate) fn repo_title_html(root_path: &str, repo_url: Option<&str>) -> String {
+    let (owner, repo) = owner_repo_for_root(root_path, repo_url);
+    let title = format!(
+        r#"<span class="repo-owner">{}</span><span class="repo-sep">/</span><strong>{}</strong>"#,
+        html_escape(&owner),
+        html_escape(&repo)
+    );
+    if let Some(url) = repo_url {
+        format!(
+            r#"<a class="repo-title-link" href="{}" target="_blank" rel="noopener noreferrer">{}</a>"#,
+            html_escape(url),
+            title
+        )
+    } else {
+        title
+    }
+}
+
+pub(crate) fn github_owner_repo_from_url(url: &str) -> Option<(String, String)> {
+    let path = url.strip_prefix("https://github.com/")?;
+    let mut parts = path.trim_matches('/').split('/');
+    let owner = parts.next()?.to_string();
+    let repo = parts.next()?.trim_end_matches(".git").to_string();
+    if owner.is_empty() || repo.is_empty() {
+        None
+    } else {
+        Some((owner, repo))
+    }
+}
+
+pub(crate) fn repo_name_from_root(root_path: &str) -> &str {
+    root_path
+        .rsplit('/')
+        .find(|part| !part.is_empty())
+        .unwrap_or(root_path)
+}
+
+/// owner/repo/branch used to build github.com-faithful URLs. The local server
+/// mirrors GitHub's path layout so swapping `http://127.0.0.1:PORT/` for
+/// `github.com/` yields the equivalent page.
+#[derive(Debug, Clone)]
+pub(crate) struct RepoUrlContext {
+    pub(crate) owner: String,
+    pub(crate) repo: String,
+    pub(crate) branch: String,
+}
+
+/// owner/repo pair: from the GitHub remote when present, else `local`/folder name.
+pub(crate) fn owner_repo_for_root(root_path: &str, repo_url: Option<&str>) -> (String, String) {
+    repo_url
+        .and_then(github_owner_repo_from_url)
+        .unwrap_or_else(|| ("local".to_string(), repo_name_from_root(root_path).to_string()))
+}
+
+/// Resolve the owner/repo/branch for a repository (runs git).
+pub(crate) async fn resolve_repo_url_context(repo_root: &Path) -> RepoUrlContext {
+    let repo_url = github_repo_url(repo_root).await;
+    let root_path = repo_root.display().to_string();
+    let (owner, repo) = owner_repo_for_root(&root_path, repo_url.as_deref());
+    let branch = detect_current_branch(repo_root).await;
+    RepoUrlContext {
+        owner,
+        repo,
+        branch,
+    }
+}
+
+/// Current branch name; falls back to the short commit hash when detached,
+/// or `main` when git is unavailable.
+async fn detect_current_branch(repo_root: &Path) -> String {
+    match git_output_in_repo(repo_root, &["rev-parse", "--abbrev-ref", "HEAD"]).await {
+        Ok(branch) if branch != "HEAD" && !branch.is_empty() => branch,
+        _ => git_output_in_repo(repo_root, &["rev-parse", "--short", "HEAD"])
+            .await
+            .ok()
+            .filter(|hash| !hash.is_empty())
+            .unwrap_or_else(|| "main".to_string()),
+    }
+}
+
+/// `/{owner}/{repo}` — the repository home.
+pub(crate) fn repo_home_url(ctx: &RepoUrlContext) -> String {
+    format!("/{}/{}", ctx.owner, ctx.repo)
+}
+
+/// `/{owner}/{repo}/tree/{branch}/{path}` — a directory listing.
+pub(crate) fn tree_url(ctx: &RepoUrlContext, rel_path: &str) -> String {
+    if rel_path.is_empty() || rel_path == "." {
+        format!("/{}/{}/tree/{}", ctx.owner, ctx.repo, ctx.branch)
+    } else {
+        format!("/{}/{}/tree/{}/{}", ctx.owner, ctx.repo, ctx.branch, rel_path)
+    }
+}
+
+/// `/{owner}/{repo}/blob/{branch}/{path}` — a file view.
+pub(crate) fn blob_url(ctx: &RepoUrlContext, rel_path: &str) -> String {
+    format!("/{}/{}/blob/{}/{}", ctx.owner, ctx.repo, ctx.branch, rel_path)
+}
+
+/// `/{owner}/{repo}/commits/{branch}` — the commit history.
+pub(crate) fn commits_url(ctx: &RepoUrlContext) -> String {
+    format!("/{}/{}/commits/{}", ctx.owner, ctx.repo, ctx.branch)
+}
+
+/// `/{owner}/{repo}/commit/{hash}` — a single commit.
+pub(crate) fn commit_url(ctx: &RepoUrlContext, hash: &str) -> String {
+    format!("/{}/{}/commit/{}", ctx.owner, ctx.repo, hash)
+}
+
+/// Resolve the `{*rest}` capture of a `/tree|blob/{branch}/{path}` route into a
+/// repo-relative path, stripping the known branch prefix. Branch names may
+/// contain `/`, so the known branch is matched first; stale links fall back to
+/// dropping the first segment as the ref.
+pub(crate) fn split_branch_and_path(rest: &str, branch: &str) -> String {
+    let rest = rest.trim_start_matches('/');
+    if rest == branch {
+        return ".".to_string();
+    }
+    if let Some(stripped) = rest.strip_prefix(branch)
+        && let Some(path) = stripped.strip_prefix('/')
+    {
+        return normalize_rel_path_for_compare(path);
+    }
+    match rest.split_once('/') {
+        Some((_branch, path)) => normalize_rel_path_for_compare(path),
+        None => ".".to_string(),
+    }
+}
+
 fn inject_preview_reload_script(html: &str) -> String {
     if let Some(pos) = html.rfind("</body>") {
         let mut result = String::with_capacity(html.len() + PREVIEW_RELOAD_SCRIPT.len());
@@ -570,38 +776,6 @@ const DIRECTORY_TEMPLATE: &str = r#"<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{TITLE}}</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/github-markdown-css@5/github-markdown-light.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/styles/github.min.css">
-    <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/highlight.min.js"></script>
-    <script type="module">
-      import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
-      mermaid.initialize({
-        startOnLoad: false,
-        theme: 'default'
-      });
-
-      // Wait for DOM to be ready
-      document.addEventListener('DOMContentLoaded', () => {
-        // Initialize highlight.js for all code blocks except mermaid
-        document.querySelectorAll('pre code').forEach((block) => {
-          if (!block.classList.contains('language-mermaid')) {
-            hljs.highlightElement(block);
-          }
-        });
-
-        // Transform mermaid code blocks to proper structure
-        document.querySelectorAll('pre code.language-mermaid').forEach((block) => {
-          const pre = block.parentElement;
-          const mermaidDiv = document.createElement('div');
-          mermaidDiv.className = 'mermaid';
-          mermaidDiv.textContent = block.textContent;
-          pre.replaceWith(mermaidDiv);
-        });
-
-        // Render all mermaid diagrams
-        mermaid.run();
-      });
-    </script>
     <style>
         body {
             margin: 0;
@@ -631,6 +805,65 @@ const DIRECTORY_TEMPLATE: &str = r#"<!DOCTYPE html>
             color: #57606a;
             text-transform: uppercase;
             letter-spacing: 0.04em;
+        }
+        .repo-header {
+            background: #ffffff;
+            border: 1px solid #d0d7de;
+            border-radius: 6px;
+            margin-bottom: 16px;
+            overflow: hidden;
+        }
+        .repo-title {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 14px 16px 8px;
+            font-size: 20px;
+        }
+        .repo-title-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            color: inherit;
+            text-decoration: none;
+        }
+        .repo-title-link:hover strong {
+            text-decoration: underline;
+        }
+        .repo-owner, .repo-sep { color: #57606a; font-weight: 400; }
+        .repo-meta {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 8px;
+            padding: 0 16px 12px;
+            font-size: 13px;
+            color: #57606a;
+        }
+        .repo-meta code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            padding: 0;
+            background: transparent;
+            border: 0;
+        }
+        .repo-tabs {
+            display: flex;
+            gap: 4px;
+            padding: 0 8px;
+            border-top: 1px solid #d8dee4;
+        }
+        .repo-tab {
+            display: inline-flex;
+            padding: 10px 12px;
+            color: #24292f;
+            text-decoration: none;
+            border-bottom: 2px solid transparent;
+            font-size: 14px;
+        }
+        .repo-tab:hover { background: #f6f8fa; text-decoration: none; }
+        .repo-tab-active {
+            font-weight: 600;
+            border-bottom-color: #fd8c73;
         }
         .context-row {
             display: flex;
@@ -750,18 +983,16 @@ const DIRECTORY_TEMPLATE: &str = r#"<!DOCTYPE html>
             max-width: 100%;
             height: auto;
         }
+{{SYNTAX_STYLES}}
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <div class="context-label">Repository browser</div>
-            <div class="context-row"><span class="context-key">Root</span><code>{{ROOT_PATH}}</code></div>
-            <div class="context-row"><span class="context-key">Showing</span><code>{{CURRENT_PATH}}</code></div>
-            <div class="breadcrumb">{{BREADCRUMB}}</div>
-        </div>
+        {{REPO_HEADER}}
         {{CONTENT}}
     </div>
+    <script src="/assets/mermaid.min.js"></script>
+    {{MERMAID_INIT_SCRIPT}}
     {{LIVE_SYNC_SCRIPT}}
 </body>
 </html>"#;
@@ -773,38 +1004,6 @@ const FILE_TEMPLATE: &str = r#"<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{TITLE}}</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/github-markdown-css@5/github-markdown-light.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/styles/github.min.css">
-    <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/highlight.min.js"></script>
-    <script type="module">
-      import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
-      mermaid.initialize({
-        startOnLoad: false,
-        theme: 'default'
-      });
-
-      // Wait for DOM to be ready
-      document.addEventListener('DOMContentLoaded', () => {
-        // Initialize highlight.js for all code blocks except mermaid
-        document.querySelectorAll('pre code').forEach((block) => {
-          if (!block.classList.contains('language-mermaid')) {
-            hljs.highlightElement(block);
-          }
-        });
-
-        // Transform mermaid code blocks to proper structure
-        document.querySelectorAll('pre code.language-mermaid').forEach((block) => {
-          const pre = block.parentElement;
-          const mermaidDiv = document.createElement('div');
-          mermaidDiv.className = 'mermaid';
-          mermaidDiv.textContent = block.textContent;
-          pre.replaceWith(mermaidDiv);
-        });
-
-        // Render all mermaid diagrams
-        mermaid.run();
-      });
-    </script>
     <style>
         body {
             margin: 0;
@@ -834,6 +1033,65 @@ const FILE_TEMPLATE: &str = r#"<!DOCTYPE html>
             color: #57606a;
             text-transform: uppercase;
             letter-spacing: 0.04em;
+        }
+        .repo-header {
+            background: #ffffff;
+            border: 1px solid #d0d7de;
+            border-radius: 6px;
+            margin-bottom: 16px;
+            overflow: hidden;
+        }
+        .repo-title {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 14px 16px 8px;
+            font-size: 20px;
+        }
+        .repo-title-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            color: inherit;
+            text-decoration: none;
+        }
+        .repo-title-link:hover strong {
+            text-decoration: underline;
+        }
+        .repo-owner, .repo-sep { color: #57606a; font-weight: 400; }
+        .repo-meta {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 8px;
+            padding: 0 16px 12px;
+            font-size: 13px;
+            color: #57606a;
+        }
+        .repo-meta code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            padding: 0;
+            background: transparent;
+            border: 0;
+        }
+        .repo-tabs {
+            display: flex;
+            gap: 4px;
+            padding: 0 8px;
+            border-top: 1px solid #d8dee4;
+        }
+        .repo-tab {
+            display: inline-flex;
+            padding: 10px 12px;
+            color: #24292f;
+            text-decoration: none;
+            border-bottom: 2px solid transparent;
+            font-size: 14px;
+        }
+        .repo-tab:hover { background: #f6f8fa; text-decoration: none; }
+        .repo-tab-active {
+            font-weight: 600;
+            border-bottom-color: #fd8c73;
         }
         .context-row {
             display: flex;
@@ -931,18 +1189,16 @@ const FILE_TEMPLATE: &str = r#"<!DOCTYPE html>
             max-width: 100%;
             height: auto;
         }
+{{SYNTAX_STYLES}}
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <div class="context-label">Repository browser</div>
-            <div class="context-row"><span class="context-key">Root</span><code>{{ROOT_PATH}}</code></div>
-            <div class="context-row"><span class="context-key">Showing</span><code>{{CURRENT_PATH}}</code></div>
-            <div class="breadcrumb">{{BREADCRUMB}}</div>
-        </div>
+        {{REPO_HEADER}}
         {{CONTENT}}
     </div>
+    <script src="/assets/mermaid.min.js"></script>
+    {{MERMAID_INIT_SCRIPT}}
     {{LIVE_SYNC_SCRIPT}}
 </body>
 </html>"#;
@@ -953,12 +1209,15 @@ async fn run_server(
     shutdown_rx: tokio::sync::oneshot::Receiver<()>,
     state: Arc<Mutex<PreviewServerState>>,
 ) {
+    // URLs mirror github.com — see the route comment in `github_server::run_server`.
     let app = Router::new()
-        .route("/", get(handle_root))
+        .route("/", get(handle_bare_root))
         .route("/events", get(handle_events))
-        .route("/tree/{*path}", get(handle_tree))
-        .route("/blob/{*path}", get(handle_blob))
-        .route("/preview/{*path}", get(handle_preview))
+        .route("/assets/mermaid.min.js", get(handle_mermaid_asset))
+        .route("/{owner}/{repo}", get(handle_root))
+        .route("/{owner}/{repo}/tree/{*rest}", get(handle_tree))
+        .route("/{owner}/{repo}/blob/{*rest}", get(handle_blob))
+        .route("/{owner}/{repo}/preview/{*rest}", get(handle_preview))
         .with_state(state)
         .layer(CorsLayer::permissive());
 
@@ -970,16 +1229,16 @@ async fn run_server(
 }
 
 #[derive(Debug, Deserialize)]
-struct EventsQuery {
-    since: Option<u64>,
+pub(crate) struct EventsQuery {
+    pub(crate) since: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
-struct EventsResponse {
-    event: Option<PreviewBrowserEvent>,
+pub(crate) struct EventsResponse {
+    pub(crate) event: Option<PreviewBrowserEvent>,
 }
 
-async fn handle_events(
+pub(crate) async fn handle_events(
     State(state): State<Arc<Mutex<PreviewServerState>>>,
     Query(query): Query<EventsQuery>,
 ) -> impl IntoResponse {
@@ -996,22 +1255,42 @@ async fn handle_events(
     }
 }
 
-/// Handle root path - show directory listing
-async fn handle_root(State(state): State<Arc<Mutex<PreviewServerState>>>) -> impl IntoResponse {
-    maybe_emit_detached_event(&state, ".");
-
-    let repo_root = state.lock().unwrap().repo_root.clone();
-
-    // Always show directory listing at root
-    handle_directory_listing(&repo_root, ".", &repo_root).await
+/// Redirect the bare `/` to the github.com-style repo home `/{owner}/{repo}`.
+pub(crate) async fn handle_bare_root(
+    State(state): State<Arc<Mutex<PreviewServerState>>>,
+) -> impl IntoResponse {
+    let url = {
+        let st = state.lock().unwrap();
+        repo_home_url(&st.url_ctx)
+    };
+    Redirect::to(&url)
 }
 
-/// Handle tree view (directory listing)
-async fn handle_tree(
+/// Handle the repo home `/{owner}/{repo}` - show directory listing
+pub(crate) async fn handle_root(
     State(state): State<Arc<Mutex<PreviewServerState>>>,
-    AxumPath(path): AxumPath<String>,
 ) -> impl IntoResponse {
-    let repo_root = state.lock().unwrap().repo_root.clone();
+    maybe_emit_detached_event(&state, ".");
+
+    let (repo_root, url_ctx) = {
+        let st = state.lock().unwrap();
+        (st.repo_root.clone(), st.url_ctx.clone())
+    };
+
+    // Always show directory listing at root
+    handle_directory_listing(&repo_root, ".", &repo_root, &url_ctx).await
+}
+
+/// Handle tree view (directory listing) `/{owner}/{repo}/tree/{branch}/{path}`
+pub(crate) async fn handle_tree(
+    State(state): State<Arc<Mutex<PreviewServerState>>>,
+    AxumPath((_owner, _repo, rest)): AxumPath<(String, String, String)>,
+) -> impl IntoResponse {
+    let (repo_root, url_ctx) = {
+        let st = state.lock().unwrap();
+        (st.repo_root.clone(), st.url_ctx.clone())
+    };
+    let path = split_branch_and_path(&rest, &url_ctx.branch);
 
     let full_path = repo_root.join(&path);
 
@@ -1022,16 +1301,18 @@ async fn handle_tree(
 
     maybe_emit_detached_event(&state, &path);
 
-    handle_directory_listing(&full_path, &path, &repo_root).await
+    handle_directory_listing(&full_path, &path, &repo_root, &url_ctx).await
 }
 
-/// Handle blob view (file content)
-async fn handle_blob(
+/// Handle blob view (file content) `/{owner}/{repo}/blob/{branch}/{path}`
+pub(crate) async fn handle_blob(
     State(state): State<Arc<Mutex<PreviewServerState>>>,
-    AxumPath(path): AxumPath<String>,
+    AxumPath((_owner, _repo, rest)): AxumPath<(String, String, String)>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let (repo_root, buffer_content) = {
+    let (repo_root, url_ctx, path, buffer_content) = {
         let st = state.lock().unwrap();
+        let path = split_branch_and_path(&rest, &st.url_ctx.branch);
         let bc = if st
             .active_rel_path
             .as_deref()
@@ -1042,7 +1323,7 @@ async fn handle_blob(
         } else {
             None
         };
-        (st.repo_root.clone(), bc)
+        (st.repo_root.clone(), st.url_ctx.clone(), path, bc)
     };
 
     let full_path = repo_root.join(&path);
@@ -1054,16 +1335,27 @@ async fn handle_blob(
 
     maybe_emit_detached_event(&state, &path);
 
-    handle_file_display(&full_path, &path, &repo_root, buffer_content.as_deref()).await
+    // GitHub's `?plain=1` convention: show the raw markdown source.
+    let plain = params.get("plain").map(|v| v == "1").unwrap_or(false);
+    handle_file_display(
+        &full_path,
+        &path,
+        &repo_root,
+        &url_ctx,
+        buffer_content.as_deref(),
+        plain,
+    )
+    .await
 }
 
 /// Handle HTML preview (render HTML as-is in the browser)
-async fn handle_preview(
+pub(crate) async fn handle_preview(
     State(state): State<Arc<Mutex<PreviewServerState>>>,
-    AxumPath(path): AxumPath<String>,
+    AxumPath((_owner, _repo, rest)): AxumPath<(String, String, String)>,
 ) -> impl IntoResponse {
-    let (repo_root, buffer_content) = {
+    let (repo_root, path, buffer_content) = {
         let st = state.lock().unwrap();
+        let path = split_branch_and_path(&rest, &st.url_ctx.branch);
         let bc = if st
             .active_rel_path
             .as_deref()
@@ -1074,7 +1366,7 @@ async fn handle_preview(
         } else {
             None
         };
-        (st.repo_root.clone(), bc)
+        (st.repo_root.clone(), path, bc)
     };
 
     let full_path = repo_root.join(&path);
@@ -1085,10 +1377,7 @@ async fn handle_preview(
     }
 
     // Only allow HTML files
-    let filename = full_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
+    let filename = full_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     if !filename.ends_with(".html") && !filename.ends_with(".htm") {
         return Html(render_error("Preview is only available for HTML files"));
     }
@@ -1108,7 +1397,7 @@ async fn handle_preview(
     Html(inject_preview_reload_script(&html_content))
 }
 
-fn normalize_rel_path_for_compare(path: &str) -> String {
+pub(crate) fn normalize_rel_path_for_compare(path: &str) -> String {
     let normalized = path
         .trim_matches('/')
         .split('/')
@@ -1162,10 +1451,11 @@ fn maybe_emit_detached_event(state: &Arc<Mutex<PreviewServerState>>, requested_r
 
 /// Get repository root directory
 /// Render directory listing
-async fn handle_directory_listing(
+pub(crate) async fn handle_directory_listing(
     path: &Path,
     display_path: &str,
     repo_root: &Path,
+    ctx: &RepoUrlContext,
 ) -> Html<String> {
     let mut entries = match tokio::fs::read_dir(path).await {
         Ok(entries) => entries,
@@ -1207,13 +1497,13 @@ async fn handle_directory_listing(
             .and_then(|p| p.to_str())
             .unwrap_or(".");
         let parent_url = if parent == "." {
-            "/".to_string()
+            repo_home_url(ctx)
         } else {
-            format!("/tree/{}", parent)
+            tree_url(ctx, parent)
         };
         file_list.push_str(&format!(
             r#"<div class="file-item"><div class="file-icon">📁</div><div class="file-name"><a href="{}">.. (parent directory)</a></div></div>"#,
-            parent_url
+            html_escape(&parent_url)
         ));
     }
 
@@ -1225,8 +1515,8 @@ async fn handle_directory_listing(
             format!("{}/{}", display_path, dir)
         };
         file_list.push_str(&format!(
-            r#"<div class="file-item"><div class="file-icon">📁</div><div class="file-name"><a href="/tree/{}">{}</a></div></div>"#,
-            html_escape(&link_path),
+            r#"<div class="file-item"><div class="file-icon">📁</div><div class="file-name"><a href="{}">{}</a></div></div>"#,
+            html_escape(&tree_url(ctx, &link_path)),
             html_escape(&dir)
         ));
     }
@@ -1239,8 +1529,8 @@ async fn handle_directory_listing(
             format!("{}/{}", display_path, file)
         };
         file_list.push_str(&format!(
-            r#"<div class="file-item"><div class="file-icon">📄</div><div class="file-name"><a href="/blob/{}">{}</a></div></div>"#,
-            html_escape(&link_path),
+            r#"<div class="file-item"><div class="file-icon">📄</div><div class="file-name"><a href="{}">{}</a></div></div>"#,
+            html_escape(&blob_url(ctx, &link_path)),
             html_escape(&file)
         ));
     }
@@ -1260,32 +1550,39 @@ async fn handle_directory_listing(
         content.push_str("</div></div>");
     }
 
-    let github_url = github_url_for_path(repo_root, display_path, true).await;
-    let breadcrumb = render_breadcrumb(display_path, true, github_url.as_deref(), None);
     let title = if display_path == "." {
         "Repository Root".to_string()
     } else {
         display_path.to_string()
     };
     let root_path = repo_root.display().to_string();
+    let repo_url = github_repo_url(repo_root).await;
 
     let html = DIRECTORY_TEMPLATE
         .replace("{{TITLE}}", &html_escape(&title))
         .replace("{{ROOT_PATH}}", &html_escape(&root_path))
         .replace("{{CURRENT_PATH}}", &html_escape(display_path))
-        .replace("{{BREADCRUMB}}", &breadcrumb)
+        .replace(
+            "{{REPO_HEADER}}",
+            &repository_header(&root_path, "code", repo_url.as_deref(), ctx),
+        )
         .replace("{{CONTENT}}", &content)
+        .replace("{{SYNTAX_STYLES}}", render_diff_styles())
+        .replace("{{MERMAID_INIT_SCRIPT}}", MERMAID_INIT_SCRIPT)
         .replace("{{LIVE_SYNC_SCRIPT}}", LIVE_SYNC_SCRIPT);
 
     Html(html)
 }
 
-/// Render file content
-async fn handle_file_display(
+/// Render file content. For markdown, `plain` selects the raw source view
+/// (with line numbers) over the rendered preview; a toggle links between them.
+pub(crate) async fn handle_file_display(
     path: &Path,
     display_path: &str,
     repo_root: &Path,
+    ctx: &RepoUrlContext,
     buffer_content: Option<&str>,
+    plain: bool,
 ) -> Html<String> {
     let filename = path
         .file_name()
@@ -1294,66 +1591,66 @@ async fn handle_file_display(
 
     let is_markdown = filename.ends_with(".md");
 
-    // Use buffer content if available, otherwise read from disk
-    let rendered_content = if let Some(text) = buffer_content {
-        if is_markdown {
-            let html = render_markdown_with_source_lines(text);
-            format!(r#"<div class="markdown-body">{}</div>"#, html)
-        } else {
-            let language = detect_language(filename);
-            format!(
-                r#"<div class="file-content"><pre><code class="language-{}">{}</code></pre></div>"#,
-                language,
-                render_code_with_line_ids(text)
-            )
-        }
+    // Resolve the file text: live buffer if present, otherwise disk.
+    let text: Option<String> = if let Some(text) = buffer_content {
+        Some(text.to_string())
     } else {
-        let content = match tokio::fs::read(path).await {
-            Ok(content) => content,
+        match tokio::fs::read(path).await {
+            Ok(content) => String::from_utf8(content).ok(),
             Err(e) => return Html(render_error(&format!("Failed to read file: {}", e))),
-        };
-        if is_markdown {
-            let text = String::from_utf8_lossy(&content);
-            let html = render_markdown_with_source_lines(&text);
-            format!(r#"<div class="markdown-body">{}</div>"#, html)
-        } else {
-            match String::from_utf8(content) {
-                Ok(text) => {
-                    let language = detect_language(filename);
-                    format!(
-                        r#"<div class="file-content"><pre><code class="language-{}">{}</code></pre></div>"#,
-                        language,
-                        render_code_with_line_ids(&text)
-                    )
-                }
-                Err(_) => r#"<div class="error">Binary file - cannot display</div>"#.to_string(),
-            }
         }
     };
 
-    let github_url = github_url_for_path(repo_root, display_path, false).await;
-    let is_html_file = filename.ends_with(".html") || filename.ends_with(".htm");
-    let preview_path = if is_html_file {
-        Some(display_path)
-    } else {
-        None
+    let rendered_content = match text {
+        None => r#"<div class="error">Binary file - cannot display</div>"#.to_string(),
+        Some(text) if is_markdown => {
+            let blob = blob_url(ctx, display_path);
+            let toggle = format!(
+                r#"<div class="md-view-toggle"><a class="md-toggle-btn{preview}" href="{blob}">Preview</a><a class="md-toggle-btn{code}" href="{blob}?plain=1">Code</a></div>"#,
+                preview = if plain { "" } else { " active" },
+                code = if plain { " active" } else { "" },
+                blob = html_escape(&blob),
+            );
+            let body = if plain {
+                format!(
+                    r#"<div class="file-content code-view">{}</div>"#,
+                    render_code_with_line_ids_for_path(&text, filename)
+                )
+            } else {
+                format!(
+                    r#"<div class="markdown-body">{}</div>"#,
+                    render_markdown_with_source_lines(&text)
+                )
+            };
+            format!("{toggle}{body}")
+        }
+        Some(text) => format!(
+            r#"<div class="file-content code-view">{}</div>"#,
+            render_code_with_line_ids_for_path(&text, filename)
+        ),
     };
-    let breadcrumb = render_breadcrumb(display_path, false, github_url.as_deref(), preview_path);
+
     let root_path = repo_root.display().to_string();
+    let repo_url = github_repo_url(repo_root).await;
 
     let html = FILE_TEMPLATE
         .replace("{{TITLE}}", &html_escape(filename))
         .replace("{{ROOT_PATH}}", &html_escape(&root_path))
         .replace("{{CURRENT_PATH}}", &html_escape(display_path))
-        .replace("{{BREADCRUMB}}", &breadcrumb)
+        .replace(
+            "{{REPO_HEADER}}",
+            &repository_header(&root_path, "code", repo_url.as_deref(), ctx),
+        )
         .replace("{{CONTENT}}", &rendered_content)
+        .replace("{{SYNTAX_STYLES}}", render_diff_styles())
+        .replace("{{MERMAID_INIT_SCRIPT}}", MERMAID_INIT_SCRIPT)
         .replace("{{LIVE_SYNC_SCRIPT}}", LIVE_SYNC_SCRIPT);
 
     Html(html)
 }
 
 /// Render markdown to HTML with GFM support
-fn render_markdown(text: &str) -> String {
+pub(crate) fn render_markdown(text: &str) -> String {
     use comrak::{ComrakOptions, markdown_to_html};
 
     let mut options = ComrakOptions::default();
@@ -1368,12 +1665,12 @@ fn render_markdown(text: &str) -> String {
     options.extension.description_lists = false;
     options.render.unsafe_ = true; // Allow HTML in markdown
 
-    markdown_to_html(text, &options)
+    render_mermaid_blocks(&markdown_to_html(text, &options))
 }
 
 /// Render markdown to HTML, then inject `data-source-line` attributes on block-level elements.
 /// This enables scroll-to-line by mapping rendered elements back to source line numbers.
-fn render_markdown_with_source_lines(text: &str) -> String {
+pub(crate) fn render_markdown_with_source_lines(text: &str) -> String {
     let html = render_markdown(text);
 
     // Build a map from source lines: which line does each block-level element start at?
@@ -1419,151 +1716,96 @@ fn render_markdown_with_source_lines(text: &str) -> String {
 }
 
 /// Render code with line IDs (`<span id="L1">`, `<span id="L2">`, etc.) for scroll-to-line support.
-fn render_code_with_line_ids(text: &str) -> String {
-    let mut result = String::new();
+pub(crate) fn render_code_with_line_ids_for_path(text: &str, path: &str) -> String {
+    let registry = LanguageRegistry::new();
+    let highlights = registry
+        .detect_by_extension(path)
+        .map(|lang| highlight_text(text, lang));
+    render_code_with_line_ids_highlighted(text, highlights.as_ref())
+}
+
+fn render_code_with_line_ids_highlighted(
+    text: &str,
+    highlights: Option<&std::collections::HashMap<usize, Vec<HighlightSpan>>>,
+) -> String {
+    let mut result = String::from("<table class=\"code-table\"><tbody>");
     for (i, line) in text.split('\n').enumerate() {
         let line_num = i + 1;
+        let line_html = highlights
+            .and_then(|spans| spans.get(&i))
+            .map(|spans| render_highlighted_code_line(line, spans))
+            .unwrap_or_else(|| html_escape(line));
         result.push_str(&format!(
-            "<span id=\"L{}\" class=\"code-line\">{}</span>\n",
-            line_num,
-            html_escape(line)
+            "<tr id=\"L{n}\" class=\"code-line\"><td class=\"code-ln\" data-line-number=\"{n}\"></td><td class=\"code-text\">{content}</td></tr>",
+            n = line_num,
+            content = line_html
         ));
     }
+    result.push_str("</tbody></table>");
     result
 }
 
-/// Detect programming language from filename
-fn detect_language(filename: &str) -> &str {
-    if filename.ends_with(".rs") {
-        "rust"
-    } else if filename.ends_with(".js") {
-        "javascript"
-    } else if filename.ends_with(".ts") {
-        "typescript"
-    } else if filename.ends_with(".py") {
-        "python"
-    } else if filename.ends_with(".java") {
-        "java"
-    } else if filename.ends_with(".c") || filename.ends_with(".h") {
-        "c"
-    } else if filename.ends_with(".cpp") || filename.ends_with(".hpp") {
-        "cpp"
-    } else if filename.ends_with(".go") {
-        "go"
-    } else if filename.ends_with(".html") {
-        "html"
-    } else if filename.ends_with(".css") {
-        "css"
-    } else if filename.ends_with(".json") {
-        "json"
-    } else if filename.ends_with(".yaml") || filename.ends_with(".yml") {
-        "yaml"
-    } else if filename.ends_with(".toml") {
-        "toml"
-    } else if filename.ends_with(".sh") {
-        "bash"
-    } else {
-        "plaintext"
+fn render_highlighted_code_line(line: &str, spans: &[HighlightSpan]) -> String {
+    let mut out = String::new();
+    let len = line.len();
+    if len == 0 {
+        return out;
     }
-}
-
-/// Render breadcrumb navigation
-fn render_breadcrumb(
-    path: &str,
-    is_tree: bool,
-    github_url: Option<&str>,
-    preview_path: Option<&str>,
-) -> String {
-    let mut crumbs = vec![r#"<a class="crumb-pill" href="/">Root</a>"#.to_string()];
-
-    if let Some(url) = github_url {
-        crumbs.push(format!(
-            r#"<a class="crumb-pill" href="{}" target="_blank" rel="noopener noreferrer">GitHub</a>"#,
-            html_escape(url)
-        ));
-    } else {
-        crumbs.push(r#"<span class="crumb-pill crumb-pill-muted">GitHub</span>"#.to_string());
-    }
-
-    if let Some(preview) = preview_path {
-        crumbs.push(format!(
-            r#"<a class="crumb-pill" href="/preview/{}" target="_blank" rel="noopener noreferrer">Preview</a>"#,
-            html_escape(preview)
-        ));
-    }
-
-    if path != "." {
-        let mut current_path = String::new();
-        let segments: Vec<&str> = path
-            .split('/')
-            .filter(|segment| !segment.is_empty())
-            .collect();
-        for (i, segment) in segments.iter().enumerate() {
-            if !current_path.is_empty() {
-                current_path.push('/');
-            }
-            current_path.push_str(segment);
-
-            if i == segments.len() - 1 && !is_tree {
-                crumbs.push(format!(
-                    r#"<span class="crumb-pill crumb-pill-current">{}</span>"#,
-                    html_escape(segment)
-                ));
-            } else {
-                crumbs.push(format!(
-                    r#"<a class="crumb-pill" href="/tree/{}">{}</a>"#,
-                    html_escape(&current_path),
-                    html_escape(segment)
-                ));
-            }
+    let mut active: Vec<Option<&str>> = vec![None; len];
+    let mut sorted: Vec<&HighlightSpan> = spans.iter().filter(|span| span.start < len).collect();
+    sorted.sort_by_key(|span| std::cmp::Reverse(span.end.saturating_sub(span.start)));
+    for span in sorted {
+        let start = span.start;
+        let end = span.end.min(len);
+        if start >= end {
+            continue;
+        }
+        for slot in active.iter_mut().take(end).skip(start) {
+            *slot = Some(span.capture_name.as_str());
         }
     }
-
-    crumbs.join(r#"<span class="crumb-separator">/</span>"#)
+    let mut i = 0;
+    while i < len {
+        let current = active[i];
+        let mut j = i + 1;
+        while j < len && active[j] == current {
+            j += 1;
+        }
+        if !line.is_char_boundary(i) || !line.is_char_boundary(j) {
+            out.push_str(&html_escape(&line[i..]));
+            return out;
+        }
+        let segment = &line[i..j];
+        if let Some(capture) = current {
+            out.push_str(&format!(
+                r#"<span class="{}">{}</span>"#,
+                hl_class_attr(capture),
+                html_escape(segment)
+            ));
+        } else {
+            out.push_str(&html_escape(segment));
+        }
+        i = j;
+    }
+    out
 }
 
-async fn github_url_for_path(repo_root: &Path, path: &str, is_tree: bool) -> Option<String> {
+fn render_mermaid_blocks(html: &str) -> String {
+    let re =
+        regex::Regex::new(r#"(?s)<pre><code class="language-mermaid">(?P<body>.*?)</code></pre>"#)
+            .expect("valid mermaid regex");
+    re.replace_all(html, r#"<pre class="mermaid">$body</pre>"#)
+        .to_string()
+}
+
+pub(crate) async fn github_repo_url(repo_root: &Path) -> Option<String> {
     let remote = git_output_in_repo(repo_root, &["config", "--get", "remote.origin.url"])
         .await
         .ok()?;
-    let base = remote_to_github_url(&remote)?;
-    let branch = match current_branch_in_repo(repo_root).await {
-        Some(branch) => branch,
-        None => default_branch_in_repo(repo_root)
-            .await
-            .unwrap_or_else(|| "main".to_string()),
-    };
-
-    let route = if is_tree { "tree" } else { "blob" };
-    if path == "." && is_tree {
-        Some(format!("{}/{}/{}", base, route, branch))
-    } else {
-        Some(format!("{}/{}/{}/{}", base, route, branch, path))
-    }
+    remote_to_github_url(&remote)
 }
 
-async fn current_branch_in_repo(repo_root: &Path) -> Option<String> {
-    let branch = git_output_in_repo(repo_root, &["branch", "--show-current"])
-        .await
-        .ok()?;
-    if branch.is_empty() {
-        None
-    } else {
-        Some(branch)
-    }
-}
-
-async fn default_branch_in_repo(repo_root: &Path) -> Option<String> {
-    let symbolic_ref = git_output_in_repo(repo_root, &["symbolic-ref", "refs/remotes/origin/HEAD"])
-        .await
-        .ok()?;
-    let branch = symbolic_ref
-        .strip_prefix("refs/remotes/origin/")
-        .unwrap_or(&symbolic_ref);
-    Some(branch.to_string())
-}
-
-fn remote_to_github_url(remote: &str) -> Option<String> {
+pub(crate) fn remote_to_github_url(remote: &str) -> Option<String> {
     let remote = remote.trim();
     let url = if remote.starts_with("git@github.com:") {
         let path = remote.strip_prefix("git@github.com:")?;
@@ -1596,7 +1838,7 @@ async fn git_output_in_repo(repo_root: &Path, args: &[&str]) -> Result<String, S
 }
 
 /// Render error message
-fn render_error(message: &str) -> String {
+pub(crate) fn render_error(message: &str) -> String {
     format!(
         r#"<!DOCTYPE html>
 <html>
@@ -1612,7 +1854,7 @@ fn render_error(message: &str) -> String {
 }
 
 /// Basic HTML escaping
-fn html_escape(text: &str) -> String {
+pub(crate) fn html_escape(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")

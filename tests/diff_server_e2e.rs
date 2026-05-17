@@ -212,8 +212,18 @@ fn test_diff_server_start_stop_and_status_api_results() {
 
     let unstaged = paths_of(&body["unstaged"]);
     assert_eq!(unstaged, vec!["sample.txt".to_string()]);
-    assert!(body["staged"].as_array().map(|a| a.is_empty()).unwrap_or(false));
-    assert!(body["untracked"].as_array().map(|a| a.is_empty()).unwrap_or(false));
+    assert!(
+        body["staged"]
+            .as_array()
+            .map(|a| a.is_empty())
+            .unwrap_or(false)
+    );
+    assert!(
+        body["untracked"]
+            .as_array()
+            .map(|a| a.is_empty())
+            .unwrap_or(false)
+    );
 
     // /api/status/file returns rendered HTML for one file
     let file_url = format!(
@@ -240,7 +250,10 @@ fn test_diff_server_start_stop_and_status_api_results() {
         html.contains("id=\"go-top-btn\""),
         "expected diff UI to include sticky go-top button"
     );
-    assert!(html.contains("Git diff"), "expected diff UI context label");
+    assert!(
+        html.contains(r#"<a class="repo-tab repo-tab-active" href="/status">Status</a>"#),
+        "expected diff UI status tab to be active"
+    );
     assert!(
         html.contains(&format!(r#"<code id="root-path">{}</code>"#, repo_root)),
         "expected diff UI header to include absolute root path"
@@ -320,8 +333,7 @@ fn test_diff_server_start_stop_and_status_api_results() {
         "expected diff UI to embed Rust-rendered diff styles"
     );
     assert!(
-        html.contains("gargo.diff.collapsed.v3:")
-            && !html.contains("gargo.diff.expanded.v1:"),
+        html.contains("gargo.diff.collapsed.v3:") && !html.contains("gargo.diff.expanded.v1:"),
         "expected diff UI to default-expand (collapsedFileIds tracks explicit collapse)"
     );
     assert!(
@@ -480,13 +492,7 @@ fn test_diff_server_status_sections_and_per_file_lazy_endpoint() {
     assert!(hidden["untracked"].as_array().unwrap().is_empty());
 
     // Path validation: traversal, flag injection
-    let bad_paths = [
-        "../escape",
-        "-rf",
-        "/etc/passwd",
-        "foo/../bar",
-        "bad\nname",
-    ];
+    let bad_paths = ["../escape", "-rf", "/etc/passwd", "foo/../bar", "bad\nname"];
     for bad in bad_paths {
         let encoded: String = bad
             .chars()
@@ -696,7 +702,11 @@ fn test_diff_server_api_branches_lists_local_branches() {
         .as_array()
         .expect("branches should be an array")
         .iter()
-        .map(|v| v.as_str().expect("branch name should be string").to_string())
+        .map(|v| {
+            v.as_str()
+                .expect("branch name should be string")
+                .to_string()
+        })
         .collect();
     assert!(branches.contains(&"main".to_string()));
     assert!(branches.contains(&"feature".to_string()));
@@ -731,10 +741,7 @@ fn test_diff_server_api_compare_returns_file_metadata() {
     assert_eq!(body["base"].as_str(), Some("main"));
     assert_eq!(body["compare"].as_str(), Some("feature"));
     let files = body["files"].as_array().expect("files should be array");
-    let paths: Vec<&str> = files
-        .iter()
-        .filter_map(|v| v["path"].as_str())
-        .collect();
+    let paths: Vec<&str> = files.iter().filter_map(|v| v["path"].as_str()).collect();
     assert!(paths.contains(&"base.txt"));
     assert!(paths.contains(&"feature-only.txt"));
     // No big diff field on the listing
@@ -759,7 +766,10 @@ fn test_diff_server_api_compare_returns_file_metadata() {
     );
     let same_body = get_json_with_retry(&same_url);
     assert!(
-        same_body["files"].as_array().map(|a| a.is_empty()).unwrap_or(false),
+        same_body["files"]
+            .as_array()
+            .map(|a| a.is_empty())
+            .unwrap_or(false),
         "expected empty files list when comparing branch to itself: {}",
         same_body
     );
@@ -800,10 +810,8 @@ fn test_diff_server_api_compare_rejects_flag_injection() {
     assert_eq!(code, 400, "expected 400 for disallowed character");
 
     // Missing query parameter
-    let (code, _) = get_status_and_json_with_retry(&format!(
-        "http://127.0.0.1:{}/api/compare?base=main",
-        port
-    ));
+    let (code, _) =
+        get_status_and_json_with_retry(&format!("http://127.0.0.1:{}/api/compare?base=main", port));
     assert_eq!(code, 400, "expected 400 when compare param is missing");
 
     // Path traversal on compare/file endpoint
@@ -835,7 +843,10 @@ fn test_diff_server_compare_html_page() {
     };
 
     let html = get_text_with_retry(&format!("http://127.0.0.1:{}/compare", port));
-    assert!(html.contains("Compare branches"));
+    assert!(
+        html.contains(r#"<a class="repo-tab repo-tab-active" href="/branches">Branches</a>"#),
+        "expected compare UI branches tab to be active"
+    );
     assert!(html.contains("id=\"base-select\"") && html.contains("id=\"compare-select\""));
     assert!(html.contains("id=\"swap-btn\""));
     assert!(html.contains("/api/branches") && html.contains("/api/compare"));
