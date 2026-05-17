@@ -14,6 +14,7 @@ pub struct GithubServerPlugin {
     project_root: PathBuf,
     auto_open_browser: bool,
     server_port: Option<u16>,
+    root_url: Option<String>,
     is_running: bool,
     is_detached: bool,
     last_active_rel_path: Option<String>,
@@ -53,6 +54,7 @@ impl GithubServerPlugin {
             project_root: project_root.to_path_buf(),
             auto_open_browser: config.plugin.github_server.auto_open_browser,
             server_port: None,
+            root_url: None,
             is_running: false,
             is_detached: false,
             last_active_rel_path: None,
@@ -223,6 +225,20 @@ impl Plugin for GithubServerPlugin {
                 "Gargo server plugin unavailable".to_string(),
             )];
         };
+        // When the server is already running, re-open its URL rather than
+        // trying to start a second instance — handy if the user accidentally
+        // closed the browser tab.
+        if command_id == "server.start_github" && self.is_running {
+            return match self.root_url.clone() {
+                Some(url) => vec![
+                    PluginOutput::Message(format!("Gargo server already running: {}", url)),
+                    PluginOutput::OpenUrl(url),
+                ],
+                None => vec![PluginOutput::Message(
+                    "Gargo server already running".to_string(),
+                )],
+            };
+        }
         let result = match command_id {
             "server.start_github" => handle.command_tx.send(GithubServerCommand::Start {
                 repo_root: self.project_root.clone(),
@@ -265,6 +281,7 @@ impl Plugin for GithubServerPlugin {
             match event {
                 GithubServerEvent::Started { port, root_url } => {
                     self.server_port = Some(port);
+                    self.root_url = Some(root_url.clone());
                     self.is_running = true;
                     self.is_detached = false;
                     self.last_active_rel_path = None;
@@ -281,6 +298,7 @@ impl Plugin for GithubServerPlugin {
                 }
                 GithubServerEvent::Stopped => {
                     self.server_port = None;
+                    self.root_url = None;
                     self.is_running = false;
                     self.is_detached = false;
                     self.clear_external_change_probe_state();
