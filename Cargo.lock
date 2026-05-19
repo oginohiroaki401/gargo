@@ -869,7 +869,7 @@ dependencies = [
 
 [[package]]
 name = "gargo"
-version = "0.1.63"
+version = "0.1.64"
 dependencies = [
  "axum",
  "base64",
