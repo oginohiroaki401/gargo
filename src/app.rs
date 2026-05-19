@@ -1961,6 +1961,16 @@ impl App {
         &self.config
     }
 
+    /// Read access to the editor. Primarily a test/integration seam.
+    pub fn editor(&self) -> &Editor {
+        &self.editor
+    }
+
+    /// Mutable access to the editor. Primarily a test/integration seam.
+    pub fn editor_mut(&mut self) -> &mut Editor {
+        &mut self.editor
+    }
+
     /// Dispatch an action. Returns true if the editor should quit.
     fn dispatch(&mut self, action: Action) -> bool {
         let should_quit = match action {

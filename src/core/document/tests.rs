@@ -1345,6 +1345,104 @@ fn insert_text_at_normalizes_cr_to_lf() {
 }
 
 // -------------------------------------------------------
+// paste (multi-cursor aware)
+// -------------------------------------------------------
+
+/// Helper: build a 2-cursor document with cursors at `a` and `b`.
+fn doc_with_two_cursors(text: &str, a: usize, b: usize) -> Document {
+    let mut doc = doc_from_str(text);
+    doc.cursors[0] = a;
+    doc.cursors.push(b);
+    doc.selections.push(None);
+    doc.sort_and_dedup_cursors();
+    assert_eq!(doc.cursor_count(), 2);
+    doc
+}
+
+#[test]
+fn paste_single_cursor_inserts_whole_text() {
+    let mut doc = doc_from_str("ab\n");
+    doc.cursors[0] = 1;
+    doc.paste("X\nY");
+    assert_eq!(doc.rope.to_string(), "aX\nYb\n");
+}
+
+#[test]
+fn paste_distributes_lines_when_count_matches() {
+    // Cursors at end of "a" (pos 1) and end of "b" (pos 3).
+    let mut doc = doc_with_two_cursors("a\nb\n", 1, 3);
+    doc.paste("X\nY");
+    assert_eq!(doc.rope.to_string(), "aX\nbY\n");
+    // Each cursor lands after its own inserted segment.
+    assert_eq!(doc.cursors[0], 2);
+    assert_eq!(doc.cursors[1], 5);
+}
+
+#[test]
+fn paste_distributes_three_lines_to_three_cursors() {
+    // Lines: "1" "2" "3"; cursors at end of each line.
+    let mut doc = doc_from_str("1\n2\n3\n");
+    doc.cursors[0] = 1;
+    doc.cursors.push(3);
+    doc.cursors.push(5);
+    doc.selections.push(None);
+    doc.selections.push(None);
+    doc.sort_and_dedup_cursors();
+    assert_eq!(doc.cursor_count(), 3);
+    doc.paste("a\nb\nc");
+    assert_eq!(doc.rope.to_string(), "1a\n2b\n3c\n");
+}
+
+#[test]
+fn paste_whole_content_to_each_cursor_when_count_mismatch() {
+    // 2 cursors but 3 lines -> paste whole content at every cursor.
+    let mut doc = doc_with_two_cursors("a\nb\n", 1, 3);
+    doc.paste("X\nY\nZ");
+    assert_eq!(doc.rope.to_string(), "aX\nY\nZ\nbX\nY\nZ\n");
+}
+
+#[test]
+fn paste_single_line_to_each_cursor_when_count_mismatch() {
+    // 2 cursors, content has no newline (1 line) -> insert at every cursor.
+    let mut doc = doc_with_two_cursors("a\nb\n", 1, 3);
+    doc.paste("ZZ");
+    assert_eq!(doc.rope.to_string(), "aZZ\nbZZ\n");
+}
+
+#[test]
+fn paste_distributes_with_empty_segment() {
+    // "X\n" splits into ["X", ""] -> matches 2 cursors; second inserts nothing.
+    let mut doc = doc_with_two_cursors("a\nb\n", 1, 3);
+    doc.paste("X\n");
+    assert_eq!(doc.rope.to_string(), "aX\nb\n");
+}
+
+#[test]
+fn paste_distributes_normalizes_crlf() {
+    let mut doc = doc_with_two_cursors("a\nb\n", 1, 3);
+    doc.paste("X\r\nY");
+    assert_eq!(doc.rope.to_string(), "aX\nbY\n");
+}
+
+#[test]
+fn paste_distributed_undo_restores_original() {
+    let mut doc = doc_with_two_cursors("a\nb\n", 1, 3);
+    doc.paste("X\nY");
+    assert_eq!(doc.rope.to_string(), "aX\nbY\n");
+    assert!(doc.undo());
+    assert_eq!(doc.rope.to_string(), "a\nb\n");
+    assert!(doc.redo());
+    assert_eq!(doc.rope.to_string(), "aX\nbY\n");
+}
+
+#[test]
+fn paste_distributes_japanese_lines() {
+    let mut doc = doc_with_two_cursors("あ\nい\n", 1, 3);
+    doc.paste("か\nき");
+    assert_eq!(doc.rope.to_string(), "あか\nいき\n");
+}
+
+// -------------------------------------------------------
 // move_to_file_start / move_to_file_end
 // -------------------------------------------------------
 
@@ -1950,8 +2048,8 @@ fn selection_text_combined_concatenates_word_selections() {
     doc.cursors.push(8);
     doc.selections.push(Some(Selection::tail_on_forward(8, 11)));
 
-    // Concat with no separator (each segment carries its own trailing chars).
-    assert_eq!(doc.selection_text_combined(), Some("foobaz".to_string()));
+    // Multi-cursor copy: each selection becomes its own line.
+    assert_eq!(doc.selection_text_combined(), Some("foo\nbaz".to_string()));
 }
 
 #[test]
@@ -1964,9 +2062,11 @@ fn selection_text_combined_concatenates_line_selections() {
     doc.selections
         .push(Some(Selection::tail_on_forward(10, 15)));
 
+    // Multi-cursor copy of two line-selections: one trailing newline is
+    // trimmed from each so each lands on its own line, joined by `\n`.
     assert_eq!(
         doc.selection_text_combined(),
-        Some("## a\n## b\n".to_string())
+        Some("## a\n## b".to_string())
     );
 }
 
@@ -2028,6 +2128,32 @@ fn selection_text_combined_overlap_yields_union_text_once() {
     doc.selections.push(Some(Selection::tail_on_forward(3, 7)));
 
     assert_eq!(doc.selection_text_combined(), Some("abcdefg".to_string()));
+}
+
+#[test]
+fn selection_text_combined_three_cursors_yields_three_lines() {
+    let mut doc = doc_from_str("foo bar baz\n");
+    doc.cursors = vec![3];
+    doc.selections = vec![Some(Selection::tail_on_forward(0, 3))];
+    doc.cursors.push(7);
+    doc.selections.push(Some(Selection::tail_on_forward(4, 7)));
+    doc.cursors.push(11);
+    doc.selections.push(Some(Selection::tail_on_forward(8, 11)));
+
+    // Each cursor's selection lands on its own line for later distribution.
+    assert_eq!(
+        doc.selection_text_combined(),
+        Some("foo\nbar\nbaz".to_string())
+    );
+}
+
+#[test]
+fn selection_text_combined_single_selection_keeps_trailing_newline() {
+    // A plain (single-cursor) line selection must keep its newline.
+    let mut doc = doc_from_str("hello\nworld\n");
+    doc.cursors = vec![6];
+    doc.selections = vec![Some(Selection::tail_on_forward(0, 6))];
+    assert_eq!(doc.selection_text_combined(), Some("hello\n".to_string()));
 }
 
 /// End-to-end scenario from the user's example: two cursors on `##` markers,

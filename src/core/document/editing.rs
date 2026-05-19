@@ -146,6 +146,99 @@ impl Document {
         self.sort_and_dedup_cursors();
     }
 
+    /// Paste `text` honoring multi-cursor semantics.
+    ///
+    /// With multiple cursors, if the number of lines in `text` matches the
+    /// cursor count, each line is inserted at the corresponding cursor
+    /// (first line into the top-most cursor, and so on). Otherwise the whole
+    /// `text` is inserted at every cursor (same as [`insert_text`]).
+    ///
+    /// [`insert_text`]: Document::insert_text
+    pub fn paste(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let normalized = Self::normalize_newlines_for_insert(text);
+        let normalized = normalized.as_ref();
+        let lines: Vec<&str> = normalized.split('\n').collect();
+        if self.cursors.len() > 1 && lines.len() == self.cursors.len() {
+            self.insert_lines_per_cursor(&lines);
+        } else {
+            self.insert_text(normalized);
+        }
+    }
+
+    /// Insert `lines[i]` at `cursors[i]`. `lines.len()` must equal the cursor
+    /// count. Cursors are kept sorted/unique, so `lines[0]` lands at the
+    /// top-most cursor.
+    fn insert_lines_per_cursor(&mut self, lines: &[&str]) {
+        debug_assert_eq!(lines.len(), self.cursors.len());
+
+        let cursors_before = self.cursors.clone();
+        let started_transaction = self.history.begin_transaction(&cursors_before);
+        let empty_rc: Rc<str> = Rc::from("");
+
+        // Insert from the highest position down so earlier offsets stay valid.
+        let mut order: Vec<usize> = (0..self.cursors.len()).collect();
+        order.sort_by(|&a, &b| self.cursors[b].cmp(&self.cursors[a]));
+
+        for &i in &order {
+            let seg = lines[i];
+            if seg.is_empty() {
+                continue;
+            }
+            let pos = self.cursors[i];
+            let byte_pos = self.rope.char_to_byte(pos);
+            let line = self.rope.char_to_line(pos);
+            let line_byte_start = self.rope.line_to_byte(line);
+            let col_byte = byte_pos - line_byte_start;
+
+            self.rope.insert(pos, seg);
+
+            let new_end_pos = self.compute_end_position(line, col_byte, seg);
+            let edit_event = EditEvent {
+                start_byte: byte_pos,
+                old_end_byte: byte_pos,
+                new_end_byte: byte_pos + seg.len(),
+                start_position: (line, col_byte),
+                old_end_position: (line, col_byte),
+                new_end_position: new_end_pos,
+            };
+            self.pending_edits.push(edit_event.clone());
+
+            self.history.record(
+                EditRecord {
+                    char_offset: pos,
+                    old_text: empty_rc.clone(),
+                    new_text: Rc::from(seg),
+                    edit_event,
+                },
+                &cursors_before,
+                &cursors_before, // Updated after cursor adjustment below.
+            );
+        }
+
+        // Each cursor moves to the end of its own inserted segment, shifted by
+        // the total length of segments inserted at earlier (lower) positions.
+        // Cursors are sorted ascending and unique, so that is simply a prefix
+        // sum over the segment lengths.
+        let original: Vec<usize> = self.cursors.clone();
+        let mut prefix = 0usize;
+        for i in 0..self.cursors.len() {
+            let seg_len = lines[i].chars().count();
+            self.cursors[i] = original[i] + prefix + seg_len;
+            prefix += seg_len;
+        }
+
+        self.history.update_cursors_after(&self.cursors);
+        if started_transaction {
+            self.history.commit_transaction();
+        }
+
+        self.dirty = true;
+        self.sort_and_dedup_cursors();
+    }
+
     #[cfg(test)]
     pub fn insert_newline(&mut self) {
         // Use insert_char for newline to get multi-cursor support

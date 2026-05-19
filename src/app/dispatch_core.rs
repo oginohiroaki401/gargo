@@ -206,7 +206,7 @@ impl App {
             CoreAction::InsertText(text) => {
                 self.queue_insert_edit_jump_line();
                 let t0 = std::time::Instant::now();
-                self.editor.active_buffer_mut().insert_text(&text);
+                self.editor.active_buffer_mut().paste(&text);
                 let insert_elapsed = t0.elapsed();
                 self.editor.mark_highlights_dirty();
                 if insert_elapsed.as_millis() > 10 {
@@ -408,8 +408,7 @@ impl App {
             CoreAction::Paste => {
                 if let Some(text) = self.editor.register.clone() {
                     let buf = self.editor.active_buffer_mut();
-                    let pos = buf.cursors[0];
-                    buf.insert_text_at(pos, &text);
+                    buf.paste(&text);
                     self.editor.mark_highlights_dirty();
                 } else {
                     self.editor.message = Some("Nothing to paste".to_string());
