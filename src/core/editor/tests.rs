@@ -47,19 +47,6 @@ fn open_file_reopen_promotes_to_mru() {
 }
 
 #[test]
-fn manual_switch_promotes_to_mru() {
-    let mut ed = Editor::new();
-    ed.open_file("a.txt");
-    ed.open_file("b.txt");
-    ed.open_file("c.txt");
-    assert_eq!(ed.buffer_history, vec![2, 3, 4]);
-
-    assert!(ed.switch_to_index(2)); // b.txt
-    assert_eq!(ed.active_buffer_id(), 3);
-    assert_eq!(ed.buffer_history, vec![2, 4, 3]);
-}
-
-#[test]
 fn prev_next_buffer_history_navigates_without_reordering() {
     let mut ed = Editor::new();
     ed.open_file("a.txt");

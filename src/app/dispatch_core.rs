@@ -18,7 +18,6 @@ impl App {
                 | CoreAction::SearchPrev
                 | CoreAction::NextBuffer
                 | CoreAction::PrevBuffer
-                | CoreAction::SwitchBufferByIndex(_)
         );
         // Record actions into macro register if recording
         if self.editor.macro_recorder.is_recording() && !self.editor.dot_recorder.is_replaying() {
@@ -458,16 +457,6 @@ impl App {
                     });
                 }
             }
-            CoreAction::SwitchBufferByIndex(idx) => {
-                self.flush_insert_transaction_if_active();
-                if !self.editor.switch_to_index(idx) {
-                    self.editor.message = Some(format!("No buffer at F{}", idx + 1));
-                } else {
-                    self.emit_plugin_event(PluginEvent::BufferActivated {
-                        doc_id: self.editor.active_buffer().id,
-                    });
-                }
-            }
             CoreAction::Undo => {
                 if self.editor.active_buffer_mut().undo() {
                     self.editor.mark_highlights_dirty();
@@ -752,10 +741,7 @@ impl App {
             self.queue_active_doc_git_refresh(false);
         } else if matches!(
             action_for_plugin,
-            CoreAction::NewBuffer
-                | CoreAction::NextBuffer
-                | CoreAction::PrevBuffer
-                | CoreAction::SwitchBufferByIndex(_)
+            CoreAction::NewBuffer | CoreAction::NextBuffer | CoreAction::PrevBuffer
         ) {
             self.queue_active_doc_git_refresh(true);
         }

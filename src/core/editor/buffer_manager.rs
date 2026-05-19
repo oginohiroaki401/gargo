@@ -105,17 +105,6 @@ impl Editor {
         }
     }
 
-    pub fn switch_to_index(&mut self, index: usize) -> bool {
-        if index < self.documents.len() {
-            self.active_index = index;
-            self.on_buffer_switch();
-            self.push_active_to_mru();
-            true
-        } else {
-            false
-        }
-    }
-
     pub fn switch_to_buffer(&mut self, id: BufferId) -> bool {
         if let Some(idx) = self.documents.iter().position(|d| d.id == id) {
             self.active_index = idx;

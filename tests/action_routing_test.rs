@@ -239,7 +239,6 @@ fn test_buffer_actions_split_correctly() {
         CoreAction::NextBuffer,
         CoreAction::PrevBuffer,
         CoreAction::NewBuffer,
-        CoreAction::SwitchBufferByIndex(0),
     ];
 
     // App: Load files into buffers (requires I/O)

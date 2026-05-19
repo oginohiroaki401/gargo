@@ -40,6 +40,9 @@ impl MacroRecorder {
                 self.order.push(reg);
             }
             self.registers.insert(reg, actions);
+            // Treat the freshly recorded register as the "last" macro so it can
+            // be replayed immediately without having been played first.
+            self.last_played = Some(reg);
         }
     }
 
@@ -132,6 +135,16 @@ mod tests {
     fn empty_register_returns_none() {
         let rec = MacroRecorder::new();
         assert!(rec.get('z').is_none());
+    }
+
+    #[test]
+    fn stop_recording_marks_register_as_last_played() {
+        let mut rec = MacroRecorder::new();
+        rec.start_recording('a');
+        rec.record(&CoreAction::MoveRight);
+        rec.stop_recording();
+        // A freshly recorded macro can be replayed via "play last".
+        assert_eq!(rec.last_played(), Some('a'));
     }
 
     #[test]

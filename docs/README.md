@@ -179,7 +179,7 @@ Some commands use multi-key sequences. A state machine in `input/chord.rs` track
 - `SPC g` opens a flat changed-files sidebar with git status badges (`[M]`, `[A]`, `[D]`, `[?]`, `[U]`).
 - In Git view (`SPC G`), `C` opens a commit message buffer generated from git's `COMMIT_EDITMSG` template. Closing that buffer strips comments and commits when non-empty; empty/unparsable messages abort the commit.
 - In Git view (`SPC G`), `Changed` and `Staged` headers are selectable. `u` on `Changed` stages all changed files, `u` on `Staged` unstages all staged files, and `u` on a file row toggles that file.
-- `Q` / `q` for macro record/play.
+- `Q` / `q` for macro record/play; `F4` replays the last recorded/played macro.
 
 ## Core Editing (core/)
 

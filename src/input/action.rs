@@ -66,7 +66,6 @@ pub enum CoreAction {
     NewBuffer,
     NextBuffer,
     PrevBuffer,
-    SwitchBufferByIndex(usize),
 
     // Undo/Redo
     Undo,
@@ -384,7 +383,6 @@ mod tests {
         let _new = CoreAction::NewBuffer;
         let _next = CoreAction::NextBuffer;
         let _prev = CoreAction::PrevBuffer;
-        let _switch = CoreAction::SwitchBufferByIndex(0);
     }
 
     #[test]

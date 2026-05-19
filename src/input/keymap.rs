@@ -227,9 +227,9 @@ pub fn resolve(key: KeyEvent, state: &mut KeyState, mode: &Mode, is_recording: b
         }
     }
 
-    // F1..F9 → switch buffer by index (all modes)
-    if let KeyCode::F(n @ 1..=9) = key.code {
-        return core(CoreAction::SwitchBufferByIndex((n - 1) as usize));
+    // F4 → replay the last recorded/played macro (all modes)
+    if key.code == KeyCode::F(4) {
+        return core(CoreAction::MacroPlayLast);
     }
     if key.code == KeyCode::F(12) {
         return app(AppAction::Integration(
@@ -1075,6 +1075,20 @@ mod tests {
                 }
             ))
         );
+    }
+
+    #[test]
+    fn f4_replays_last_macro() {
+        for mode in [Mode::Normal, Mode::Visual, Mode::Insert] {
+            let mut state = KeyState::Normal;
+            let action = resolve(
+                KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE),
+                &mut state,
+                &mode,
+                false,
+            );
+            assert_eq!(action, core(CoreAction::MacroPlayLast));
+        }
     }
 
     #[test]
