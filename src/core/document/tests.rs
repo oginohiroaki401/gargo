@@ -2044,8 +2044,8 @@ fn selection_text_combined_concatenates_word_selections() {
     doc.cursors.push(8);
     doc.selections.push(Some(Selection::tail_on_forward(8, 11)));
 
-    // Concat with no separator (each segment carries its own trailing chars).
-    assert_eq!(doc.selection_text_combined(), Some("foobaz".to_string()));
+    // Multi-cursor copy: each selection becomes its own line.
+    assert_eq!(doc.selection_text_combined(), Some("foo\nbaz".to_string()));
 }
 
 #[test]
@@ -2057,9 +2057,11 @@ fn selection_text_combined_concatenates_line_selections() {
     doc.cursors.push(15);
     doc.selections.push(Some(Selection::tail_on_forward(10, 15)));
 
+    // Multi-cursor copy of two line-selections: one trailing newline is
+    // trimmed from each so each lands on its own line, joined by `\n`.
     assert_eq!(
         doc.selection_text_combined(),
-        Some("## a\n## b\n".to_string())
+        Some("## a\n## b".to_string())
     );
 }
 
@@ -2124,6 +2126,32 @@ fn selection_text_combined_overlap_yields_union_text_once() {
         doc.selection_text_combined(),
         Some("abcdefg".to_string())
     );
+}
+
+#[test]
+fn selection_text_combined_three_cursors_yields_three_lines() {
+    let mut doc = doc_from_str("foo bar baz\n");
+    doc.cursors = vec![3];
+    doc.selections = vec![Some(Selection::tail_on_forward(0, 3))];
+    doc.cursors.push(7);
+    doc.selections.push(Some(Selection::tail_on_forward(4, 7)));
+    doc.cursors.push(11);
+    doc.selections.push(Some(Selection::tail_on_forward(8, 11)));
+
+    // Each cursor's selection lands on its own line for later distribution.
+    assert_eq!(
+        doc.selection_text_combined(),
+        Some("foo\nbar\nbaz".to_string())
+    );
+}
+
+#[test]
+fn selection_text_combined_single_selection_keeps_trailing_newline() {
+    // A plain (single-cursor) line selection must keep its newline.
+    let mut doc = doc_from_str("hello\nworld\n");
+    doc.cursors = vec![6];
+    doc.selections = vec![Some(Selection::tail_on_forward(0, 6))];
+    assert_eq!(doc.selection_text_combined(), Some("hello\n".to_string()));
 }
 
 /// End-to-end scenario from the user's example: two cursors on `##` markers,

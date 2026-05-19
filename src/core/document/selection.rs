@@ -121,22 +121,33 @@ impl Document {
         merged
     }
 
-    /// Concatenates the merged-selection texts for clipboard/register use.
-    /// Overlapping ranges contribute their union exactly once; disjoint
-    /// ranges are concatenated with no separator (each line-selection
-    /// already carries its own trailing newline).
+    /// Builds the register/clipboard text for a yank.
+    ///
+    /// A single (or fully merged) selection is returned verbatim, so a plain
+    /// visual yank is unchanged. With multiple disjoint selections — a
+    /// multi-cursor copy — each selection becomes its own line: one trailing
+    /// newline is trimmed from each segment and the segments are joined with
+    /// `\n`. That keeps each cursor's text on a distinct line so a later
+    /// multi-cursor paste can distribute one line back to each cursor.
+    /// Overlapping ranges still contribute their union exactly once.
     pub fn selection_text_combined(&self) -> Option<String> {
-        let merged = self.merged_selection_ranges();
-        if merged.is_empty() {
-            return None;
+        let parts: Vec<String> = self
+            .merged_selection_ranges()
+            .into_iter()
+            .filter(|&(s, e)| s < e)
+            .map(|(s, e)| self.rope.slice(s..e).to_string())
+            .collect();
+        match parts.len() {
+            0 => None,
+            1 => parts.into_iter().next(),
+            _ => Some(
+                parts
+                    .iter()
+                    .map(|p| p.strip_suffix('\n').unwrap_or(p))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
         }
-        let mut out = String::new();
-        for (s, e) in merged {
-            if s < e {
-                out.push_str(&self.rope.slice(s..e).to_string());
-            }
-        }
-        if out.is_empty() { None } else { Some(out) }
     }
 
     /// Select the word (or whitespace/punctuation run) at `pos`.
