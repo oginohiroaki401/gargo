@@ -198,47 +198,76 @@ fn editor_with_text(s: &str) -> Editor {
 // -------------------------------------------------------
 
 #[test]
-fn search_update_finds_matches() {
+fn search_update_moves_cursor_to_first_match_from_anchor() {
     let mut ed = editor_with_text("hello world hello");
+    ed.search.set_anchor(0);
     ed.search_update("hello");
-    assert_eq!(ed.search.matches, vec![0, 12]);
+    assert_eq!(ed.active_buffer().cursors[0], 0);
+    assert!(ed.search.last_search_found);
+}
+
+#[test]
+fn search_update_searches_forward_from_anchor() {
+    let mut ed = editor_with_text("hello world hello test hello");
+    ed.search.set_anchor(1);
+    ed.search_update("hello");
+    // First match at or after anchor=1 is at offset 12.
+    assert_eq!(ed.active_buffer().cursors[0], 12);
+}
+
+#[test]
+fn search_update_wraps_to_top_when_nothing_after_anchor() {
+    let mut ed = editor_with_text("hello world hello");
+    ed.search.set_anchor(15);
+    ed.search_update("hello");
+    // No match at or after 15, wraps to 0.
+    assert_eq!(ed.active_buffer().cursors[0], 0);
 }
 
 #[test]
 fn search_update_case_insensitive() {
     let mut ed = editor_with_text("Hello HELLO hello");
+    ed.search.set_anchor(3);
     ed.search_update("hello");
-    assert_eq!(ed.search.matches.len(), 3);
+    // First match at or after anchor=3 is "HELLO" at offset 6.
+    assert_eq!(ed.active_buffer().cursors[0], 6);
+    assert!(ed.search.last_search_found);
 }
 
 #[test]
 fn search_update_empty_pattern() {
     let mut ed = editor_with_text("hello world");
     ed.search_update("");
-    assert!(ed.search.matches.is_empty());
+    assert!(!ed.search.last_search_found);
+    assert!(ed.search.pattern_lower.is_empty());
 }
 
 #[test]
 fn search_update_no_match() {
     let mut ed = editor_with_text("hello world");
+    let original_cursor = ed.active_buffer().cursors[0];
     ed.search_update("xyz");
-    assert!(ed.search.matches.is_empty());
+    assert!(!ed.search.last_search_found);
+    assert_eq!(ed.active_buffer().cursors[0], original_cursor);
 }
 
 #[test]
 fn search_update_japanese() {
     let mut ed = editor_with_text("竹取の翁といふものありけり");
+    ed.search.set_anchor(0);
     ed.search_update("翁");
-    assert_eq!(ed.search.matches.len(), 1);
-    assert_eq!(ed.search.matches[0], 3); // char offset of '翁'
+    assert_eq!(ed.active_buffer().cursors[0], 3); // char offset of '翁'
+    assert!(ed.search.last_search_found);
 }
 
 #[test]
-fn search_update_non_overlapping() {
-    let mut ed = editor_with_text("aaa");
+fn search_update_non_overlapping_via_next() {
+    let mut ed = editor_with_text("aaaa");
+    ed.search.set_anchor(0);
     ed.search_update("aa");
-    // Non-overlapping: only [0], since after matching at 0 we skip to 2
-    assert_eq!(ed.search.matches, vec![0]);
+    assert_eq!(ed.active_buffer().cursors[0], 0);
+    ed.search_next();
+    assert_eq!(ed.active_buffer().cursors[0], 2);
 }
 
 // -------------------------------------------------------
@@ -248,8 +277,9 @@ fn search_update_non_overlapping() {
 #[test]
 fn search_next_moves_to_first_match_after_cursor() {
     let mut ed = editor_with_text("hello world hello test hello");
+    ed.search.set_anchor(0);
     ed.search_update("hello");
-    ed.active_buffer_mut().cursors[0] = 0;
+    // search_update parked the cursor at 0; search_next should advance to 12.
     ed.search_next();
     assert_eq!(ed.active_buffer().cursors[0], 12);
 }
@@ -257,6 +287,7 @@ fn search_next_moves_to_first_match_after_cursor() {
 #[test]
 fn search_next_wraps_around() {
     let mut ed = editor_with_text("hello world hello");
+    ed.search.set_anchor(0);
     ed.search_update("hello");
     ed.active_buffer_mut().cursors[0] = 16;
     ed.search_next();
@@ -268,30 +299,17 @@ fn search_next_no_matches() {
     let mut ed = editor_with_text("hello world");
     ed.search_update("xyz");
     ed.active_buffer_mut().cursors[0] = 0;
-    ed.search_next();
+    let returned = ed.search_next();
+    assert!(!returned);
     assert_eq!(ed.active_buffer().cursors[0], 0); // unchanged
-}
-
-#[test]
-fn search_next_prunes_stale_out_of_bounds_matches() {
-    let mut ed = editor_with_text("short");
-    ed.search.pattern = "hello".to_string();
-    ed.search.matches = vec![3303];
-    ed.active_buffer_mut().cursors[0] = 0;
-
-    ed.search_next();
-
-    assert_eq!(ed.active_buffer().cursors[0], 0);
-    assert!(ed.search.matches.is_empty());
-    assert_eq!(ed.search.current_match, None);
 }
 
 #[test]
 fn search_next_from_match_position() {
     let mut ed = editor_with_text("hello world hello");
+    ed.search.set_anchor(0);
     ed.search_update("hello");
-    // matches = [0, 12]; cursor at 0, search_next should go to the match > 0
-    ed.active_buffer_mut().cursors[0] = 0;
+    // Cursor at 0 after search_update; search_next should go to 12.
     ed.search_next();
     assert_eq!(ed.active_buffer().cursors[0], 12);
 }
@@ -303,8 +321,8 @@ fn search_next_from_match_position() {
 #[test]
 fn search_prev_moves_to_last_match_before_cursor() {
     let mut ed = editor_with_text("hello world hello test hello");
+    ed.search.set_anchor(0);
     ed.search_update("hello");
-    // matches = [0, 12, 23]
     ed.active_buffer_mut().cursors[0] = 13;
     ed.search_prev();
     assert_eq!(ed.active_buffer().cursors[0], 12);
@@ -313,8 +331,8 @@ fn search_prev_moves_to_last_match_before_cursor() {
 #[test]
 fn search_prev_wraps_around() {
     let mut ed = editor_with_text("hello world hello");
+    ed.search.set_anchor(0);
     ed.search_update("hello");
-    // matches = [0, 12]; cursor at 0, prev wraps to last
     ed.active_buffer_mut().cursors[0] = 0;
     ed.search_prev();
     assert_eq!(ed.active_buffer().cursors[0], 12);
@@ -325,15 +343,17 @@ fn search_prev_no_matches() {
     let mut ed = editor_with_text("hello world");
     ed.search_update("xyz");
     ed.active_buffer_mut().cursors[0] = 5;
-    ed.search_prev();
+    let returned = ed.search_prev();
+    assert!(!returned);
     assert_eq!(ed.active_buffer().cursors[0], 5); // unchanged
 }
 
 #[test]
 fn add_cursor_to_next_search_match_adds_secondary_cursor() {
     let mut ed = editor_with_text("hello world hello");
+    ed.search.set_anchor(0);
     ed.search_update("hello");
-    ed.active_buffer_mut().cursors[0] = 0;
+    // search_update parked cursor at 0; adding next match yields 12.
     assert!(ed.add_cursor_to_next_search_match());
     assert_eq!(ed.active_buffer().cursors, vec![0, 12]);
 }
@@ -341,8 +361,9 @@ fn add_cursor_to_next_search_match_adds_secondary_cursor() {
 #[test]
 fn add_cursor_to_prev_search_match_wraps_and_adds_secondary_cursor() {
     let mut ed = editor_with_text("hello world hello");
+    ed.search.set_anchor(0);
     ed.search_update("hello");
-    ed.active_buffer_mut().cursors[0] = 0;
+    // Cursor at 0; prev wraps to the last match (12).
     assert!(ed.add_cursor_to_prev_search_match());
     assert_eq!(ed.active_buffer().cursors, vec![0, 12]);
 }
@@ -350,8 +371,8 @@ fn add_cursor_to_prev_search_match_wraps_and_adds_secondary_cursor() {
 #[test]
 fn add_cursor_to_next_search_match_skips_existing_cursor_positions() {
     let mut ed = editor_with_text("hello world hello test hello");
+    ed.search.set_anchor(0);
     ed.search_update("hello");
-    ed.active_buffer_mut().cursors[0] = 0;
     assert!(ed.add_cursor_to_next_search_match());
     assert!(ed.add_cursor_to_next_search_match());
     assert!(!ed.add_cursor_to_next_search_match());
@@ -363,8 +384,12 @@ fn add_cursor_to_next_search_match_skips_existing_cursor_positions() {
 #[test]
 fn add_cursor_to_next_search_match_treats_cursor_inside_match_as_occupied() {
     let mut ed = editor_with_text("hello world hello");
+    ed.active_buffer_mut().cursors[0] = 2;
+    ed.search.set_anchor(2);
     ed.search_update("hello");
-    // Primary cursor is inside the first match.
+    // search_update from anchor=2 finds the next match at 12 (cursor moves
+    // there). To recreate the "cursor inside first match" scenario, override
+    // the cursor back to inside the first match before calling add_cursor.
     ed.active_buffer_mut().cursors[0] = 2;
     assert!(ed.add_cursor_to_next_search_match());
     assert!(!ed.add_cursor_to_next_search_match());
@@ -376,8 +401,9 @@ fn add_cursor_to_next_search_match_treats_cursor_inside_match_as_occupied() {
 #[test]
 fn add_cursor_to_prev_search_match_treats_cursor_inside_match_as_occupied() {
     let mut ed = editor_with_text("hello world hello");
+    ed.search.set_anchor(0);
     ed.search_update("hello");
-    // Primary cursor is inside the last match.
+    // Re-park cursor inside the last match.
     ed.active_buffer_mut().cursors[0] = 14;
     assert!(ed.add_cursor_to_prev_search_match());
     assert!(!ed.add_cursor_to_prev_search_match());
@@ -389,8 +415,8 @@ fn add_cursor_to_prev_search_match_treats_cursor_inside_match_as_occupied() {
 #[test]
 fn add_cursor_to_all_search_matches_adds_every_unoccupied_match() {
     let mut ed = editor_with_text("foo bar foo baz foo");
+    ed.search.set_anchor(0);
     ed.search_update("foo");
-    ed.active_buffer_mut().cursors[0] = 0;
     let added = ed.add_cursor_to_all_search_matches();
     assert_eq!(added, 2);
     let mut sorted = ed.active_buffer().cursors.clone();
@@ -401,8 +427,8 @@ fn add_cursor_to_all_search_matches_adds_every_unoccupied_match() {
 #[test]
 fn add_cursor_to_all_search_matches_returns_zero_when_all_occupied() {
     let mut ed = editor_with_text("foo bar foo");
+    ed.search.set_anchor(0);
     ed.search_update("foo");
-    ed.active_buffer_mut().cursors[0] = 0;
     // First pass adds the second occurrence; second pass should add nothing.
     assert_eq!(ed.add_cursor_to_all_search_matches(), 1);
     assert_eq!(ed.add_cursor_to_all_search_matches(), 0);
@@ -418,8 +444,9 @@ fn add_cursor_to_all_search_matches_with_no_matches_returns_zero() {
 #[test]
 fn add_cursor_to_all_search_matches_skips_cursor_inside_match() {
     let mut ed = editor_with_text("hello world hello hello");
+    ed.search.set_anchor(0);
     ed.search_update("hello");
-    // Primary cursor inside the first match.
+    // Place the primary cursor inside the first match.
     ed.active_buffer_mut().cursors[0] = 2;
     let added = ed.add_cursor_to_all_search_matches();
     assert_eq!(added, 2);
@@ -435,10 +462,9 @@ fn add_cursor_to_all_search_matches_skips_cursor_inside_match() {
 #[test]
 fn search_next_then_prev_round_trip() {
     let mut ed = editor_with_text("aaa bbb aaa bbb aaa");
+    ed.search.set_anchor(0);
     ed.search_update("bbb");
-    // matches = [4, 12]
-    ed.active_buffer_mut().cursors[0] = 0;
-    ed.search_next();
+    // search_update parks the cursor at the first match (4).
     assert_eq!(ed.active_buffer().cursors[0], 4);
     ed.search_next();
     assert_eq!(ed.active_buffer().cursors[0], 12);
@@ -447,13 +473,88 @@ fn search_next_then_prev_round_trip() {
 }
 
 #[test]
-fn search_update_clears_old_matches() {
+fn search_update_replaces_previous_pattern() {
     let mut ed = editor_with_text("hello world foo");
+    ed.search.set_anchor(0);
     ed.search_update("hello");
-    assert_eq!(ed.search.matches.len(), 1);
+    assert_eq!(ed.active_buffer().cursors[0], 0);
+    assert!(ed.search.last_search_found);
     ed.search_update("foo");
-    assert_eq!(ed.search.matches.len(), 1);
-    assert_eq!(ed.search.matches[0], 12);
+    assert_eq!(ed.search.pattern, "foo");
+    assert_eq!(ed.active_buffer().cursors[0], 12);
+    assert!(ed.search.last_search_found);
+}
+
+// -------------------------------------------------------
+// Lazy primitive tests (chunk boundaries, wrap, multi-byte)
+// -------------------------------------------------------
+
+#[test]
+fn find_match_forward_finds_first_after_position() {
+    use ropey::Rope;
+    let rope = Rope::from_str("hello world hello");
+    let hit = crate::core::editor::search::find_match_forward(&rope, "hello", 1, true).unwrap();
+    assert_eq!(hit, 12);
+}
+
+#[test]
+fn find_match_forward_wraps_to_top() {
+    use ropey::Rope;
+    let rope = Rope::from_str("foo bar foo");
+    let hit = crate::core::editor::search::find_match_forward(&rope, "foo", 9, true).unwrap();
+    assert_eq!(hit, 0);
+}
+
+#[test]
+fn find_match_backward_finds_last_before_position() {
+    use ropey::Rope;
+    let rope = Rope::from_str("hello world hello test hello");
+    let hit = crate::core::editor::search::find_match_backward(&rope, "hello", 26, true).unwrap();
+    assert_eq!(hit, 23);
+}
+
+#[test]
+fn find_match_backward_wraps_to_bottom() {
+    use ropey::Rope;
+    let rope = Rope::from_str("foo bar foo");
+    let hit = crate::core::editor::search::find_match_backward(&rope, "foo", 0, true).unwrap();
+    assert_eq!(hit, 8);
+}
+
+#[test]
+fn find_matches_in_range_honors_limit() {
+    use ropey::Rope;
+    let rope = Rope::from_str("aaaaa"); // overlapping-but-non-overlap-matched 'a'
+    let hits = crate::core::editor::search::find_matches_in_range(&rope, "a", 0, 5, 3);
+    assert_eq!(hits.len(), 3);
+    assert_eq!(hits, vec![0, 1, 2]);
+}
+
+#[test]
+fn find_match_forward_across_chunk_boundary() {
+    use ropey::Rope;
+    // Build a rope large enough that ropey will split it into multiple
+    // chunks. The pattern is placed precisely in the middle so that
+    // (with high probability) it straddles a chunk boundary.
+    let mut s = String::with_capacity(8192);
+    for _ in 0..4000 {
+        s.push('x');
+    }
+    s.push_str("needle");
+    for _ in 0..4000 {
+        s.push('x');
+    }
+    let rope = Rope::from_str(&s);
+    let hit = crate::core::editor::search::find_match_forward(&rope, "needle", 0, false).unwrap();
+    assert_eq!(hit, 4000);
+}
+
+#[test]
+fn find_match_forward_japanese() {
+    use ropey::Rope;
+    let rope = Rope::from_str("竹取の翁といふものありけり");
+    let hit = crate::core::editor::search::find_match_forward(&rope, "翁", 0, false).unwrap();
+    assert_eq!(hit, 3);
 }
 
 // -------------------------------------------------------

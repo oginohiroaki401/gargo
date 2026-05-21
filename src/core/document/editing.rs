@@ -66,6 +66,7 @@ impl Document {
         }
 
         self.dirty = true;
+        self.bump_version();
         self.sort_and_dedup_cursors();
     }
 
@@ -143,6 +144,7 @@ impl Document {
         }
 
         self.dirty = true;
+        self.bump_version();
         self.sort_and_dedup_cursors();
     }
 
@@ -236,6 +238,7 @@ impl Document {
         }
 
         self.dirty = true;
+        self.bump_version();
         self.sort_and_dedup_cursors();
     }
 
@@ -314,6 +317,7 @@ impl Document {
         }
 
         self.dirty = true;
+        self.bump_version();
         self.sort_and_dedup_cursors();
     }
 
@@ -389,6 +393,7 @@ impl Document {
         }
 
         self.dirty = true;
+        self.bump_version();
         self.sort_and_dedup_cursors();
     }
 
@@ -409,6 +414,7 @@ impl Document {
 
                 self.rope.remove(self.cursors[0]..self.cursors[0] + 1);
                 self.dirty = true;
+                self.bump_version();
 
                 let edit_event = EditEvent {
                     start_byte: byte_pos,
@@ -442,6 +448,7 @@ impl Document {
 
             self.rope.remove(self.cursors[0]..line_end);
             self.dirty = true;
+            self.bump_version();
 
             let edit_event = EditEvent {
                 start_byte,
@@ -538,6 +545,7 @@ impl Document {
         self.selections = vec![None; self.cursors.len()];
         self.sync_selection_head();
         self.dirty = true;
+        self.bump_version();
 
         // Push to redo stack
         self.history.push_redo(tx);
@@ -593,6 +601,7 @@ impl Document {
         self.selections = vec![None; self.cursors.len()];
         self.sync_selection_head();
         self.dirty = true;
+        self.bump_version();
 
         // Push back to undo stack
         self.history.push_undo(tx);
@@ -621,6 +630,7 @@ impl Document {
 
         self.rope.remove(start..end);
         self.dirty = true;
+        self.bump_version();
 
         // Place cursor at start of deleted range (single cursor after delete_range)
         self.cursors = vec![start.min(self.rope.len_chars())];
@@ -754,6 +764,7 @@ impl Document {
         }
 
         self.dirty = true;
+        self.bump_version();
         combined
     }
 
@@ -782,6 +793,7 @@ impl Document {
         self.cursors[0] = pos + char_count;
         self.sync_selection_head();
         self.dirty = true;
+        self.bump_version();
 
         let new_end_pos = self.compute_end_position(line, col_byte, text);
 

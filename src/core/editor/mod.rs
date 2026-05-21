@@ -1,7 +1,7 @@
 mod buffer_manager;
 mod diagnostics;
 mod jump_list;
-mod search;
+pub mod search;
 
 #[cfg(test)]
 #[path = "tests.rs"]
@@ -31,10 +31,16 @@ pub struct JumpLocation {
 
 pub struct SearchState {
     pub pattern: String,
-    pub matches: Vec<usize>,
-    pub current_match: Option<usize>,
-    /// Cached lowercased document text, reused across keystrokes in a search session.
-    lower_text_cache: Option<String>,
+    /// Lowercased copy of `pattern`, cached so render-time match scanning
+    /// doesn't lowercase it per-frame.
+    pub pattern_lower: String,
+    /// Primary cursor at the moment `/` was opened. Subsequent keystrokes
+    /// search forward from here so adding/removing characters doesn't drift
+    /// the result through the buffer (matches vim/Helix semantics).
+    pub anchor: usize,
+    /// Set when the most recent `search_update` found no match. Drives the
+    /// "Pattern not found" status line on confirm.
+    pub last_search_found: bool,
     /// All confirmed search patterns (oldest first).
     history: Vec<String>,
     /// Current position when browsing history (`None` = not browsing).
@@ -53,9 +59,9 @@ impl SearchState {
     pub fn new() -> Self {
         Self {
             pattern: String::new(),
-            matches: Vec::new(),
-            current_match: None,
-            lower_text_cache: None,
+            pattern_lower: String::new(),
+            anchor: 0,
+            last_search_found: false,
             history: Vec::new(),
             history_index: None,
             input_before_history: String::new(),
@@ -64,14 +70,15 @@ impl SearchState {
 
     pub fn clear(&mut self) {
         self.pattern.clear();
-        self.matches.clear();
-        self.current_match = None;
-        self.lower_text_cache = None;
+        self.pattern_lower.clear();
+        self.anchor = 0;
+        self.last_search_found = false;
     }
 
-    /// Invalidate the cached lowercased text (call when document content changes).
-    pub fn invalidate_cache(&mut self) {
-        self.lower_text_cache = None;
+    /// Record the cursor position from which subsequent forward searches
+    /// should originate (called when `/` opens the search bar).
+    pub fn set_anchor(&mut self, cursor: usize) {
+        self.anchor = cursor;
     }
 
     /// Push a non-empty pattern into history, deduplicating consecutive entries.
@@ -237,9 +244,12 @@ impl Editor {
     }
 
     /// Mark that highlights need updating (deferred to next render).
+    ///
+    /// The document version counter (bumped per-edit) is the authoritative
+    /// signal for invalidating the async search worker's lowercased-text
+    /// cache, so this no longer touches search state.
     pub fn mark_highlights_dirty(&mut self) {
         self.highlights_dirty = true;
-        self.search.invalidate_cache();
     }
 
     /// Drain pending edits from the active document and update highlighting.

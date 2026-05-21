@@ -479,26 +479,19 @@ impl App {
             }
             CoreAction::SearchUpdate(pattern) => {
                 self.editor.search_update(&pattern);
-                self.editor.search_next();
             }
             CoreAction::SearchNext => {
-                if self.editor.search.matches.is_empty() {
+                if self.editor.search.pattern_lower.is_empty() {
                     self.editor.message = Some("No search pattern".to_string());
-                } else {
-                    self.editor.search_next();
-                    let count = self.editor.search.matches.len();
-                    let idx = self.editor.search.current_match.map(|i| i + 1).unwrap_or(0);
-                    self.editor.message = Some(format!("[{}/{}]", idx, count));
+                } else if !self.editor.search_next() {
+                    self.editor.message = Some("Pattern not found".to_string());
                 }
             }
             CoreAction::SearchPrev => {
-                if self.editor.search.matches.is_empty() {
+                if self.editor.search.pattern_lower.is_empty() {
                     self.editor.message = Some("No search pattern".to_string());
-                } else {
-                    self.editor.search_prev();
-                    let count = self.editor.search.matches.len();
-                    let idx = self.editor.search.current_match.map(|i| i + 1).unwrap_or(0);
-                    self.editor.message = Some(format!("[{}/{}]", idx, count));
+                } else if !self.editor.search_prev() {
+                    self.editor.message = Some("Pattern not found".to_string());
                 }
             }
             CoreAction::AddCursorToNextMatch => {
@@ -755,22 +748,26 @@ impl App {
             .selection_text()
             .filter(|text| !text.is_empty());
 
-        if let Some(pattern) = selection_pattern {
-            self.editor.search_update(&pattern);
-        } else if self.editor.search.pattern.is_empty() {
+        if selection_pattern.is_none() && self.editor.search.pattern.is_empty() {
             self.editor.message = Some("No selection or active search pattern".to_string());
             return;
-        } else {
-            let pattern = self.editor.search.pattern.clone();
-            self.editor.search_update(&pattern);
         }
 
+        // Collapse the visual selection before running search so cursor moves
+        // (driven by `search_update`) land in normal-mode coordinates.
         if self.editor.mode == mode::Mode::Visual {
             self.editor.active_buffer_mut().clear_anchor();
             self.editor.mode = mode::Mode::Normal;
         }
 
-        if self.editor.search.matches.is_empty() {
+        if let Some(pattern) = selection_pattern {
+            self.editor
+                .search
+                .set_anchor(self.editor.active_buffer().cursors[0]);
+            self.editor.search_update(&pattern);
+        }
+
+        if !self.editor.search.last_search_found {
             self.editor.message = Some("No matches found".to_string());
             return;
         }
@@ -792,14 +789,9 @@ impl App {
             .selection_text()
             .filter(|text| !text.is_empty());
 
-        if let Some(pattern) = selection_pattern {
-            self.editor.search_update(&pattern);
-        } else if self.editor.search.pattern.is_empty() {
+        if selection_pattern.is_none() && self.editor.search.pattern.is_empty() {
             self.editor.message = Some("No selection or active search pattern".to_string());
             return;
-        } else {
-            let pattern = self.editor.search.pattern.clone();
-            self.editor.search_update(&pattern);
         }
 
         if self.editor.mode == mode::Mode::Visual {
@@ -807,7 +799,14 @@ impl App {
             self.editor.mode = mode::Mode::Normal;
         }
 
-        if self.editor.search.matches.is_empty() {
+        if let Some(pattern) = selection_pattern {
+            self.editor
+                .search
+                .set_anchor(self.editor.active_buffer().cursors[0]);
+            self.editor.search_update(&pattern);
+        }
+
+        if !self.editor.search.last_search_found {
             self.editor.message = Some("No matches found".to_string());
             return;
         }

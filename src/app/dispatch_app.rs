@@ -1172,16 +1172,17 @@ impl App {
                     saved_scroll: scroll,
                     saved_horizontal_scroll: horizontal_scroll,
                 });
+                self.editor.search.set_anchor(cursor);
                 self.editor.search.reset_history_browse();
             }
             AppAction::Workspace(WorkspaceAction::SearchConfirm) => {
                 let pattern = self.editor.search.pattern.clone();
                 self.editor.search.push_history(&pattern);
                 self.compositor.apply(UiAction::CloseSearchBar);
-                let count = self.editor.search.matches.len();
-                if count > 0 {
-                    let idx = self.editor.search.current_match.map(|i| i + 1).unwrap_or(0);
-                    self.editor.message = Some(format!("[{}/{}]", idx, count));
+                if self.editor.search.pattern_lower.is_empty() {
+                    // Nothing typed — no message.
+                } else if self.editor.search.last_search_found {
+                    self.editor.message = Some("Found".to_string());
                 } else {
                     self.editor.message = Some("Pattern not found".to_string());
                 }
@@ -1204,7 +1205,6 @@ impl App {
                     self.compositor
                         .apply(UiAction::SetSearchBarInput(pattern.clone()));
                     self.editor.search_update(&pattern);
-                    self.editor.search_next();
                 }
             }
             AppAction::Workspace(WorkspaceAction::SearchHistoryNext) => {
@@ -1212,7 +1212,6 @@ impl App {
                     self.compositor
                         .apply(UiAction::SetSearchBarInput(pattern.clone()));
                     self.editor.search_update(&pattern);
-                    self.editor.search_next();
                 }
             }
             AppAction::Integration(IntegrationAction::RunPluginCommand { id }) => {

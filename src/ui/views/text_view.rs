@@ -261,10 +261,27 @@ impl TextView {
         if render_search {
             let search = &ctx.editor.search;
             let pattern_len = search.pattern.chars().count();
-            if !search.matches.is_empty() && pattern_len > 0 {
+            if !search.pattern_lower.is_empty() && pattern_len > 0 {
                 let rope = &buf.rope;
                 let rope_len = rope.len_chars();
-                for (match_idx, &match_offset) in search.matches.iter().enumerate() {
+                let primary_cursor = buf.cursors.first().copied();
+                // Search only the visible viewport. The viewport is at most a
+                // few thousand chars, so this is independent of buffer size.
+                let visible_start_char = rope.line_to_char(start_line.min(rope.len_lines()));
+                let visible_end_line = end_line.min(rope.len_lines());
+                let visible_end_char = if visible_end_line >= rope.len_lines() {
+                    rope_len
+                } else {
+                    rope.line_to_char(visible_end_line)
+                };
+                let visible_matches = crate::core::editor::search::find_matches_in_range(
+                    rope,
+                    &search.pattern_lower,
+                    visible_start_char,
+                    visible_end_char,
+                    1024,
+                );
+                for match_offset in visible_matches {
                     if match_offset >= rope_len {
                         continue;
                     }
@@ -307,7 +324,7 @@ impl TextView {
                             .unwrap_or(line_display.len());
                         let col_start = display_width(&line_display[..prefix_end]);
 
-                        let is_current = search.current_match == Some(match_idx);
+                        let is_current = primary_cursor == Some(match_offset);
                         let (bg, fg) = if is_current {
                             (Some(Color::Yellow), Some(Color::Black))
                         } else {
@@ -1187,8 +1204,9 @@ diff --git a/a.txt b/a.txt\n\
         editor.active_buffer_mut().insert_text("abcdefghij\n");
         editor.active_buffer_mut().horizontal_scroll_offset = 2;
         editor.search.pattern = "de".to_string();
-        editor.search.matches = vec![3];
-        editor.search.current_match = Some(0);
+        editor.search.pattern_lower = "de".to_string();
+        editor.search.last_search_found = true;
+        editor.active_buffer_mut().cursors[0] = 3;
 
         let config = Config {
             show_line_number: false,

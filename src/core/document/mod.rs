@@ -74,6 +74,10 @@ pub struct Document {
     pub(crate) selections: Vec<Option<Selection>>,
     pub git_gutter: HashMap<usize, GitLineStatus>,
     cached_status_bar_path: String,
+    /// Monotonically increases on every rope mutation. Used by the async
+    /// search runtime to invalidate its cached lowercased copy and to discard
+    /// stale results.
+    pub version: u64,
 }
 
 impl Document {
@@ -111,7 +115,15 @@ impl Document {
             selections: vec![None],
             git_gutter: HashMap::new(),
             cached_status_bar_path: "[scratch]".to_string(),
+            version: 0,
         }
+    }
+
+    /// Called from every rope-mutating method. Bumps the version counter so
+    /// the async search runtime knows its cached lowercased text is stale.
+    #[inline]
+    pub(crate) fn bump_version(&mut self) {
+        self.version = self.version.wrapping_add(1);
     }
 
     /// Length of line content excluding trailing newline

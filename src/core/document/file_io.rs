@@ -24,6 +24,7 @@ impl Document {
             selections: vec![None],
             git_gutter: HashMap::new(),
             cached_status_bar_path,
+            version: 0,
         }
     }
 
@@ -89,6 +90,7 @@ impl Document {
         };
         let old_cursor = self.cursors[0];
         self.rope = Rope::from_str(&contents);
+        self.bump_version();
         // Preserve cursor position if still valid, reset to single cursor
         self.cursors = vec![old_cursor.min(self.rope.len_chars())];
         self.dirty = false;

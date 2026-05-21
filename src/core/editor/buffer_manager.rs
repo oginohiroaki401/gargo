@@ -1,11 +1,12 @@
 use super::*;
 
 impl Editor {
-    /// Clear stale search matches and cache when the active buffer changes.
+    /// Reset transient search state when the active buffer changes. Pattern
+    /// history is preserved (it's user-visible across buffers); the anchor
+    /// and "last search found" flag are per-buffer and start fresh.
     fn on_buffer_switch(&mut self) {
-        self.search.matches.clear();
-        self.search.current_match = None;
-        self.search.invalidate_cache();
+        self.search.anchor = 0;
+        self.search.last_search_found = false;
     }
 
     pub fn active_buffer(&self) -> &Document {
