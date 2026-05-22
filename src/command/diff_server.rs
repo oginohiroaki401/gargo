@@ -439,11 +439,27 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         .gr-file-body { background: white; }
         .gr-file-body .loading, .gr-file-body .empty { padding: 12px; color: #57606a; font-size: 12px; }
 {{DIFF_STYLES}}
-        #go-top-btn {
+        #bottom-controls {
             position: fixed;
             right: 20px;
             bottom: 20px;
             z-index: 1000;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        #viewed-counter {
+            padding: 8px 12px;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            background: white;
+            color: #57606a;
+            font-size: 13px;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+        }
+        #go-top-btn {
             padding: 8px 12px;
             border: 1px solid #ccc;
             border-radius: 8px;
@@ -488,7 +504,10 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             </section>
         </main>
     </div>
-    <button id="go-top-btn" type="button" aria-label="Go to top">Go top</button>
+    <div id="bottom-controls">
+        <span id="viewed-counter" title="Files marked as viewed / total files"></span>
+        <button id="go-top-btn" type="button" aria-label="Go to top">Go top</button>
+    </div>
 
     <script>
         const urlParams = new URLSearchParams(window.location.search);
@@ -502,6 +521,7 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         const filesListContainer = document.getElementById("files-list");
         const filesMain = document.getElementById("files-main");
         const goTopButton = document.getElementById("go-top-btn");
+        const viewedCounter = document.getElementById("viewed-counter");
         const AUTO_REFRESH_INTERVAL_MS = 2000;
         const GO_TOP_SHOW_SCROLL_Y = 240;
         const STORAGE_ROOT = rootPathCode ? rootPathCode.textContent : "unknown-root";
@@ -598,6 +618,23 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         const updateGoTopButtonVisibility = () => {
             if (window.scrollY > GO_TOP_SHOW_SCROLL_Y) goTopButton.classList.add("visible");
             else goTopButton.classList.remove("visible");
+        };
+        // Reflect how many of the listed files are marked "Viewed" next to
+        // the go-to-top button. Counts live DOM rows so it stays correct
+        // after refreshes, viewed toggles, and base/compare changes.
+        const updateViewedCounter = () => {
+            const rows = filesMain.querySelectorAll(".gr-file");
+            const total = rows.length;
+            if (total === 0) {
+                viewedCounter.style.display = "none";
+                return;
+            }
+            let viewed = 0;
+            for (const row of rows) {
+                if (row.classList.contains("gr-file-viewed")) viewed += 1;
+            }
+            viewedCounter.style.display = "";
+            viewedCounter.textContent = `viewed ${viewed} / ${total}`;
         };
         const renderDiffToggleButtonLabel = (button, collapsed) => {
             button.textContent = collapsed ? "▸" : "▾";
@@ -750,6 +787,7 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             }
             persistViewedFileIds();
             persistCollapsedFileIds();
+            updateViewedCounter();
         }
 
         async function ensureBodyLoaded(wrapper) {
@@ -1045,6 +1083,7 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                 for (const meta of (data.untracked || [])) all.push({ section: "untracked", meta });
                 renderSidebar(all);
                 renderMain(all);
+                updateViewedCounter();
             } finally {
                 isLoading = false;
             }
@@ -1348,11 +1387,27 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         .gr-file-body { background: white; }
         .gr-file-body .loading, .gr-file-body .empty { padding: 12px; color: #57606a; font-size: 12px; }
 {{DIFF_STYLES}}
-        #go-top-btn {
+        #bottom-controls {
             position: fixed;
             right: 20px;
             bottom: 20px;
             z-index: 1000;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        #viewed-counter {
+            padding: 8px 12px;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            background: white;
+            color: #57606a;
+            font-size: 13px;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+        }
+        #go-top-btn {
             padding: 8px 12px;
             border: 1px solid #ccc;
             border-radius: 8px;
@@ -1403,7 +1458,10 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             </section>
         </main>
     </div>
-    <button id="go-top-btn" type="button" aria-label="Go to top">Go top</button>
+    <div id="bottom-controls">
+        <span id="viewed-counter" title="Files marked as viewed / total files"></span>
+        <button id="go-top-btn" type="button" aria-label="Go to top">Go top</button>
+    </div>
 
     <script>
         const urlParams = new URLSearchParams(window.location.search);
@@ -1418,6 +1476,7 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         const filesListContainer = document.getElementById("files-list");
         const filesMain = document.getElementById("files-main");
         const goTopButton = document.getElementById("go-top-btn");
+        const viewedCounter = document.getElementById("viewed-counter");
         const GO_TOP_SHOW_SCROLL_Y = 240;
         const STORAGE_ROOT = rootPathCode ? rootPathCode.textContent : "unknown-root";
         const COLLAPSED_FILES_STORAGE_KEY = `gargo.compare.collapsed.v3:${STORAGE_ROOT}`;
@@ -1499,6 +1558,23 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         const updateGoTopButtonVisibility = () => {
             if (window.scrollY > GO_TOP_SHOW_SCROLL_Y) goTopButton.classList.add("visible");
             else goTopButton.classList.remove("visible");
+        };
+        // Reflect how many of the listed files are marked "Viewed" next to
+        // the go-to-top button. Counts live DOM rows so it stays correct
+        // after refreshes, viewed toggles, and base/compare changes.
+        const updateViewedCounter = () => {
+            const rows = filesMain.querySelectorAll(".gr-file");
+            const total = rows.length;
+            if (total === 0) {
+                viewedCounter.style.display = "none";
+                return;
+            }
+            let viewed = 0;
+            for (const row of rows) {
+                if (row.classList.contains("gr-file-viewed")) viewed += 1;
+            }
+            viewedCounter.style.display = "";
+            viewedCounter.textContent = `viewed ${viewed} / ${total}`;
         };
         const renderDiffToggleButtonLabel = (button, collapsed) => {
             button.textContent = collapsed ? "▸" : "▾";
@@ -1645,6 +1721,7 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             }
             persistViewedFileIds();
             persistCollapsedFileIds();
+            updateViewedCounter();
         }
 
         async function ensureBodyLoaded(wrapper) {
@@ -1971,6 +2048,7 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                 latestFiles = Array.isArray(data.files) ? data.files : [];
                 renderSidebar(latestFiles);
                 renderMain(latestFiles);
+                updateViewedCounter();
             } finally {
                 isLoadingCompare = false;
             }
