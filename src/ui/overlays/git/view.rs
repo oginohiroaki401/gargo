@@ -573,32 +573,27 @@ impl GitView {
     }
 
     fn first_changed_line_in_diff(&self) -> Option<usize> {
-        let lines = self.current_diff_lines()?;
-        let mut new_line: Option<usize> = None;
-        for line in lines {
-            if line.starts_with("@@") {
-                new_line = parse_hunk_new_start(line).map(|start| start.saturating_sub(1));
-                continue;
-            }
+        first_changed_line_in_lines(self.current_diff_lines()?)
+    }
 
-            let Some(current_line) = new_line else {
-                continue;
-            };
-
-            if line.starts_with(' ') {
-                new_line = Some(current_line.saturating_add(1));
-                continue;
-            }
-
-            if line.starts_with('+') && !line.starts_with("+++") {
-                return Some(current_line);
-            }
-
-            if line.starts_with('-') && !line.starts_with("---") {
-                return Some(current_line);
-            }
+    /// First changed line (0-based, new-file coordinates) for the current
+    /// selection. Falls back to a synchronous `git diff` when the async diff
+    /// has not arrived yet, so opening a file always lands on its first hunk.
+    fn first_changed_line_for_selected(&self) -> Option<usize> {
+        if let Some(line) = self.first_changed_line_in_diff() {
+            return Some(line);
         }
-        None
+
+        let key = self.selected_entry_key()?;
+
+        if let Some(CachedDiffEntry::Ready(lines)) = self.diff_cache.get(&key) {
+            return first_changed_line_in_lines(lines);
+        }
+
+        let repo_root = self.repo_root_for_entry_path(&key.path, key.staged);
+        let diff = git::git_diff_in(&repo_root, &key.path, key.staged).ok()?;
+        let lines: Vec<String> = diff.lines().map(|line| line.to_string()).collect();
+        first_changed_line_in_lines(&lines)
     }
 
     fn jump_to_best_match(&mut self) -> bool {
@@ -1354,7 +1349,7 @@ impl GitView {
                             entry.path.clone()
                         };
                         let _ = repo_root; // used for context; path resolves via project_root
-                        let line = self.first_changed_line_in_diff();
+                        let line = self.first_changed_line_for_selected();
                         EventResult::Action(Action::App(AppAction::Buffer(
                             BufferAction::OpenFileFromGitView { path, line },
                         )))
@@ -1851,6 +1846,36 @@ impl DisplayItem {
     }
 }
 
+/// Scan unified-diff `lines` for the first added/removed line and return its
+/// 0-based position in the new file.
+fn first_changed_line_in_lines(lines: &[String]) -> Option<usize> {
+    let mut new_line: Option<usize> = None;
+    for line in lines {
+        if line.starts_with("@@") {
+            new_line = parse_hunk_new_start(line).map(|start| start.saturating_sub(1));
+            continue;
+        }
+
+        let Some(current_line) = new_line else {
+            continue;
+        };
+
+        if line.starts_with(' ') {
+            new_line = Some(current_line.saturating_add(1));
+            continue;
+        }
+
+        if line.starts_with('+') && !line.starts_with("+++") {
+            return Some(current_line);
+        }
+
+        if line.starts_with('-') && !line.starts_with("---") {
+            return Some(current_line);
+        }
+    }
+    None
+}
+
 fn parse_hunk_new_start(line: &str) -> Option<usize> {
     let plus_idx = line.find('+')?;
     let after_plus = &line[plus_idx + 1..];
@@ -2062,6 +2087,28 @@ mod tests {
         ]);
 
         assert_eq!(view.first_changed_line_in_diff(), Some(10));
+    }
+
+    #[test]
+    fn first_changed_line_for_selected_falls_back_to_cached_diff() {
+        let mut view = test_view();
+        view.selected = 1; // first changed file: src/lib.rs
+        // Async diff has not arrived: diff_state stays Idle.
+        view.diff_cache.insert(
+            DiffCacheKey {
+                path: "src/lib.rs".to_string(),
+                staged: false,
+            },
+            CachedDiffEntry::Ready(vec![
+                "@@ -22,3 +22,4 @@".to_string(),
+                " context".to_string(),
+                " context".to_string(),
+                "+added line".to_string(),
+            ]),
+        );
+
+        assert!(view.first_changed_line_in_diff().is_none());
+        assert_eq!(view.first_changed_line_for_selected(), Some(23));
     }
 
     #[test]
