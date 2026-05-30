@@ -16,7 +16,9 @@ use crate::syntax::theme::Theme;
 use crate::ui::framework::cell::CellStyle;
 use crate::ui::framework::component::EventResult;
 use crate::ui::framework::surface::Surface;
-use crate::ui::shared::file_browser::{is_valid_single_name, sort_by_name_case_insensitive};
+use crate::ui::shared::file_browser::{
+    is_valid_relative_subpath, is_valid_single_name, sort_by_name_case_insensitive,
+};
 use crate::ui::shared::filtering::fuzzy_match;
 use crate::ui::text::{display_width, slice_display_window, truncate_to_width};
 use crate::ui::text_input::delete_prev_word_input;
@@ -786,34 +788,50 @@ impl ExplorerPopup {
     fn apply_add(&mut self) -> EventResult {
         let raw = self.add_input.trim().to_string();
         let is_dir = raw.ends_with('/');
-        let name = raw.trim_end_matches('/');
-        if !is_valid_single_name(name) {
-            return self.show_message("Add failed: invalid name".to_string());
+        let rel = raw.trim_end_matches('/');
+        if !is_valid_relative_subpath(rel) {
+            return self.show_message("Add failed: invalid path".to_string());
         }
         let parent_dir = self.selected_add_parent_dir();
-        let target = parent_dir.join(name);
+        let rel_path = std::path::PathBuf::from(rel);
+        let target = parent_dir.join(&rel_path);
         if target.exists() {
-            return self.show_message(format!("Add failed: '{}' already exists", name));
+            return self.show_message(format!("Add failed: '{}' already exists", rel));
         }
 
         let result = if is_dir {
-            std::fs::create_dir(&target)
+            std::fs::create_dir_all(&target)
         } else {
-            OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&target)
-                .map(|_| ())
+            let mkdir = match target.parent() {
+                Some(parent) if parent != parent_dir.as_path() => std::fs::create_dir_all(parent),
+                _ => Ok(()),
+            };
+            mkdir.and_then(|()| {
+                OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&target)
+                    .map(|_| ())
+            })
         };
 
         match result {
             Ok(()) => {
-                self.expanded_dirs.insert(parent_dir);
+                // Expand each intermediate dir so the tree view reveals the new entry.
+                self.expanded_dirs.insert(parent_dir.clone());
+                let mut walk = parent_dir.clone();
+                for component in rel_path.components() {
+                    walk = walk.join(component);
+                    if walk == target && !is_dir {
+                        break;
+                    }
+                    self.expanded_dirs.insert(walk.clone());
+                }
                 self.rebuild_entries();
                 self.select_by_path(&target);
                 self.update_preview();
                 let kind = if is_dir { "directory" } else { "file" };
-                self.show_message(format!("Created {} {}", kind, name))
+                self.show_message(format!("Created {} {}", kind, rel))
             }
             Err(e) => self.show_message(format!("Add failed: {}", e)),
         }

@@ -14,7 +14,9 @@ use crate::syntax::theme::Theme;
 use crate::ui::framework::cell::CellStyle;
 use crate::ui::framework::component::EventResult;
 use crate::ui::framework::surface::Surface;
-use crate::ui::shared::file_browser::{is_valid_single_name, sort_by_name_case_insensitive};
+use crate::ui::shared::file_browser::{
+    is_valid_relative_subpath, is_valid_single_name, sort_by_name_case_insensitive,
+};
 use crate::ui::shared::filtering::fuzzy_match;
 use crate::ui::text::{slice_display_window, truncate_to_width};
 use crate::ui::text_input::delete_prev_word_input;
@@ -1024,32 +1026,52 @@ impl Explorer {
     fn apply_add(&mut self) -> EventResult {
         let raw = self.add_input.trim().to_string();
         let is_dir = raw.ends_with('/');
-        let name = raw.trim_end_matches('/');
-        if !is_valid_single_name(name) {
-            return self.show_message("Add failed: invalid name".to_string());
+        let rel = raw.trim_end_matches('/');
+        if !is_valid_relative_subpath(rel) {
+            return self.show_message("Add failed: invalid path".to_string());
         }
 
-        let target = self.current_dir.join(name);
+        let rel_path = std::path::PathBuf::from(rel);
+        let target = self.current_dir.join(&rel_path);
         if target.exists() {
-            return self.show_message(format!("Add failed: '{}' already exists", name));
+            return self.show_message(format!("Add failed: '{}' already exists", rel));
         }
 
         let result = if is_dir {
-            std::fs::create_dir(&target)
+            std::fs::create_dir_all(&target)
         } else {
-            OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&target)
-                .map(|_| ())
+            let mkdir = match target.parent() {
+                Some(parent) if parent != self.current_dir.as_path() => {
+                    std::fs::create_dir_all(parent)
+                }
+                _ => Ok(()),
+            };
+            mkdir.and_then(|()| {
+                OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&target)
+                    .map(|_| ())
+            })
         };
 
         match result {
             Ok(()) => {
+                // Navigate into the deepest parent dir of the new entry, then select the leaf.
+                let leaf = rel_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string());
+                if let Some(parent) = rel_path.parent() {
+                    if parent.as_os_str().len() > 0 {
+                        self.current_dir = self.current_dir.join(parent);
+                    }
+                }
                 self.read_directory();
-                self.select_by_name(name);
+                if let Some(name) = leaf.as_deref() {
+                    self.select_by_name(name);
+                }
                 let kind = if is_dir { "directory" } else { "file" };
-                self.show_message(format!("Created {} {}", kind, name))
+                self.show_message(format!("Created {} {}", kind, rel))
             }
             Err(e) => self.show_message(format!("Add failed: {}", e)),
         }
@@ -1969,6 +1991,60 @@ mod tests {
         let _ = explorer.handle_key(key(KeyCode::Enter), &KeyState::Normal);
         assert!(dir.join("new_dir").is_dir());
         assert_eq!(explorer.selected_name(), Some("new_dir"));
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn add_nested_file_creates_intermediate_dirs() {
+        let dir = setup("add_nested_file");
+        let mut explorer = Explorer::new(dir.clone(), &dir, &HashMap::new());
+
+        let _ = explorer.handle_key(key(KeyCode::Char('a')), &KeyState::Normal);
+        for c in "dirA/dirB/README.md".chars() {
+            let _ = explorer.handle_key(key(KeyCode::Char(c)), &KeyState::Normal);
+        }
+        let _ = explorer.handle_key(key(KeyCode::Enter), &KeyState::Normal);
+
+        assert!(dir.join("dirA/dirB/README.md").is_file());
+        assert!(dir.join("dirA/dirB").is_dir());
+        assert_eq!(explorer.current_dir(), dir.join("dirA/dirB").as_path());
+        assert_eq!(explorer.selected_name(), Some("README.md"));
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn add_nested_dir_creates_intermediate_dirs() {
+        let dir = setup("add_nested_dir");
+        let mut explorer = Explorer::new(dir.clone(), &dir, &HashMap::new());
+
+        let _ = explorer.handle_key(key(KeyCode::Char('a')), &KeyState::Normal);
+        for c in "x/y/z/".chars() {
+            let _ = explorer.handle_key(key(KeyCode::Char(c)), &KeyState::Normal);
+        }
+        let _ = explorer.handle_key(key(KeyCode::Enter), &KeyState::Normal);
+
+        assert!(dir.join("x/y/z").is_dir());
+        assert_eq!(explorer.current_dir(), dir.join("x/y").as_path());
+        assert_eq!(explorer.selected_name(), Some("z"));
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn add_rejects_absolute_and_parent_components() {
+        let dir = setup("add_invalid_path");
+        let mut explorer = Explorer::new(dir.clone(), &dir, &HashMap::new());
+
+        for raw in ["/etc/passwd", "../foo", "foo/../bar"] {
+            let _ = explorer.handle_key(key(KeyCode::Char('a')), &KeyState::Normal);
+            for c in raw.chars() {
+                let _ = explorer.handle_key(key(KeyCode::Char(c)), &KeyState::Normal);
+            }
+            let _ = explorer.handle_key(key(KeyCode::Enter), &KeyState::Normal);
+            assert!(!dir.join(raw.trim_start_matches('/')).exists());
+        }
 
         cleanup(&dir);
     }
