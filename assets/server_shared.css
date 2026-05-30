@@ -147,3 +147,32 @@ body {
     margin-bottom: 8px;
 }
 .file-toolbar .view-on-github-btn { margin-left: auto; }
+
+/* Last-commit teaser shown above the code/dir content (GitHub-style) */
+.commit-info {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    margin-bottom: 16px;
+    background: #ffffff;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    font-size: 13px;
+    min-width: 0;
+}
+.commit-info-hash { flex-shrink: 0; }
+.commit-info-hash code { font-size: 12px; }
+.commit-info-subject {
+    color: #1f2328;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+.commit-info-meta {
+    color: #57606a;
+    flex-shrink: 0;
+    white-space: nowrap;
+}

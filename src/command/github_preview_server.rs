@@ -748,6 +748,65 @@ pub(crate) fn commit_url(ctx: &RepoUrlContext, hash: &str) -> String {
     format!("/{}/{}/commit/{}", ctx.owner, ctx.repo, hash)
 }
 
+struct PathCommitInfo {
+    short_hash: String,
+    full_hash: String,
+    subject: String,
+    author: String,
+    ago: String,
+}
+
+/// `git log -1` for a path — the commit that last touched the file/dir.
+/// Used for the GitHub-style "last commit" strip above the code/dir view.
+async fn path_last_commit(repo_root: &Path, rel_path: &str) -> Option<PathCommitInfo> {
+    let mut args: Vec<&str> = vec!["log", "-1", "--format=%h%x00%H%x00%s%x00%an%x00%ar"];
+    let path_owned = if rel_path == "." || rel_path.is_empty() {
+        None
+    } else {
+        Some(rel_path.to_string())
+    };
+    if let Some(ref p) = path_owned {
+        args.push("--");
+        args.push(p.as_str());
+    }
+    let out = git_output_in_repo(repo_root, &args).await.ok()?;
+    let mut parts = out.split('\0');
+    let short_hash = parts.next()?.to_string();
+    let full_hash = parts.next()?.to_string();
+    let subject = parts.next()?.to_string();
+    let author = parts.next()?.to_string();
+    let ago = parts.next()?.trim_end().to_string();
+    if short_hash.is_empty() {
+        return None;
+    }
+    Some(PathCommitInfo {
+        short_hash,
+        full_hash,
+        subject,
+        author,
+        ago,
+    })
+}
+
+async fn path_commit_strip_html(repo_root: &Path, rel_path: &str, ctx: &RepoUrlContext) -> String {
+    let Some(info) = path_last_commit(repo_root, rel_path).await else {
+        return String::new();
+    };
+    format!(
+        r#"<div class="commit-info">
+  <a class="commit-info-hash" href="{href}" title="{full}"><code>{short}</code></a>
+  <span class="commit-info-subject">{subject}</span>
+  <span class="commit-info-meta">{author} · {ago}</span>
+</div>"#,
+        href = commit_url(ctx, &info.full_hash),
+        full = html_escape(&info.full_hash),
+        short = html_escape(&info.short_hash),
+        subject = html_escape(&info.subject),
+        author = html_escape(&info.author),
+        ago = html_escape(&info.ago),
+    )
+}
+
 /// Resolve the `{*rest}` capture of a `/tree|blob/{branch}/{path}` route into a
 /// repo-relative path, stripping the known branch prefix. Branch names may
 /// contain `/`, so the known branch is matched first; stale links fall back to
@@ -939,6 +998,7 @@ const DIRECTORY_TEMPLATE: &str = r#"<!DOCTYPE html>
 <body>
     <div class="container">
         {{REPO_HEADER}}
+        {{COMMIT_INFO}}
         {{CONTENT}}
     </div>
     <script src="/assets/mermaid.min.js"></script>
@@ -1084,6 +1144,7 @@ const FILE_TEMPLATE: &str = r#"<!DOCTYPE html>
 <body>
     <div class="container">
         {{REPO_HEADER}}
+        {{COMMIT_INFO}}
         {{CONTENT}}
     </div>
     <script src="/assets/mermaid.min.js"></script>
@@ -1447,6 +1508,7 @@ pub(crate) async fn handle_directory_listing(
     let root_path = repo_root.display().to_string();
     let repo_url = github_repo_url(repo_root).await;
 
+    let commit_info = path_commit_strip_html(repo_root, display_path, ctx).await;
     let html = DIRECTORY_TEMPLATE
         .replace("{{TITLE}}", &html_escape(&title))
         .replace("{{ROOT_PATH}}", &html_escape(&root_path))
@@ -1455,6 +1517,7 @@ pub(crate) async fn handle_directory_listing(
             "{{REPO_HEADER}}",
             &repository_header(&root_path, "code", repo_url.as_deref(), ctx),
         )
+        .replace("{{COMMIT_INFO}}", &commit_info)
         .replace("{{CONTENT}}", &content)
         .replace("{{SHARED_CSS}}", crate::command::server_shared::SHARED_CSS)
         .replace("{{SYNTAX_STYLES}}", render_diff_styles())
@@ -1536,6 +1599,7 @@ pub(crate) async fn handle_file_display(
         ),
     };
 
+    let commit_info = path_commit_strip_html(repo_root, display_path, ctx).await;
     let html = FILE_TEMPLATE
         .replace("{{TITLE}}", &html_escape(filename))
         .replace("{{ROOT_PATH}}", &html_escape(&root_path))
@@ -1544,6 +1608,7 @@ pub(crate) async fn handle_file_display(
             "{{REPO_HEADER}}",
             &repository_header(&root_path, "code", repo_url.as_deref(), ctx),
         )
+        .replace("{{COMMIT_INFO}}", &commit_info)
         .replace("{{CONTENT}}", &rendered_content)
         .replace("{{SHARED_CSS}}", crate::command::server_shared::SHARED_CSS)
         .replace("{{SYNTAX_STYLES}}", render_diff_styles())
