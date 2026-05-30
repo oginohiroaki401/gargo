@@ -33,6 +33,11 @@ impl Document {
             Some(p) => p.clone(),
             None => return Err("No file path".to_string()),
         };
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
         let contents = self.rope.to_string();
         fs::write(&path, &contents).map_err(|e| e.to_string())?;
         self.dirty = false;
@@ -98,5 +103,27 @@ impl Document {
         self.history = History::new();
         self.selections = vec![None];
         Ok(format!("Reloaded {}", path.display()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::document::Document;
+    use tempfile::tempdir;
+
+    #[test]
+    fn save_creates_missing_parent_directories() {
+        let tmp = tempdir().expect("temp dir");
+        let target = tmp.path().join("a/b/c/new.md");
+        assert!(!target.exists());
+        let mut doc = Document::from_file(1, target.to_str().unwrap());
+        doc.rope = ropey::Rope::from_str("hello\n");
+        doc.dirty = true;
+        let msg = doc.save().expect("save");
+        assert!(target.exists());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "hello\n");
+        assert!(!doc.dirty);
+        assert!(msg.contains("Wrote"));
     }
 }

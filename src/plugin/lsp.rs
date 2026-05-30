@@ -447,20 +447,15 @@ impl LspPlugin {
         };
         let outputs = match resolved {
             ResolvedTarget::Url(url) => vec![PluginOutput::OpenUrl(url)],
-            ResolvedTarget::LocalPath(path) => {
-                if path.exists() {
-                    vec![PluginOutput::OpenFileAtLsp {
-                        path,
-                        line: 0,
-                        character_utf16: 0,
-                    }]
-                } else {
-                    vec![PluginOutput::Message(format!(
-                        "Link target not found: {}",
-                        path.display()
-                    ))]
-                }
-            }
+            // Open the link target as a buffer whether it exists on disk yet
+            // or not — saving the buffer will mkdir -p its parent and create
+            // the file, which lets the user follow a stub link into a fresh
+            // note without having to create the path by hand first.
+            ResolvedTarget::LocalPath(path) => vec![PluginOutput::OpenFileAtLsp {
+                path,
+                line: 0,
+                character_utf16: 0,
+            }],
         };
         Some(outputs)
     }
@@ -927,6 +922,29 @@ mod tests {
         assert!(matches!(
             outputs.first(),
             Some(PluginOutput::OpenFileAtLsp { path, .. }) if path == &target_path
+        ));
+    }
+
+    #[test]
+    fn goto_definition_opens_missing_markdown_target_as_new_buffer() {
+        let tmp = tempdir().expect("temp dir");
+        let root = tmp.path();
+        let doc_path = root.join("note.md");
+        let missing_path = root.join("notes/draft.md");
+        let content = "[x](notes/draft.md)\n";
+        fs::write(&doc_path, content).expect("write doc");
+
+        let mut editor = Editor::open(&doc_path.to_string_lossy());
+        editor.active_buffer_mut().cursors[0] = char_idx(content, "draft");
+
+        let config = config_without_lsp_servers();
+        let mut plugin = LspPlugin::new(&config, root);
+        let ctx = PluginContext::new(&editor, root, &config);
+        let outputs = plugin.on_command("lsp.goto_definition", &ctx);
+
+        assert!(matches!(
+            outputs.first(),
+            Some(PluginOutput::OpenFileAtLsp { path, .. }) if path == &missing_path
         ));
     }
 
