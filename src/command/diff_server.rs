@@ -2255,11 +2255,17 @@ async fn run_server(
         .route("/api/status", get(handle_api_status_request))
         .route("/api/status/file", get(handle_api_status_file_request))
         .route("/api/status/viewed", post(handle_api_status_viewed_request))
-        .route("/api/status/context", get(handle_api_status_context_request))
+        .route(
+            "/api/status/context",
+            get(handle_api_status_context_request),
+        )
         .route("/api/branches", get(handle_api_branches_request))
         .route("/api/compare", get(handle_api_compare_request))
         .route("/api/compare/file", get(handle_api_compare_file_request))
-        .route("/api/compare/context", get(handle_api_compare_context_request))
+        .route(
+            "/api/compare/context",
+            get(handle_api_compare_context_request),
+        )
         .route(
             "/api/compare/viewed",
             post(handle_api_compare_viewed_request),

@@ -1061,10 +1061,10 @@ impl Explorer {
                 let leaf = rel_path
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string());
-                if let Some(parent) = rel_path.parent() {
-                    if parent.as_os_str().len() > 0 {
-                        self.current_dir = self.current_dir.join(parent);
-                    }
+                if let Some(parent) = rel_path.parent()
+                    && !parent.as_os_str().is_empty()
+                {
+                    self.current_dir = self.current_dir.join(parent);
                 }
                 self.read_directory();
                 if let Some(name) = leaf.as_deref() {
