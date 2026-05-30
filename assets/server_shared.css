@@ -1,0 +1,149 @@
+/* Shared styles for gargo's built-in HTTP UIs (diff_server, github_preview_server,
+ * github_server). Loaded into each page via the {{SHARED_CSS}} template placeholder
+ * so the layout, header tabs, and container width stay consistent across status,
+ * compare, code (blob), directory listings and commit detail pages.
+ *
+ * Edit this file when adjusting the canonical page-frame look; page-specific
+ * tweaks remain in each template's inline <style> block. */
+
+/* Page frame */
+body {
+    margin: 0;
+    padding: 20px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background-color: #f6f8fa;
+    color: #24292f;
+}
+.container {
+    max-width: 1280px;
+    margin: 0 auto;
+}
+
+/* Repository header / tab bar */
+.repo-header {
+    background: #ffffff;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    margin-bottom: 16px;
+    overflow: hidden;
+}
+.repo-title {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 14px 16px 8px;
+    font-size: 20px;
+}
+.repo-title-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: inherit;
+    text-decoration: none;
+}
+.repo-title-link:hover strong { text-decoration: underline; }
+.repo-owner, .repo-sep { color: #57606a; font-weight: 400; }
+.repo-meta {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 0 16px 12px;
+    font-size: 13px;
+    color: #57606a;
+}
+.repo-meta code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    padding: 0;
+    background: transparent;
+    border: 0;
+}
+.repo-tabs {
+    display: flex;
+    gap: 4px;
+    padding: 0 8px;
+    border-top: 1px solid #d8dee4;
+}
+.repo-tab {
+    display: inline-flex;
+    padding: 10px 12px;
+    color: #24292f;
+    text-decoration: none;
+    border-bottom: 2px solid transparent;
+    font-size: 14px;
+}
+.repo-tab:hover { background: #f6f8fa; text-decoration: none; }
+.repo-tab-active { font-weight: 600; border-bottom-color: #fd8c73; }
+
+/* "Context" key/value strip used by diff_server controls and github_server header */
+.context-label {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: #57606a;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.context-key { font-weight: 600; color: #24292f; }
+
+/* Two-column sidebar + content layout shared by status / compare / commit pages */
+.layout { display: flex; gap: 20px; align-items: flex-start; }
+.sidebar {
+    width: 260px;
+    flex-shrink: 0;
+    position: sticky;
+    top: 20px;
+    max-height: calc(100vh - 40px);
+    overflow-y: auto;
+}
+.sidebar .files-section { margin-bottom: 0; }
+.content { flex: 1 1 auto; min-width: 0; }
+@media (max-width: 900px) {
+    .layout { flex-direction: column; }
+    .sidebar { position: static; width: auto; max-height: none; }
+}
+
+/* Preview / Code toggle on the blob page (and any future view-mode toggles) */
+.md-view-toggle {
+    display: inline-flex;
+    gap: 0;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #f6f8fa;
+}
+.md-toggle-btn {
+    padding: 4px 10px;
+    font-size: 12px;
+    color: #24292f;
+    text-decoration: none;
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+}
+.md-toggle-btn + .md-toggle-btn { border-left: 1px solid #d0d7de; }
+.md-toggle-btn:hover { background: #eaeef2; }
+.md-toggle-btn.active { background: #ffffff; font-weight: 600; }
+
+/* "View on GitHub" pill on the blob page */
+.view-on-github-btn {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 12px;
+    font-size: 12px;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    background: #f6f8fa;
+    color: #24292f;
+    text-decoration: none;
+}
+.view-on-github-btn:hover { background: #eaeef2; }
+
+/* Toolbar row above a file's body, hosting toggles and external links */
+.file-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+.file-toolbar .view-on-github-btn { margin-left: auto; }

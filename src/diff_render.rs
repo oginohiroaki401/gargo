@@ -380,16 +380,75 @@ pub fn render_file_body_html_with_highlights(
     } else if file.hunks.is_empty() {
         push_marker_line(&mut out, "(no content changes)");
     } else {
+        let mut prev_old_end: Option<usize> = None;
+        let mut prev_new_end: Option<usize> = None;
         for (hi, hunk) in file.hunks.iter().enumerate() {
+            if let (Some(po), Some(pn)) = (prev_old_end, prev_new_end) {
+                let old_start = po + 1;
+                let old_end = hunk.old_start.saturating_sub(1);
+                let new_start = pn + 1;
+                let new_end = hunk.new_start.saturating_sub(1);
+                if new_end >= new_start {
+                    push_expand_button(&mut out, old_start, old_end, new_start, new_end);
+                }
+            }
             push_hunk_header(&mut out, &hunk.header);
             for (li, ln) in hunk.lines.iter().enumerate() {
                 let hl = highlights.get(&(hi, li));
                 push_diff_line(&mut out, ln, hl);
             }
+            let old_count = hunk
+                .lines
+                .iter()
+                .filter(|l| matches!(l.kind, LineKind::Context | LineKind::Remove))
+                .count();
+            let new_count = hunk
+                .lines
+                .iter()
+                .filter(|l| matches!(l.kind, LineKind::Context | LineKind::Add))
+                .count();
+            prev_old_end = Some(if old_count > 0 {
+                hunk.old_start + old_count - 1
+            } else {
+                hunk.old_start.saturating_sub(1)
+            });
+            prev_new_end = Some(if new_count > 0 {
+                hunk.new_start + new_count - 1
+            } else {
+                hunk.new_start.saturating_sub(1)
+            });
         }
     }
     out.push_str("</div>");
     out
+}
+
+/// Emit a clickable spacer between two hunks letting the user pull more
+/// context lines from the file on request, GitHub-style.
+fn push_expand_button(
+    out: &mut String,
+    old_start: usize,
+    old_end: usize,
+    new_start: usize,
+    new_end: usize,
+) {
+    let count = new_end + 1 - new_start;
+    out.push_str(r#"<div class="gr-line gr-line-expand">"#);
+    out.push_str(
+        r#"<span class="gr-ln"></span><span class="gr-lnr"></span><span class="gr-sign"></span>"#,
+    );
+    out.push_str(r#"<span class="gr-text">"#);
+    let _ = write!(
+        out,
+        r#"<button type="button" class="gr-expand-btn" data-old-start="{}" data-old-end="{}" data-new-start="{}" data-new-end="{}">↕ Show {} hidden line{}</button>"#,
+        old_start,
+        old_end,
+        new_start,
+        new_end,
+        count,
+        if count == 1 { "" } else { "s" },
+    );
+    out.push_str("</span></div>");
 }
 
 fn push_marker_line(out: &mut String, text: &str) {
@@ -589,6 +648,22 @@ pub fn render_diff_styles() -> &'static str {
 .gr-line-remove .gr-ln, .gr-line-remove .gr-lnr { background: #ffd7d5; }
 .gr-line-hunk { background: #ddf4ff; color: #57606a; }
 .gr-line-hunk .gr-ln, .gr-line-hunk .gr-lnr { background: #ddf4ff; border-right-color: #b6e3ff; }
+.gr-line-expand { background: #eef4ff; color: #57606a; }
+.gr-line-expand .gr-ln, .gr-line-expand .gr-lnr { background: #eef4ff; border-right-color: #d8e6ff; }
+.gr-line-expand .gr-text { padding: 0; }
+.gr-expand-btn {
+    display: block;
+    width: 100%;
+    padding: 2px 8px;
+    border: 0;
+    background: transparent;
+    color: #0969da;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+.gr-expand-btn:hover { background: #ddebff; }
+.gr-expand-btn[disabled] { color: #8c959f; cursor: progress; }
 .gr-line-nonewline { color: #57606a; font-style: italic; }
 
 /* Syntax highlight palette: ANSI-light variants, tuned for the white
@@ -988,6 +1063,48 @@ index 1..2 100644
         assert!(html.contains(">1<"));
         assert!(html.contains(">2<"));
         assert!(html.contains(">3<"));
+    }
+
+    #[test]
+    fn renders_expand_button_between_hunks() {
+        let input = "\
+diff --git a/x.txt b/x.txt
+index 1..2 100644
+--- a/x.txt
++++ b/x.txt
+@@ -1,1 +1,1 @@
+-old1
++new1
+@@ -10,1 +10,1 @@
+-old10
++new10
+";
+        let f = one_file(input);
+        let html = render_file_body_html(&f);
+        assert!(html.contains(r#"<div class="gr-line gr-line-expand">"#));
+        // First hunk ends at old/new line 1, second starts at 10, so the
+        // missing range covers lines 2..=9 (8 hidden lines).
+        assert!(html.contains(r#"data-old-start="2""#));
+        assert!(html.contains(r#"data-old-end="9""#));
+        assert!(html.contains(r#"data-new-start="2""#));
+        assert!(html.contains(r#"data-new-end="9""#));
+        assert!(html.contains("Show 8 hidden lines"));
+    }
+
+    #[test]
+    fn renders_no_expand_button_for_single_hunk() {
+        let input = "\
+diff --git a/x.txt b/x.txt
+index 1..2 100644
+--- a/x.txt
++++ b/x.txt
+@@ -1,1 +1,1 @@
+-old
++new
+";
+        let f = one_file(input);
+        let html = render_file_body_html(&f);
+        assert!(!html.contains("gr-line-expand"));
     }
 
     #[test]

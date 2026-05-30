@@ -196,34 +196,9 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Git Diff</title>
     <style>
-        body {
-            margin: 0;
-            padding: 20px;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            background-color: #f5f5f5;
-            color: #333;
-        }
+{{SHARED_CSS}}
         .header { margin-bottom: 20px; }
-        .repo-header { background: #fff; border: 1px solid #d0d7de; border-radius: 6px; margin-bottom: 16px; overflow: hidden; }
-        .repo-title { display: flex; align-items: center; gap: 4px; padding: 14px 16px 8px; font-size: 20px; }
-        .repo-title-link { display: inline-flex; align-items: center; gap: 4px; color: inherit; text-decoration: none; }
-        .repo-title-link:hover strong { text-decoration: underline; }
-        .repo-owner, .repo-sep { color: #57606a; font-weight: 400; }
-        .repo-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 0 16px 12px; font-size: 13px; color: #57606a; }
-        .repo-meta code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; padding: 0; background: transparent; border: 0; }
-        .repo-tabs { display: flex; gap: 4px; padding: 0 8px; border-top: 1px solid #d8dee4; }
-        .repo-tab { display: inline-flex; padding: 10px 12px; color: #24292f; text-decoration: none; border-bottom: 2px solid transparent; font-size: 14px; }
-        .repo-tab:hover { background: #f6f8fa; text-decoration: none; }
-        .repo-tab-active { font-weight: 600; border-bottom-color: #fd8c73; }
         .repo-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 12px 16px; border-top: 1px solid #d8dee4; background: #f6f8fa; }
-        .context-label {
-            margin: 0;
-            font-size: 13px;
-            font-weight: 600;
-            color: #555;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-        }
         .context-row {
             display: flex;
             align-items: center;
@@ -232,7 +207,6 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             font-size: 14px;
             color: #4b5563;
         }
-        .context-key { font-weight: 600; color: #1f2937; }
         .context-row code {
             font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
             background: #f6f8fa;
@@ -270,21 +244,6 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         }
         .section h2 { margin: 0 0 12px 0; font-size: 18px; }
         .loading, .empty { padding: 20px; color: #666; }
-        .layout { display: flex; gap: 20px; align-items: flex-start; }
-        .sidebar {
-            width: 260px;
-            flex-shrink: 0;
-            position: sticky;
-            top: 20px;
-            max-height: calc(100vh - 40px);
-            overflow-y: auto;
-        }
-        .sidebar .files-section { margin-bottom: 0; }
-        .content { flex: 1 1 auto; min-width: 0; }
-        @media (max-width: 900px) {
-            .layout { flex-direction: column; }
-            .sidebar { position: static; width: auto; max-height: none; }
-        }
         .file-list { list-style: none; margin: 0; padding: 0; }
         .file-list li { margin: 2px 0; }
         .file-list a {
@@ -411,6 +370,8 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
             font-size: 13px;
         }
+        a.gr-file-name { color: #0969da; text-decoration: none; }
+        a.gr-file-name:hover { text-decoration: underline; }
         .gr-status-tag {
             flex-shrink: 0;
             padding: 1px 6px;
@@ -501,6 +462,8 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
     </style>
 </head>
 <body>
+{{REPO_CTX_SCRIPT}}
+<div class="container">
     <div class="header">
         {{REPO_HEADER}}
         <div class="repo-controls">
@@ -639,6 +602,21 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         const fileIdOf = (section, path) => `${section}:${path}`;
         const fileAnchorOf = (section, path) => `file-${section}-${path.replace(/[^A-Za-z0-9_\-\.]/g, "_")}`;
 
+        // Build a Code-page link (blob view) for a file. Returns a span when the
+        // repo context is unknown so untracked-but-orphaned states still render.
+        function buildFileNameLink(path) {
+            const ctx = window.__GARGO_REPO_CTX__;
+            const name = (ctx && ctx.owner && ctx.repo && ctx.branch)
+                ? document.createElement("a") : document.createElement("span");
+            name.className = "gr-file-name";
+            name.textContent = path;
+            if (name.tagName === "A") {
+                const segs = String(path).split("/").map(encodeURIComponent).join("/");
+                name.href = `/${encodeURIComponent(ctx.owner)}/${encodeURIComponent(ctx.repo)}/blob/${encodeURIComponent(ctx.branch)}/${segs}`;
+            }
+            return name;
+        }
+
         const updateGoTopButtonVisibility = () => {
             if (window.scrollY > GO_TOP_SHOW_SCROLL_Y) goTopButton.classList.add("visible");
             else goTopButton.classList.remove("visible");
@@ -690,9 +668,7 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
 
             const nameWrapper = document.createElement("span");
             nameWrapper.className = "gr-file-name-wrapper";
-            const name = document.createElement("span");
-            name.className = "gr-file-name";
-            name.textContent = meta.path;
+            const name = buildFileNameLink(meta.path);
             name.title = (meta.old_path && meta.old_path !== meta.path)
                 ? `${meta.old_path} → ${meta.path}` : meta.path;
             nameWrapper.appendChild(name);
@@ -781,8 +757,9 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             persistExpandedFileIds();
         }
 
-        // Apply (or revert) a file row's viewed appearance: collapse it and
-        // drop the body when viewed, restore it otherwise. Pure DOM, no I/O.
+        // Apply (or revert) a file row's viewed appearance: viewed files start
+        // collapsed but can still be re-expanded via the chevron — the body is
+        // kept in the DOM so the user can peek without a network round-trip.
         function applyViewedState(wrapper, isViewed) {
             const fileId = wrapper.dataset.diffFileId;
             wrapper.classList.toggle("diff-file-viewed", isViewed);
@@ -794,8 +771,6 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                 wrapper.classList.add("gr-file-collapsed");
                 const button = wrapper.querySelector(".diff-toggle-btn");
                 if (button) renderDiffToggleButtonLabel(button, true);
-                const body = wrapper.querySelector(".gr-file-body");
-                if (body) { body.innerHTML = ""; delete body.dataset.loaded; }
             } else {
                 // Default-expand on un-viewed, unless explicitly collapsed or
                 // a huge diff the user has not chosen to expand.
@@ -1160,6 +1135,52 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         goTopButton.addEventListener("click", () => {
             window.scrollTo({ top: 0, behavior: "smooth" });
         });
+
+        // Delegated handler for the "Show N hidden lines" buttons that sit
+        // between hunks. Pulls the missing range from the corresponding ref
+        // (HEAD for staged, working tree otherwise) and inserts the rows.
+        document.addEventListener("click", async (e) => {
+            const btn = e.target.closest && e.target.closest(".gr-expand-btn");
+            if (!btn || btn.disabled) return;
+            const wrapper = btn.closest(".gr-file");
+            if (!wrapper) return;
+            const oldStart = parseInt(btn.dataset.oldStart, 10);
+            const oldEnd = parseInt(btn.dataset.oldEnd, 10);
+            const newStart = parseInt(btn.dataset.newStart, 10);
+            const newEnd = parseInt(btn.dataset.newEnd, 10);
+            if (!Number.isFinite(newStart) || !Number.isFinite(newEnd) || newEnd < newStart) return;
+            const section = wrapper.dataset.section;
+            const path = wrapper.dataset.path;
+            btn.disabled = true;
+            try {
+                const params = new URLSearchParams({
+                    section,
+                    path,
+                    start: String(newStart),
+                    end: String(newEnd),
+                });
+                const resp = await fetch(`/api/status/context?${params}`);
+                if (!resp.ok) throw new Error(`server returned ${resp.status}`);
+                const data = await resp.json();
+                const lines = Array.isArray(data.lines) ? data.lines : [];
+                const frag = document.createDocumentFragment();
+                for (let i = 0; i < lines.length; i++) {
+                    const row = document.createElement("div");
+                    row.className = "gr-line gr-line-context";
+                    const ln = document.createElement("span"); ln.className = "gr-ln"; ln.textContent = String(oldStart + i);
+                    const lnr = document.createElement("span"); lnr.className = "gr-lnr"; lnr.textContent = String(newStart + i);
+                    const sign = document.createElement("span"); sign.className = "gr-sign"; sign.textContent = " ";
+                    const text = document.createElement("span"); text.className = "gr-text"; text.textContent = lines[i];
+                    row.appendChild(ln); row.appendChild(lnr); row.appendChild(sign); row.appendChild(text);
+                    frag.appendChild(row);
+                }
+                btn.closest(".gr-line-expand").replaceWith(frag);
+            } catch (err) {
+                btn.disabled = false;
+                showError(`Failed to expand context: ${err.message}`);
+            }
+        });
+
         window.addEventListener("scroll", updateGoTopButtonVisibility, { passive: true });
         window.setInterval(() => {
             loadStatus({ showLoading: false }).catch((e) => showError(e.message));
@@ -1168,6 +1189,7 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         updateGoTopButtonVisibility();
         loadStatus().catch((e) => showError(e.message));
     </script>
+</div>
 </body>
 </html>"#;
 
@@ -1179,34 +1201,9 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Git Compare Branches</title>
     <style>
-        body {
-            margin: 0;
-            padding: 20px;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            background-color: #f5f5f5;
-            color: #333;
-        }
+{{SHARED_CSS}}
         .header { margin-bottom: 20px; }
-        .repo-header { background: #fff; border: 1px solid #d0d7de; border-radius: 6px; margin-bottom: 16px; overflow: hidden; }
-        .repo-title { display: flex; align-items: center; gap: 4px; padding: 14px 16px 8px; font-size: 20px; }
-        .repo-title-link { display: inline-flex; align-items: center; gap: 4px; color: inherit; text-decoration: none; }
-        .repo-title-link:hover strong { text-decoration: underline; }
-        .repo-owner, .repo-sep { color: #57606a; font-weight: 400; }
-        .repo-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 0 16px 12px; font-size: 13px; color: #57606a; }
-        .repo-meta code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; padding: 0; background: transparent; border: 0; }
-        .repo-tabs { display: flex; gap: 4px; padding: 0 8px; border-top: 1px solid #d8dee4; }
-        .repo-tab { display: inline-flex; padding: 10px 12px; color: #24292f; text-decoration: none; border-bottom: 2px solid transparent; font-size: 14px; }
-        .repo-tab:hover { background: #f6f8fa; text-decoration: none; }
-        .repo-tab-active { font-weight: 600; border-bottom-color: #fd8c73; }
         .repo-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 12px 16px; border-top: 1px solid #d8dee4; background: #f6f8fa; }
-        .context-label {
-            margin: 0;
-            font-size: 13px;
-            font-weight: 600;
-            color: #555;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-        }
         .context-row {
             display: flex;
             align-items: center;
@@ -1215,7 +1212,6 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             font-size: 14px;
             color: #4b5563;
         }
-        .context-key { font-weight: 600; color: #1f2937; }
         .context-row code {
             font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
             background: #f6f8fa;
@@ -1254,21 +1250,6 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         }
         .section h2 { margin: 0 0 12px 0; font-size: 18px; }
         .loading, .empty { padding: 20px; color: #666; }
-        .layout { display: flex; gap: 20px; align-items: flex-start; }
-        .sidebar {
-            width: 260px;
-            flex-shrink: 0;
-            position: sticky;
-            top: 20px;
-            max-height: calc(100vh - 40px);
-            overflow-y: auto;
-        }
-        .sidebar .files-section { margin-bottom: 0; }
-        .content { flex: 1 1 auto; min-width: 0; }
-        @media (max-width: 900px) {
-            .layout { flex-direction: column; }
-            .sidebar { position: static; width: auto; max-height: none; }
-        }
         .file-list { list-style: none; margin: 0; padding: 0; }
         .file-list li { margin: 2px 0; }
         .file-list a {
@@ -1391,6 +1372,8 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
             font-size: 13px;
         }
+        a.gr-file-name { color: #0969da; text-decoration: none; }
+        a.gr-file-name:hover { text-decoration: underline; }
         .gr-status-tag {
             flex-shrink: 0;
             padding: 1px 6px;
@@ -1481,6 +1464,8 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
     </style>
 </head>
 <body>
+{{REPO_CTX_SCRIPT}}
+<div class="container">
     <div class="header">
         {{REPO_HEADER}}
         <div class="repo-controls">
@@ -1611,6 +1596,23 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         const fileIdOf = (path) => `compare:${path}`;
         const fileAnchorOf = (path) => `file-compare-${path.replace(/[^A-Za-z0-9_\-\.]/g, "_")}`;
 
+        // Build a Code-page link (blob view) for a file using the currently
+        // selected compare ref so PR-style review jumps land on the right version.
+        function buildFileNameLink(path) {
+            const ctx = window.__GARGO_REPO_CTX__;
+            const compareSelect = document.getElementById("compare-select");
+            const ref = (compareSelect && compareSelect.value) || (ctx && ctx.branch);
+            const ok = ctx && ctx.owner && ctx.repo && ref;
+            const name = ok ? document.createElement("a") : document.createElement("span");
+            name.className = "gr-file-name";
+            name.textContent = path;
+            if (name.tagName === "A") {
+                const segs = String(path).split("/").map(encodeURIComponent).join("/");
+                name.href = `/${encodeURIComponent(ctx.owner)}/${encodeURIComponent(ctx.repo)}/blob/${encodeURIComponent(ref)}/${segs}`;
+            }
+            return name;
+        }
+
         const updateGoTopButtonVisibility = () => {
             if (window.scrollY > GO_TOP_SHOW_SCROLL_Y) goTopButton.classList.add("visible");
             else goTopButton.classList.remove("visible");
@@ -1661,9 +1663,7 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
 
             const nameWrapper = document.createElement("span");
             nameWrapper.className = "gr-file-name-wrapper";
-            const name = document.createElement("span");
-            name.className = "gr-file-name";
-            name.textContent = meta.path;
+            const name = buildFileNameLink(meta.path);
             name.title = (meta.old_path && meta.old_path !== meta.path)
                 ? `${meta.old_path} → ${meta.path}` : meta.path;
             nameWrapper.appendChild(name);
@@ -1747,8 +1747,9 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             persistExpandedFileIds();
         }
 
-        // Apply (or revert) a file row's viewed appearance: collapse it and
-        // drop the body when viewed, restore it otherwise. Pure DOM, no I/O.
+        // Apply (or revert) a file row's viewed appearance: viewed files start
+        // collapsed but can still be re-expanded via the chevron — the body is
+        // kept in the DOM so the user can peek without a network round-trip.
         function applyViewedState(wrapper, isViewed) {
             const fileId = wrapper.dataset.diffFileId;
             wrapper.classList.toggle("diff-file-viewed", isViewed);
@@ -1760,8 +1761,6 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                 wrapper.classList.add("gr-file-collapsed");
                 const button = wrapper.querySelector(".diff-toggle-btn");
                 if (button) renderDiffToggleButtonLabel(button, true);
-                const body = wrapper.querySelector(".gr-file-body");
-                if (body) { body.innerHTML = ""; delete body.dataset.loaded; }
             } else {
                 // Default-expand on un-viewed, unless explicitly collapsed or
                 // a huge diff the user has not chosen to expand.
@@ -2173,6 +2172,52 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         goTopButton.addEventListener("click", () => {
             window.scrollTo({ top: 0, behavior: "smooth" });
         });
+
+        // Delegated handler for hunk-spacer expand buttons on the compare page.
+        // The fetched lines come from the currently-selected compare ref so PR
+        // review jumps stay consistent with what the diff above/below shows.
+        document.addEventListener("click", async (e) => {
+            const btn = e.target.closest && e.target.closest(".gr-expand-btn");
+            if (!btn || btn.disabled) return;
+            const wrapper = btn.closest(".gr-file");
+            if (!wrapper) return;
+            const oldStart = parseInt(btn.dataset.oldStart, 10);
+            const newStart = parseInt(btn.dataset.newStart, 10);
+            const newEnd = parseInt(btn.dataset.newEnd, 10);
+            if (!Number.isFinite(newStart) || !Number.isFinite(newEnd) || newEnd < newStart) return;
+            const ref = compareSelect && compareSelect.value;
+            if (!ref) { showError("Pick a compare ref before expanding context"); return; }
+            const path = wrapper.dataset.path;
+            btn.disabled = true;
+            try {
+                const params = new URLSearchParams({
+                    path,
+                    ref,
+                    start: String(newStart),
+                    end: String(newEnd),
+                });
+                const resp = await fetch(`/api/compare/context?${params}`);
+                if (!resp.ok) throw new Error(`server returned ${resp.status}`);
+                const data = await resp.json();
+                const lines = Array.isArray(data.lines) ? data.lines : [];
+                const frag = document.createDocumentFragment();
+                for (let i = 0; i < lines.length; i++) {
+                    const row = document.createElement("div");
+                    row.className = "gr-line gr-line-context";
+                    const ln = document.createElement("span"); ln.className = "gr-ln"; ln.textContent = String(oldStart + i);
+                    const lnr = document.createElement("span"); lnr.className = "gr-lnr"; lnr.textContent = String(newStart + i);
+                    const sign = document.createElement("span"); sign.className = "gr-sign"; sign.textContent = " ";
+                    const text = document.createElement("span"); text.className = "gr-text"; text.textContent = lines[i];
+                    row.appendChild(ln); row.appendChild(lnr); row.appendChild(sign); row.appendChild(text);
+                    frag.appendChild(row);
+                }
+                btn.closest(".gr-line-expand").replaceWith(frag);
+            } catch (err) {
+                btn.disabled = false;
+                showError(`Failed to expand context: ${err.message}`);
+            }
+        });
+
         window.addEventListener("scroll", updateGoTopButtonVisibility, { passive: true });
 
         (async () => {
@@ -2183,6 +2228,7 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
 
         updateGoTopButtonVisibility();
     </script>
+</div>
 </body>
 </html>"#;
 
@@ -2198,9 +2244,11 @@ async fn run_server(
         .route("/api/status", get(handle_api_status_request))
         .route("/api/status/file", get(handle_api_status_file_request))
         .route("/api/status/viewed", post(handle_api_status_viewed_request))
+        .route("/api/status/context", get(handle_api_status_context_request))
         .route("/api/branches", get(handle_api_branches_request))
         .route("/api/compare", get(handle_api_compare_request))
         .route("/api/compare/file", get(handle_api_compare_file_request))
+        .route("/api/compare/context", get(handle_api_compare_context_request))
         .route(
             "/api/compare/viewed",
             post(handle_api_compare_viewed_request),
@@ -2219,12 +2267,17 @@ async fn run_server(
 pub(crate) async fn handle_html_request(
     State(state): State<Arc<DiffServerState>>,
 ) -> impl IntoResponse {
+    use crate::command::github_preview_server as gh;
     let root_path = state.project_root.display().to_string();
     let repo_header = repo_header_html(&state.project_root, "status").await;
+    let ctx = gh::resolve_repo_url_context(&state.project_root).await;
+    let ctx_script = repo_ctx_script(&ctx);
     Html(
         DIFF_HTML_TEMPLATE
             .replace("{{ROOT_PATH}}", &html_escape(&root_path))
             .replace("{{REPO_HEADER}}", &repo_header)
+            .replace("{{REPO_CTX_SCRIPT}}", &ctx_script)
+            .replace("{{SHARED_CSS}}", crate::command::server_shared::SHARED_CSS)
             .replace("{{DIFF_STYLES}}", render_diff_styles()),
     )
 }
@@ -2437,6 +2490,112 @@ pub(crate) async fn handle_api_status_file_request(
             "binary": false,
             "html": empty_diff_html(),
         })),
+    }
+}
+
+/// Fetch N lines from a file at a given git ref (or working tree).
+///
+/// `git_ref = Some("")` reads from the index (`git show :path`),
+/// `Some("HEAD")` from HEAD, etc.; `None` reads from the working tree.
+/// Lines are returned with their original content (newlines stripped).
+async fn read_file_range_at_ref(
+    repo_root: &Path,
+    git_ref: Option<&str>,
+    rel_path: &str,
+    start: usize,
+    end: usize,
+) -> Result<Vec<String>, String> {
+    let content = match git_ref {
+        Some(r) => {
+            let spec = format!("{}:{}", r, rel_path);
+            git_output_in_repo(repo_root, &["show", &spec]).await?
+        }
+        None => {
+            let path = repo_root.join(rel_path);
+            tokio::fs::read_to_string(&path)
+                .await
+                .map_err(|e| format!("read {}: {}", path.display(), e))?
+        }
+    };
+    let lines: Vec<&str> = content.split_terminator('\n').collect();
+    let total = lines.len();
+    let start_idx = start.saturating_sub(1).min(total);
+    let end_idx = end.min(total);
+    if start_idx >= end_idx {
+        return Ok(Vec::new());
+    }
+    Ok(lines[start_idx..end_idx]
+        .iter()
+        .map(|s| s.to_string())
+        .collect())
+}
+
+fn parse_usize_param(params: &HashMap<String, String>, key: &str) -> Result<usize, String> {
+    params
+        .get(key)
+        .ok_or_else(|| format!("missing `{}` query parameter", key))?
+        .parse::<usize>()
+        .map_err(|e| format!("invalid `{}`: {}", key, e))
+}
+
+pub(crate) async fn handle_api_status_context_request(
+    State(state): State<Arc<DiffServerState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let git_ref: Option<&str> = match params.get("section").map(String::as_str) {
+        Some("staged") => Some("HEAD"),
+        Some("unstaged") | Some("untracked") | None => None,
+        _ => return bad_request("invalid `section` query parameter"),
+    };
+    let path_raw = match params.get("path") {
+        Some(v) => v,
+        None => return bad_request("missing `path` query parameter"),
+    };
+    let path = match parse_diff_path(path_raw) {
+        Some(p) => p,
+        None => return bad_request(format!("invalid path: {}", path_raw)),
+    };
+    let start = match parse_usize_param(&params, "start") {
+        Ok(v) => v,
+        Err(e) => return bad_request(e),
+    };
+    let end = match parse_usize_param(&params, "end") {
+        Ok(v) => v,
+        Err(e) => return bad_request(e),
+    };
+    match read_file_range_at_ref(&state.project_root, git_ref, &path, start, end).await {
+        Ok(lines) => ok_json(serde_json::json!({ "lines": lines })),
+        Err(e) => bad_request(e),
+    }
+}
+
+pub(crate) async fn handle_api_compare_context_request(
+    State(state): State<Arc<DiffServerState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let path_raw = match params.get("path") {
+        Some(v) => v,
+        None => return bad_request("missing `path` query parameter"),
+    };
+    let path = match parse_diff_path(path_raw) {
+        Some(p) => p,
+        None => return bad_request(format!("invalid path: {}", path_raw)),
+    };
+    let git_ref = match params.get("ref") {
+        Some(v) if !v.is_empty() => v.as_str(),
+        _ => return bad_request("missing `ref` query parameter"),
+    };
+    let start = match parse_usize_param(&params, "start") {
+        Ok(v) => v,
+        Err(e) => return bad_request(e),
+    };
+    let end = match parse_usize_param(&params, "end") {
+        Ok(v) => v,
+        Err(e) => return bad_request(e),
+    };
+    match read_file_range_at_ref(&state.project_root, Some(git_ref), &path, start, end).await {
+        Ok(lines) => ok_json(serde_json::json!({ "lines": lines })),
+        Err(e) => bad_request(e),
     }
 }
 
@@ -2769,6 +2928,17 @@ pub(crate) fn ok_json(payload: serde_json::Value) -> Response {
     response
 }
 
+fn repo_ctx_script(ctx: &crate::command::github_preview_server::RepoUrlContext) -> String {
+    // JSON-encode minimally — owner/repo/branch are simple strings whose escaping
+    // we control with html_escape (they originate from git config and refs).
+    format!(
+        r#"<script>window.__GARGO_REPO_CTX__ = {{ owner: "{}", repo: "{}", branch: "{}" }};</script>"#,
+        html_escape(&ctx.owner),
+        html_escape(&ctx.repo),
+        html_escape(&ctx.branch),
+    )
+}
+
 async fn repo_header_html(repo_root: &Path, active_tab: &str) -> String {
     use crate::command::github_preview_server as gh;
     let root_path = repo_root.display().to_string();
@@ -2806,12 +2976,17 @@ async fn repo_header_html(repo_root: &Path, active_tab: &str) -> String {
 pub(crate) async fn handle_compare_html_request(
     State(state): State<Arc<DiffServerState>>,
 ) -> impl IntoResponse {
+    use crate::command::github_preview_server as gh;
     let root_path = state.project_root.display().to_string();
     let repo_header = repo_header_html(&state.project_root, "branches").await;
+    let ctx = gh::resolve_repo_url_context(&state.project_root).await;
+    let ctx_script = repo_ctx_script(&ctx);
     Html(
         COMPARE_HTML_TEMPLATE
             .replace("{{ROOT_PATH}}", &html_escape(&root_path))
             .replace("{{REPO_HEADER}}", &repo_header)
+            .replace("{{REPO_CTX_SCRIPT}}", &ctx_script)
+            .replace("{{SHARED_CSS}}", crate::command::server_shared::SHARED_CSS)
             .replace("{{DIFF_STYLES}}", render_diff_styles()),
     )
 }

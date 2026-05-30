@@ -435,6 +435,10 @@ async fn run_server(
             post(diff_server::handle_api_status_viewed_request),
         )
         .route(
+            "/api/status/context",
+            get(diff_server::handle_api_status_context_request),
+        )
+        .route(
             "/api/branches",
             get(diff_server::handle_api_branches_request),
         )
@@ -446,6 +450,10 @@ async fn run_server(
         .route(
             "/api/compare/viewed",
             post(diff_server::handle_api_compare_viewed_request),
+        )
+        .route(
+            "/api/compare/context",
+            get(diff_server::handle_api_compare_context_request),
         )
         .with_state(diff_state);
 
@@ -480,7 +488,7 @@ async fn handle_commits_html(State(state): State<Arc<GithubServerState>>) -> imp
     let header = github_page_header(&root, "commits", repo_url.as_deref(), &state.url_ctx);
     let commit_prefix = github_preview_server::commit_url(&state.url_ctx, "");
     Html(format!(
-        r#"<!doctype html><html><head><meta charset="utf-8"><title>Commits</title>{css}</head><body>{header}<main class="commits-main"><section class="commits-section"><h1 class="commits-title">Commits</h1><div id="commits"><div class="loading">Loading commits...</div></div></section></main><script>
+        r#"<!doctype html><html><head><meta charset="utf-8"><title>Commits</title>{css}</head><body><div class="container">{header}<main class="commits-main"><section class="commits-section"><h1 class="commits-title">Commits</h1><div id="commits"><div class="loading">Loading commits...</div></div></section></main><script>
 fetch('/api/commits', {{cache:'no-store'}}).then(r=>r.json()).then(data=>{{
  const list = data.commits || [];
  const root = document.getElementById('commits');
@@ -491,7 +499,7 @@ fetch('/api/commits', {{cache:'no-store'}}).then(r=>r.json()).then(data=>{{
  }}).join('') + '</ul>';
 }});
 function escapeHtml(s) {{ return String(s).replace(/[&<>"']/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c])); }}
-</script></body></html>"#,
+</script></div></body></html>"#,
         css = app_css(),
         header = header,
         commit_prefix = commit_prefix,
@@ -509,7 +517,7 @@ async fn handle_commit_html(
     let commit_prefix = github_preview_server::commit_url(&state.url_ctx, "");
     let diff_styles = render_diff_styles();
     Html(format!(
-        r##"<!doctype html><html><head><meta charset="utf-8"><title>Commit {hash}</title>{css}<style>{diff_styles}</style></head><body>{header}
+        r##"<!doctype html><html><head><meta charset="utf-8"><title>Commit {hash}</title>{css}<style>{diff_styles}</style></head><body><div class="container">{header}
 <section class="commit-summary section"><div id="commit-summary"><div class="loading">Loading commit...</div></div></section>
 <div class="layout">
  <aside class="sidebar">
@@ -653,7 +661,7 @@ function updateGoTopButtonVisibility() {{
 goTopButton.addEventListener('click', () => {{ window.scrollTo({{ top: 0, behavior: 'smooth' }}); }});
 window.addEventListener('scroll', updateGoTopButtonVisibility, {{ passive: true }});
 updateGoTopButtonVisibility();
-</script></body></html>"##,
+</script></div></body></html>"##,
         css = app_css(),
         diff_styles = diff_styles,
         header = header,
@@ -954,20 +962,15 @@ fn normalize_api_path(path: &str) -> String {
     }
 }
 
-fn app_css() -> &'static str {
-    r#"<style>
-body { margin: 0; padding: 20px; background: #f6f8fa; color: #24292f; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-.repo-header { background: #fff; border: 1px solid #d0d7de; border-radius: 6px; margin-bottom: 16px; overflow: hidden; }
-.repo-title { display: flex; align-items: center; gap: 4px; padding: 14px 16px 8px; font-size: 20px; }
-.repo-title-link { display: inline-flex; align-items: center; gap: 4px; color: inherit; text-decoration: none; }
-.repo-title-link:hover strong { text-decoration: underline; }
-.repo-owner, .repo-sep { color: #57606a; font-weight: 400; }
-.repo-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 0 16px 12px; font-size: 13px; color: #57606a; }
-.context-key { font-weight: 600; color: #24292f; }
-.repo-tabs { display: flex; gap: 4px; padding: 0 8px; border-top: 1px solid #d8dee4; }
-.repo-tab { display: inline-flex; padding: 10px 12px; color: #24292f; text-decoration: none; border-bottom: 2px solid transparent; font-size: 14px; }
-.repo-tab:hover { background: #f6f8fa; text-decoration: none; }
-.repo-tab-active { font-weight: 600; border-bottom-color: #fd8c73; }
+fn app_css() -> String {
+    format!(
+        "<style>\n{}\n{}",
+        crate::command::server_shared::SHARED_CSS,
+        APP_CSS_PAGE_SPECIFIC,
+    )
+}
+
+const APP_CSS_PAGE_SPECIFIC: &str = r#"
 a { color: #0969da; text-decoration: none; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; padding: 2px 6px; background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 4px; }
 .repo-meta code { padding: 0; background: transparent; border: 0; border-radius: 0; }
@@ -997,16 +1000,6 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Libe
 .commit-summary .commit-byline { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 13px; color: #57606a; }
 .commit-summary .commit-byline .commit-author strong { color: #24292f; }
 .commit-summary .commit-hash code { font-size: 12px; }
-
-/* Layout: sidebar + content */
-.layout { display: flex; gap: 16px; align-items: flex-start; }
-.sidebar { width: 280px; flex-shrink: 0; position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow-y: auto; }
-.sidebar .section { margin-bottom: 0; }
-.content { flex: 1 1 auto; min-width: 0; }
-@media (max-width: 900px) {
-  .layout { flex-direction: column; }
-  .sidebar { position: static; width: auto; max-height: none; }
-}
 
 /* File list in sidebar */
 .file-list { list-style: none; margin: 0; padding: 0; }
@@ -1048,5 +1041,4 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Libe
 #go-top-btn { position: fixed; right: 20px; bottom: 20px; z-index: 1000; padding: 8px 12px; border: 1px solid #ccc; border-radius: 8px; background: #fff; color: #24292f; font-size: 14px; cursor: pointer; opacity: 0; pointer-events: none; transform: translateY(8px); transition: opacity 0.15s ease, transform 0.15s ease; }
 #go-top-btn.visible { opacity: 1; pointer-events: auto; transform: translateY(0); }
 #go-top-btn:hover { background: #eef2f7; }
-</style>"#
-}
+</style>"#;

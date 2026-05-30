@@ -788,17 +788,7 @@ const DIRECTORY_TEMPLATE: &str = r#"<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{TITLE}}</title>
     <style>
-        body {
-            margin: 0;
-            padding: 20px;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background-color: #f6f8fa;
-            color: #24292f;
-        }
-        .container {
-            max-width: 1280px;
-            margin: 0 auto;
-        }
+{{SHARED_CSS}}
         .header {
             background: #ffffff;
             padding: 16px 20px;
@@ -809,73 +799,6 @@ const DIRECTORY_TEMPLATE: &str = r#"<!DOCTYPE html>
             flex-direction: column;
             gap: 10px;
         }
-        .context-label {
-            margin: 0;
-            font-size: 13px;
-            font-weight: 600;
-            color: #57606a;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-        }
-        .repo-header {
-            background: #ffffff;
-            border: 1px solid #d0d7de;
-            border-radius: 6px;
-            margin-bottom: 16px;
-            overflow: hidden;
-        }
-        .repo-title {
-            display: flex;
-            align-items: center;
-            gap: 4px;
-            padding: 14px 16px 8px;
-            font-size: 20px;
-        }
-        .repo-title-link {
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-            color: inherit;
-            text-decoration: none;
-        }
-        .repo-title-link:hover strong {
-            text-decoration: underline;
-        }
-        .repo-owner, .repo-sep { color: #57606a; font-weight: 400; }
-        .repo-meta {
-            display: flex;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 8px;
-            padding: 0 16px 12px;
-            font-size: 13px;
-            color: #57606a;
-        }
-        .repo-meta code {
-            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-            padding: 0;
-            background: transparent;
-            border: 0;
-        }
-        .repo-tabs {
-            display: flex;
-            gap: 4px;
-            padding: 0 8px;
-            border-top: 1px solid #d8dee4;
-        }
-        .repo-tab {
-            display: inline-flex;
-            padding: 10px 12px;
-            color: #24292f;
-            text-decoration: none;
-            border-bottom: 2px solid transparent;
-            font-size: 14px;
-        }
-        .repo-tab:hover { background: #f6f8fa; text-decoration: none; }
-        .repo-tab-active {
-            font-weight: 600;
-            border-bottom-color: #fd8c73;
-        }
         .context-row {
             display: flex;
             align-items: center;
@@ -883,10 +806,6 @@ const DIRECTORY_TEMPLATE: &str = r#"<!DOCTYPE html>
             gap: 8px;
             font-size: 14px;
             color: #57606a;
-        }
-        .context-key {
-            font-weight: 600;
-            color: #24292f;
         }
         .context-row code {
             font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
@@ -1036,17 +955,7 @@ const FILE_TEMPLATE: &str = r#"<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{TITLE}}</title>
     <style>
-        body {
-            margin: 0;
-            padding: 20px;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background-color: #f6f8fa;
-            color: #24292f;
-        }
-        .container {
-            max-width: 1280px;
-            margin: 0 auto;
-        }
+{{SHARED_CSS}}
         .header {
             background: #ffffff;
             padding: 16px 20px;
@@ -1057,73 +966,6 @@ const FILE_TEMPLATE: &str = r#"<!DOCTYPE html>
             flex-direction: column;
             gap: 10px;
         }
-        .context-label {
-            margin: 0;
-            font-size: 13px;
-            font-weight: 600;
-            color: #57606a;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-        }
-        .repo-header {
-            background: #ffffff;
-            border: 1px solid #d0d7de;
-            border-radius: 6px;
-            margin-bottom: 16px;
-            overflow: hidden;
-        }
-        .repo-title {
-            display: flex;
-            align-items: center;
-            gap: 4px;
-            padding: 14px 16px 8px;
-            font-size: 20px;
-        }
-        .repo-title-link {
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-            color: inherit;
-            text-decoration: none;
-        }
-        .repo-title-link:hover strong {
-            text-decoration: underline;
-        }
-        .repo-owner, .repo-sep { color: #57606a; font-weight: 400; }
-        .repo-meta {
-            display: flex;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 8px;
-            padding: 0 16px 12px;
-            font-size: 13px;
-            color: #57606a;
-        }
-        .repo-meta code {
-            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-            padding: 0;
-            background: transparent;
-            border: 0;
-        }
-        .repo-tabs {
-            display: flex;
-            gap: 4px;
-            padding: 0 8px;
-            border-top: 1px solid #d8dee4;
-        }
-        .repo-tab {
-            display: inline-flex;
-            padding: 10px 12px;
-            color: #24292f;
-            text-decoration: none;
-            border-bottom: 2px solid transparent;
-            font-size: 14px;
-        }
-        .repo-tab:hover { background: #f6f8fa; text-decoration: none; }
-        .repo-tab-active {
-            font-weight: 600;
-            border-bottom-color: #fd8c73;
-        }
         .context-row {
             display: flex;
             align-items: center;
@@ -1131,10 +973,6 @@ const FILE_TEMPLATE: &str = r#"<!DOCTYPE html>
             gap: 8px;
             font-size: 14px;
             color: #57606a;
-        }
-        .context-key {
-            font-weight: 600;
-            color: #24292f;
         }
         .context-row code {
             font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
@@ -1618,6 +1456,7 @@ pub(crate) async fn handle_directory_listing(
             &repository_header(&root_path, "code", repo_url.as_deref(), ctx),
         )
         .replace("{{CONTENT}}", &content)
+        .replace("{{SHARED_CSS}}", crate::command::server_shared::SHARED_CSS)
         .replace("{{SYNTAX_STYLES}}", render_diff_styles())
         .replace("{{MERMAID_INIT_SCRIPT}}", MERMAID_INIT_SCRIPT)
         .replace("{{LIVE_SYNC_SCRIPT}}", LIVE_SYNC_SCRIPT);
@@ -1652,8 +1491,24 @@ pub(crate) async fn handle_file_display(
         }
     };
 
+    let root_path = repo_root.display().to_string();
+    let repo_url = github_repo_url(repo_root).await;
+    let github_btn = repo_url
+        .as_deref()
+        .map(|base| {
+            format!(
+                r#"<a class="view-on-github-btn" href="{}/blob/{}/{}" target="_blank" rel="noopener">View on GitHub</a>"#,
+                base,
+                html_escape(&ctx.branch),
+                html_escape(display_path),
+            )
+        })
+        .unwrap_or_default();
+
     let rendered_content = match text {
-        None => r#"<div class="error">Binary file - cannot display</div>"#.to_string(),
+        None => format!(
+            r#"<div class="file-toolbar">{github_btn}</div><div class="error">Binary file - cannot display</div>"#,
+        ),
         Some(text) if is_markdown => {
             let blob = blob_url(ctx, display_path);
             let toggle = format!(
@@ -1673,16 +1528,13 @@ pub(crate) async fn handle_file_display(
                     render_markdown_with_source_lines(&text)
                 )
             };
-            format!("{toggle}{body}")
+            format!(r#"<div class="file-toolbar">{toggle}{github_btn}</div>{body}"#)
         }
         Some(text) => format!(
-            r#"<div class="file-content code-view">{}</div>"#,
+            r#"<div class="file-toolbar">{github_btn}</div><div class="file-content code-view">{}</div>"#,
             render_code_with_line_ids_for_path(&text, filename)
         ),
     };
-
-    let root_path = repo_root.display().to_string();
-    let repo_url = github_repo_url(repo_root).await;
 
     let html = FILE_TEMPLATE
         .replace("{{TITLE}}", &html_escape(filename))
@@ -1693,6 +1545,7 @@ pub(crate) async fn handle_file_display(
             &repository_header(&root_path, "code", repo_url.as_deref(), ctx),
         )
         .replace("{{CONTENT}}", &rendered_content)
+        .replace("{{SHARED_CSS}}", crate::command::server_shared::SHARED_CSS)
         .replace("{{SYNTAX_STYLES}}", render_diff_styles())
         .replace("{{MERMAID_INIT_SCRIPT}}", MERMAID_INIT_SCRIPT)
         .replace("{{LIVE_SYNC_SCRIPT}}", LIVE_SYNC_SCRIPT);
