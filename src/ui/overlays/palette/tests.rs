@@ -1707,3 +1707,50 @@ fn palette_backspace_deletes_prefix_and_switches_mode() {
     assert_eq!(palette.input.text, "");
     assert_eq!(palette.mode, PaletteMode::FileFinder);
 }
+
+#[test]
+fn file_picker_empty_sorts_by_mtime_desc_uncommitted_first() {
+    use std::fs::File;
+    use std::io::Write;
+    use std::thread::sleep;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    let registry = CommandRegistry::new();
+    let lang_registry = LanguageRegistry::new();
+    let config = Config::default();
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("gargo_file_picker_sort_{}", timestamp));
+    std::fs::create_dir_all(&root).unwrap();
+
+    // Create three files with distinct mtimes (oldest -> newest in this order).
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        let mut f = File::create(root.join(name)).unwrap();
+        f.write_all(b"x").unwrap();
+        sleep(Duration::from_millis(20));
+    }
+
+    let files = vec![
+        "a.txt".to_string(), // oldest
+        "b.txt".to_string(), // middle
+        "c.txt".to_string(), // newest
+    ];
+
+    // Mark b.txt as uncommitted; a.txt and c.txt are "others".
+    let mut git_status = HashMap::new();
+    git_status.insert("b.txt".to_string(), GitFileStatus::Modified);
+
+    let mut palette = Palette::new(files, &root, &git_status, None, vec![], vec![]);
+    palette.set_input(String::new());
+    palette.update_candidates(&registry, &lang_registry, &config);
+
+    let labels: Vec<String> = palette.candidates.iter().map(|c| c.label.clone()).collect();
+    // Expected order: b.txt (uncommitted, only one) first; then c.txt (newer)
+    // before a.txt (older) — both groups sorted by mtime desc.
+    assert_eq!(labels, vec!["b.txt", "c.txt", "a.txt"]);
+
+    std::fs::remove_dir_all(&root).ok();
+}

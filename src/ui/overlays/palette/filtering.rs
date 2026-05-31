@@ -21,7 +21,12 @@ impl Palette {
             self.candidates.clear();
         } else {
             self.mode = PaletteMode::FileFinder;
-            self.candidates = Self::filter_files(&self.file_entries, &self.input.text);
+            self.candidates = Self::filter_files(
+                &self.file_entries,
+                &self.input.text,
+                &self.project_root,
+                &self.git_status_map,
+            );
         }
 
         if self.selected >= self.candidates.len() {
@@ -107,12 +112,34 @@ impl Palette {
         scored
     }
 
-    pub(super) fn filter_files(file_entries: &[String], query: &str) -> Vec<ScoredCandidate> {
+    pub(super) fn filter_files(
+        file_entries: &[String],
+        query: &str,
+        project_root: &Path,
+        git_status_map: &HashMap<String, GitFileStatus>,
+    ) -> Vec<ScoredCandidate> {
         if query.is_empty() {
-            return file_entries
-                .iter()
-                .enumerate()
-                .map(|(i, path)| ScoredCandidate {
+            // Sort by last edit (mtime) descending. Uncommitted files (present in
+            // git_status_map) are grouped first; both groups are mtime-desc within.
+            let mut indexed: Vec<(usize, &String, Option<std::time::SystemTime>, bool)> =
+                file_entries
+                    .iter()
+                    .enumerate()
+                    .map(|(i, path)| {
+                        let abs = project_root.join(path);
+                        let mtime = std::fs::metadata(&abs).and_then(|m| m.modified()).ok();
+                        let uncommitted = git_status_map.contains_key(path);
+                        (i, path, mtime, uncommitted)
+                    })
+                    .collect();
+            indexed.sort_by(|a, b| {
+                b.3.cmp(&a.3)
+                    .then_with(|| b.2.cmp(&a.2))
+                    .then_with(|| a.1.cmp(b.1))
+            });
+            return indexed
+                .into_iter()
+                .map(|(i, path, _, _)| ScoredCandidate {
                     kind: CandidateKind::File(i),
                     label: path.clone(),
                     score: 0,
