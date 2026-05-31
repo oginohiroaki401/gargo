@@ -197,7 +197,8 @@ fn unified_github_server_serves_code_diffs_compare_commits_and_events() {
     assert_eq!(status["unstaged"][0]["path"], "README.md");
     assert_eq!(status["untracked"][0]["path"], "scratch.txt");
     let status_html = get_text_with_retry(&format!("{base_url}/status"));
-    assert!(status_html.contains(r#"href="/status">Status</a>"#));
+    assert!(status_html.contains(r#"href="/status""#));
+    assert!(status_html.contains(r#"data-tab="status">Status</a>"#));
     assert!(status_html.contains("app-rail-link app-rail-link-active"));
     assert!(status_html.contains(r#"href="https://github.com/aplio/gargo""#));
     let file_diff = get_json_with_retry(&format!(
@@ -219,12 +220,13 @@ fn unified_github_server_serves_code_diffs_compare_commits_and_events() {
             .any(|b| b == "feature")
     );
     let branches_html = get_text_with_retry(&format!("{base_url}/branches"));
-    assert!(branches_html.contains(r#"href="/branches">Branches</a>"#));
+    assert!(branches_html.contains(r#"href="/branches""#));
+    assert!(branches_html.contains(r#"data-tab="branches">Branches</a>"#));
     assert!(branches_html.contains("app-rail-link app-rail-link-active"));
     assert!(branches_html.contains(r#"href="https://github.com/aplio/gargo""#));
     let commits_html = get_text_with_retry(&format!("{base_url}/aplio/gargo/commits/master"));
-    assert!(commits_html.contains(r#"href="/status">Status</a>"#));
-    assert!(commits_html.contains(r#"href="/branches">Branches</a>"#));
+    assert!(commits_html.contains(r#"data-tab="status">Status</a>"#));
+    assert!(commits_html.contains(r#"data-tab="branches">Branches</a>"#));
     assert!(!commits_html.contains("Repository commits"));
     assert!(commits_html.contains(r#"href="https://github.com/aplio/gargo/commits/"#));
     let compare = get_json_with_retry(&format!(

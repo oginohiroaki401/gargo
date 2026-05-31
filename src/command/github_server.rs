@@ -491,7 +491,7 @@ async fn handle_commits_html(State(state): State<Arc<GithubServerState>>) -> imp
         crate::command::app_shell::app_rail_html(&state.url_ctx, github_href.as_deref(), "commits");
     let commit_prefix = github_preview_server::commit_url(&state.url_ctx, "");
     Html(format!(
-        r#"<!doctype html><html><head><meta charset="utf-8"><title>Commits</title>{css}</head><body><div class="app-shell">{rail}<main class="app-main"><main class="commits-main"><section class="commits-section"><h1 class="commits-title">Commits</h1><div id="commits"><div class="loading">Loading commits...</div></div></section></main><script>
+        r#"<!doctype html><html><head><meta charset="utf-8"><title>Commits</title>{css}</head><body data-page="commits">{shortcuts}<div class="app-shell">{rail}<main class="app-main"><main class="commits-main"><section class="commits-section"><h1 class="commits-title">Commits</h1><div id="commits"><div class="loading">Loading commits...</div></div></section></main><script>
 fetch('/api/commits', {{cache:'no-store'}}).then(r=>r.json()).then(data=>{{
  const list = data.commits || [];
  const root = document.getElementById('commits');
@@ -506,6 +506,7 @@ function escapeHtml(s) {{ return String(s).replace(/[&<>"']/g, c => ({{'&':'&amp
         css = app_css(),
         rail = rail,
         commit_prefix = commit_prefix,
+        shortcuts = shortcuts_script(),
     ))
 }
 
@@ -523,7 +524,7 @@ async fn handle_commit_html(
     let commit_prefix = github_preview_server::commit_url(&state.url_ctx, "");
     let diff_styles = render_diff_styles();
     Html(format!(
-        r##"<!doctype html><html><head><meta charset="utf-8"><title>Commit {hash}</title>{css}<style>{diff_styles}</style></head><body><div class="app-shell">{rail}<main class="app-main">
+        r##"<!doctype html><html><head><meta charset="utf-8"><title>Commit {hash}</title>{css}<style>{diff_styles}</style></head><body data-page="commit-detail">{shortcuts}<div class="app-shell">{rail}<main class="app-main">
 <section class="commit-summary section"><div id="commit-summary"><div class="loading">Loading commit...</div></div></section>
 <div class="layout">
  <aside class="sidebar">
@@ -673,6 +674,7 @@ updateGoTopButtonVisibility();
         rail = rail,
         hash = hash,
         commit_prefix = commit_prefix,
+        shortcuts = shortcuts_script(),
     ))
 }
 
@@ -935,6 +937,13 @@ fn app_css() -> String {
         "<style>\n{}\n{}",
         crate::command::server_shared::SHARED_CSS,
         APP_CSS_PAGE_SPECIFIC,
+    )
+}
+
+fn shortcuts_script() -> String {
+    format!(
+        "<script>{}</script>",
+        crate::command::server_shared::SHORTCUTS_JS
     )
 }
 

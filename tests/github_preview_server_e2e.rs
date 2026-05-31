@@ -398,9 +398,9 @@ Regular text after diagram.
 
     assert!(
         readme_html.contains(&format!(
-            r#"<a class="app-rail-link app-rail-link-active" href="{}">Code</a>"#,
+            r#"class="app-rail-link app-rail-link-active" href="{}""#,
             github_repo_path(repo)
-        )),
+        )) && readme_html.contains(r#"data-tab="code">Code</a>"#),
         "expected code tab to be active in app-rail navigation"
     );
 

@@ -43,13 +43,26 @@ pub(crate) fn app_rail_html(
     }
 
     out.push_str(r#"<nav class="app-rail-nav" aria-label="Repository views">"#);
-    out.push_str(&rail_link("code", "Code", &repo_home_url(ctx), active_tab));
-    out.push_str(&rail_link("status", "Status", "/status", active_tab));
-    out.push_str(&rail_link("branches", "Branches", "/branches", active_tab));
+    out.push_str(&rail_link(
+        "code",
+        "Code",
+        &repo_home_url(ctx),
+        "c",
+        active_tab,
+    ));
+    out.push_str(&rail_link("status", "Status", "/status", "s", active_tab));
+    out.push_str(&rail_link(
+        "branches",
+        "Branches",
+        "/branches",
+        "b",
+        active_tab,
+    ));
     out.push_str(&rail_link(
         "commits",
         "Commits",
         &commits_url(ctx),
+        "h",
         active_tab,
     ));
     out.push_str("</nav>");
@@ -67,16 +80,18 @@ pub(crate) fn app_rail_html(
     out
 }
 
-fn rail_link(id: &str, label: &str, href: &str, active: &str) -> String {
+fn rail_link(id: &str, label: &str, href: &str, shortcut: &str, active: &str) -> String {
     let class = if id == active {
         "app-rail-link app-rail-link-active"
     } else {
         "app-rail-link"
     };
     format!(
-        r#"<a class="{class}" href="{href}">{label}</a>"#,
+        r#"<a class="{class}" href="{href}" data-shortcut="{shortcut}" data-tab="{id}">{label}</a>"#,
         class = class,
         href = html_escape(href),
+        shortcut = html_escape(shortcut),
+        id = html_escape(id),
         label = html_escape(label),
     )
 }
@@ -100,7 +115,17 @@ mod tests {
         assert!(html.contains(r#"href="/status""#));
         // The Status link should carry the active modifier, Code should not.
         assert!(html.contains(r#"app-rail-link app-rail-link-active" href="/status""#));
-        assert!(html.contains(r#"class="app-rail-link" href="/aplio/gargo">Code</a>"#));
+        assert!(html.contains(r#"class="app-rail-link" href="/aplio/gargo""#));
+        assert!(html.contains(r#"data-tab="code">Code</a>"#));
+    }
+
+    #[test]
+    fn rail_links_carry_keyboard_shortcuts() {
+        let html = app_rail_html(&ctx(), None, "code");
+        assert!(html.contains(r#"data-shortcut="c""#));
+        assert!(html.contains(r#"data-shortcut="s""#));
+        assert!(html.contains(r#"data-shortcut="b""#));
+        assert!(html.contains(r#"data-shortcut="h""#));
     }
 
     #[test]

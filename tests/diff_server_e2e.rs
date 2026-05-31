@@ -262,7 +262,8 @@ fn test_diff_server_start_stop_and_status_api_results() {
         "expected diff UI to include sticky go-top button"
     );
     assert!(
-        html.contains(r#"<a class="app-rail-link app-rail-link-active" href="/status">Status</a>"#),
+        html.contains(r#"class="app-rail-link app-rail-link-active" href="/status""#)
+            && html.contains(r#"data-tab="status">Status</a>"#),
         "expected diff UI status tab to be active"
     );
     assert!(
@@ -895,9 +896,8 @@ fn test_diff_server_compare_html_page() {
 
     let html = get_text_with_retry(&format!("http://127.0.0.1:{}/compare", port));
     assert!(
-        html.contains(
-            r#"<a class="app-rail-link app-rail-link-active" href="/branches">Branches</a>"#
-        ),
+        html.contains(r#"class="app-rail-link app-rail-link-active" href="/branches""#)
+            && html.contains(r#"data-tab="branches">Branches</a>"#),
         "expected compare UI branches tab to be active"
     );
     assert!(html.contains("id=\"base-select\"") && html.contains("id=\"compare-select\""));

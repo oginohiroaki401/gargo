@@ -978,7 +978,8 @@ const DIRECTORY_TEMPLATE: &str = r#"<!DOCTYPE html>
 {{SYNTAX_STYLES}}
     </style>
 </head>
-<body>
+<body data-page="code-tree">
+    <script>{{SHORTCUTS_JS}}</script>
     <div class="app-shell">
         {{APP_RAIL}}
         <main class="app-main">
@@ -1094,7 +1095,8 @@ const FILE_TEMPLATE: &str = r#"<!DOCTYPE html>
 {{SYNTAX_STYLES}}
     </style>
 </head>
-<body>
+<body data-page="code-blob">
+    <script>{{SHORTCUTS_JS}}</script>
     <div class="app-shell">
         {{APP_RAIL}}
         <main class="app-main">
@@ -1489,6 +1491,10 @@ pub(crate) async fn handle_directory_listing(
         .replace("{{COMMIT_INFO}}", &commit_info)
         .replace("{{CONTENT}}", &content)
         .replace("{{SHARED_CSS}}", crate::command::server_shared::SHARED_CSS)
+        .replace(
+            "{{SHORTCUTS_JS}}",
+            crate::command::server_shared::SHORTCUTS_JS,
+        )
         .replace("{{SYNTAX_STYLES}}", render_diff_styles())
         .replace("{{MERMAID_INIT_SCRIPT}}", MERMAID_INIT_SCRIPT)
         .replace("{{LIVE_SYNC_SCRIPT}}", LIVE_SYNC_SCRIPT);
@@ -1582,6 +1588,10 @@ pub(crate) async fn handle_file_display(
         .replace("{{COMMIT_INFO}}", &commit_info)
         .replace("{{CONTENT}}", &rendered_content)
         .replace("{{SHARED_CSS}}", crate::command::server_shared::SHARED_CSS)
+        .replace(
+            "{{SHORTCUTS_JS}}",
+            crate::command::server_shared::SHORTCUTS_JS,
+        )
         .replace("{{SYNTAX_STYLES}}", render_diff_styles())
         .replace("{{MERMAID_INIT_SCRIPT}}", MERMAID_INIT_SCRIPT)
         .replace("{{LIVE_SYNC_SCRIPT}}", LIVE_SYNC_SCRIPT);

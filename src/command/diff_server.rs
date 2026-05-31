@@ -460,8 +460,9 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         #go-top-btn:hover { background: #eef2f7; }
     </style>
 </head>
-<body>
+<body data-page="status">
 {{REPO_CTX_SCRIPT}}
+<script>{{SHORTCUTS_JS}}</script>
 <code id="root-path" hidden>{{ROOT_PATH}}</code>
 <div class="app-shell">
     {{APP_RAIL}}
@@ -1462,8 +1463,9 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         #go-top-btn:hover { background: #eef2f7; }
     </style>
 </head>
-<body>
+<body data-page="compare">
 {{REPO_CTX_SCRIPT}}
+<script>{{SHORTCUTS_JS}}</script>
 <code id="root-path" hidden>{{ROOT_PATH}}</code>
 <div class="app-shell">
     {{APP_RAIL}}
@@ -2296,6 +2298,10 @@ pub(crate) async fn handle_html_request(
             .replace("{{APP_RAIL}}", &rail)
             .replace("{{REPO_CTX_SCRIPT}}", &ctx_script)
             .replace("{{SHARED_CSS}}", crate::command::server_shared::SHARED_CSS)
+            .replace(
+                "{{SHORTCUTS_JS}}",
+                crate::command::server_shared::SHORTCUTS_JS,
+            )
             .replace("{{DIFF_STYLES}}", render_diff_styles()),
     )
 }
@@ -2973,6 +2979,10 @@ pub(crate) async fn handle_compare_html_request(
             .replace("{{APP_RAIL}}", &rail)
             .replace("{{REPO_CTX_SCRIPT}}", &ctx_script)
             .replace("{{SHARED_CSS}}", crate::command::server_shared::SHARED_CSS)
+            .replace(
+                "{{SHORTCUTS_JS}}",
+                crate::command::server_shared::SHORTCUTS_JS,
+            )
             .replace("{{DIFF_STYLES}}", render_diff_styles()),
     )
 }
