@@ -405,9 +405,9 @@ Regular text after diagram.
     );
 
     assert!(
-        readme_html.contains(r#"href="https://github.com/acme/repo""#)
+        readme_html.contains(r#"href="https://github.com/acme/repo/blob/"#)
             && readme_html.contains(r#"<span class="repo-owner">acme/</span>"#),
-        "expected owner/repo title and GitHub remote link in rail"
+        "expected owner/repo title and deep GitHub blob link in rail"
     );
 
     assert!(

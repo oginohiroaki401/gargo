@@ -696,6 +696,19 @@ pub(crate) fn commit_url(ctx: &RepoUrlContext, hash: &str) -> String {
     format!("/{}/{}/commit/{}", ctx.owner, ctx.repo, hash)
 }
 
+/// Static pill that prefixes the breadcrumb on the code page so reviewers
+/// always see which branch the file/dir is being shown from. Not a switcher
+/// — the rail's "Branches" tab covers that interaction.
+fn path_branch_chip_html(ctx: &RepoUrlContext) -> String {
+    if ctx.branch.is_empty() {
+        return String::new();
+    }
+    format!(
+        r#"<span class="path-branch" title="{branch}">{branch}</span>"#,
+        branch = html_escape(&ctx.branch),
+    )
+}
+
 /// Render `repo / dir / subdir / file` with each prefix linked to its
 /// tree/blob page and the final segment styled as the current location.
 fn path_breadcrumb_html(ctx: &RepoUrlContext, rel_path: &str) -> String {
@@ -1452,8 +1465,20 @@ pub(crate) async fn handle_directory_listing(
     let repo_url = github_repo_url(repo_root).await;
 
     let commit_info = path_commit_strip_html(repo_root, display_path, ctx).await;
-    let breadcrumb = path_breadcrumb_html(ctx, display_path);
-    let rail = crate::command::app_shell::app_rail_html(ctx, repo_url.as_deref(), "code");
+    let branch_chip = path_branch_chip_html(ctx);
+    let breadcrumb = format!("{branch_chip}{}", path_breadcrumb_html(ctx, display_path));
+    let github_href = repo_url.as_deref().map(|base| {
+        if display_path == "." || display_path.is_empty() {
+            base.to_string()
+        } else {
+            format!(
+                "{base}/tree/{branch}/{path}",
+                branch = ctx.branch,
+                path = display_path,
+            )
+        }
+    });
+    let rail = crate::command::app_shell::app_rail_html(ctx, github_href.as_deref(), "code");
     let html = DIRECTORY_TEMPLATE
         .replace("{{TITLE}}", &html_escape(&title))
         .replace("{{ROOT_PATH}}", &html_escape(&root_path))
@@ -1537,8 +1562,16 @@ pub(crate) async fn handle_file_display(
     };
 
     let commit_info = path_commit_strip_html(repo_root, display_path, ctx).await;
-    let breadcrumb = path_breadcrumb_html(ctx, display_path);
-    let rail = crate::command::app_shell::app_rail_html(ctx, repo_url.as_deref(), "code");
+    let branch_chip = path_branch_chip_html(ctx);
+    let breadcrumb = format!("{branch_chip}{}", path_breadcrumb_html(ctx, display_path));
+    let github_href = repo_url.as_deref().map(|base| {
+        format!(
+            "{base}/blob/{branch}/{path}",
+            branch = ctx.branch,
+            path = display_path,
+        )
+    });
+    let rail = crate::command::app_shell::app_rail_html(ctx, github_href.as_deref(), "code");
     let html = FILE_TEMPLATE
         .replace("{{TITLE}}", &html_escape(filename))
         .replace("{{ROOT_PATH}}", &html_escape(&root_path))

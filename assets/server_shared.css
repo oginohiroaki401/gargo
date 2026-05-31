@@ -230,7 +230,7 @@ body {
 .breadcrumb-row {
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: 12px;
     margin-bottom: 8px;
 }
 .breadcrumb-row .breadcrumb {
@@ -241,4 +241,23 @@ body {
 .breadcrumb-row .file-toolbar {
     margin-bottom: 0;
     flex-shrink: 0;
+}
+
+/* Branch label that sits at the start of the code-page breadcrumb row so
+ * the reader always sees which ref they're looking at. Static (no toggle). */
+.path-branch {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    padding: 4px 12px;
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    color: #1f2328;
+    max-width: 240px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }

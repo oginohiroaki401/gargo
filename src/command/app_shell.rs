@@ -9,14 +9,17 @@ use crate::command::github_preview_server::{
     RepoUrlContext, commits_url, html_escape, repo_home_url,
 };
 
-/// Which tab in the rail to highlight as the current location.
+/// Render the sticky top navigation rail.
 ///
-/// The string maps directly onto the `id` checked in the rail template:
-/// `"code"`, `"status"`, `"branches"`, or `"commits"`. Any other value
-/// simply leaves no tab highlighted.
+/// `active_tab` highlights one of `"code"`, `"status"`, `"branches"`,
+/// `"commits"` (any other value leaves none highlighted). `github_href`
+/// is the absolute URL the "View on GitHub" link should point to —
+/// callers pass the deep URL matching the current view (a blob, tree,
+/// commit, …) so the link drops the user where they actually are
+/// rather than the repo root; `None` hides the link entirely.
 pub(crate) fn app_rail_html(
     ctx: &RepoUrlContext,
-    repo_url: Option<&str>,
+    github_href: Option<&str>,
     active_tab: &str,
 ) -> String {
     let mut out = String::with_capacity(1024);
@@ -53,7 +56,7 @@ pub(crate) fn app_rail_html(
 
     out.push_str(r#"<div class="app-rail-spacer"></div>"#);
 
-    if let Some(url) = repo_url {
+    if let Some(url) = github_href {
         out.push_str(&format!(
             r#"<a class="app-rail-github" href="{url}" target="_blank" rel="noopener">↗ View on GitHub</a>"#,
             url = html_escape(url),

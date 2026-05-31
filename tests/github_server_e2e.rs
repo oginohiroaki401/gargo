@@ -226,7 +226,7 @@ fn unified_github_server_serves_code_diffs_compare_commits_and_events() {
     assert!(commits_html.contains(r#"href="/status">Status</a>"#));
     assert!(commits_html.contains(r#"href="/branches">Branches</a>"#));
     assert!(!commits_html.contains("Repository commits"));
-    assert!(commits_html.contains(r#"href="https://github.com/aplio/gargo""#));
+    assert!(commits_html.contains(r#"href="https://github.com/aplio/gargo/commits/"#));
     let compare = get_json_with_retry(&format!(
         "{base_url}/api/compare?base=master&compare=feature"
     ));
