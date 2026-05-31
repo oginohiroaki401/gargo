@@ -484,11 +484,8 @@ async fn run_server(
 
 async fn handle_commits_html(State(state): State<Arc<GithubServerState>>) -> impl IntoResponse {
     let repo_url = github_preview_server::github_repo_url(&state.repo_root).await;
-    let rail = crate::command::app_shell::app_rail_html(
-        &state.url_ctx,
-        repo_url.as_deref(),
-        "commits",
-    );
+    let rail =
+        crate::command::app_shell::app_rail_html(&state.url_ctx, repo_url.as_deref(), "commits");
     let commit_prefix = github_preview_server::commit_url(&state.url_ctx, "");
     Html(format!(
         r#"<!doctype html><html><head><meta charset="utf-8"><title>Commits</title>{css}</head><body><div class="app-shell">{rail}<main class="app-main"><main class="commits-main"><section class="commits-section"><h1 class="commits-title">Commits</h1><div id="commits"><div class="loading">Loading commits...</div></div></section></main><script>
@@ -515,11 +512,8 @@ async fn handle_commit_html(
 ) -> impl IntoResponse {
     let hash = github_preview_server::html_escape(&hash);
     let repo_url = github_preview_server::github_repo_url(&state.repo_root).await;
-    let rail = crate::command::app_shell::app_rail_html(
-        &state.url_ctx,
-        repo_url.as_deref(),
-        "commits",
-    );
+    let rail =
+        crate::command::app_shell::app_rail_html(&state.url_ctx, repo_url.as_deref(), "commits");
     let commit_prefix = github_preview_server::commit_url(&state.url_ctx, "");
     let diff_styles = render_diff_styles();
     Html(format!(
@@ -941,7 +935,6 @@ fn app_css() -> String {
 const APP_CSS_PAGE_SPECIFIC: &str = r#"
 a { color: #0969da; text-decoration: none; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; padding: 2px 6px; background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 4px; }
-.repo-meta code { padding: 0; background: transparent; border: 0; border-radius: 0; }
 .loading, .empty { padding: 16px; color: #57606a; font-size: 13px; }
 .section { background: #fff; border: 1px solid #d0d7de; border-radius: 6px; padding: 16px; margin-bottom: 16px; }
 .section h2 { margin: 0 0 12px 0; font-size: 16px; }

@@ -262,12 +262,15 @@ fn test_diff_server_start_stop_and_status_api_results() {
         "expected diff UI to include sticky go-top button"
     );
     assert!(
-        html.contains(r#"<a class="repo-tab repo-tab-active" href="/status">Status</a>"#),
+        html.contains(r#"<a class="app-rail-link app-rail-link-active" href="/status">Status</a>"#),
         "expected diff UI status tab to be active"
     );
     assert!(
-        html.contains(&format!(r#"<code id="root-path">{}</code>"#, repo_root)),
-        "expected diff UI header to include absolute root path"
+        html.contains(&format!(
+            r#"<code id="root-path" hidden>{}</code>"#,
+            repo_root
+        )),
+        "expected diff UI body to include hidden absolute root path"
     );
     assert!(
         html.contains("urlParams.get(\"show_untracked\")")
@@ -611,12 +614,18 @@ fn test_diff_server_uses_explicit_project_root_instead_of_process_cwd() {
 
     let html = get_text_with_retry(&format!("http://127.0.0.1:{}/diff", port));
     assert!(
-        html.contains(&format!(r#"<code id="root-path">{}</code>"#, repo_b_root)),
+        html.contains(&format!(
+            r#"<code id="root-path" hidden>{}</code>"#,
+            repo_b_root
+        )),
         "expected diff UI to show explicit project root B: {}",
         html
     );
     assert!(
-        !html.contains(&format!(r#"<code id="root-path">{}</code>"#, repo_a_root)),
+        !html.contains(&format!(
+            r#"<code id="root-path" hidden>{}</code>"#,
+            repo_a_root
+        )),
         "did not expect diff UI to show cwd repo root A: {}",
         html
     );
@@ -886,14 +895,19 @@ fn test_diff_server_compare_html_page() {
 
     let html = get_text_with_retry(&format!("http://127.0.0.1:{}/compare", port));
     assert!(
-        html.contains(r#"<a class="repo-tab repo-tab-active" href="/branches">Branches</a>"#),
+        html.contains(
+            r#"<a class="app-rail-link app-rail-link-active" href="/branches">Branches</a>"#
+        ),
         "expected compare UI branches tab to be active"
     );
     assert!(html.contains("id=\"base-select\"") && html.contains("id=\"compare-select\""));
     assert!(html.contains("id=\"swap-btn\""));
     assert!(html.contains("/api/branches") && html.contains("/api/compare"));
     assert!(html.contains("/api/compare/file"));
-    assert!(html.contains(&format!(r#"<code id="root-path">{}</code>"#, repo_root)));
+    assert!(html.contains(&format!(
+        r#"<code id="root-path" hidden>{}</code>"#,
+        repo_root
+    )));
     assert!(
         html.contains("data.default") && html.contains("defaultBranch"),
         "expected /compare HTML to apply default-branch fallback for base select"

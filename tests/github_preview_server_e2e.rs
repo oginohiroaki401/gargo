@@ -392,27 +392,22 @@ Regular text after diagram.
     );
 
     assert!(
-        readme_html.contains(r#"class="repo-header""#),
-        "expected repository header in preview UI"
-    );
-
-    assert!(
-        readme_html.contains(&format!(r#"<code>{}</code>"#, repo_root)),
-        "expected absolute root path in repository header"
+        readme_html.contains(r#"class="app-rail""#),
+        "expected app-rail navigation in preview UI"
     );
 
     assert!(
         readme_html.contains(&format!(
-            r#"<a class="repo-tab repo-tab-active" href="{}">Code</a>"#,
+            r#"<a class="app-rail-link app-rail-link-active" href="{}">Code</a>"#,
             github_repo_path(repo)
         )),
-        "expected code tab to be active in repository header"
+        "expected code tab to be active in app-rail navigation"
     );
 
     assert!(
         readme_html.contains(r#"href="https://github.com/acme/repo""#)
-            && readme_html.contains(r#"<span class="repo-owner">acme</span>"#),
-        "expected owner/repo title to link to GitHub remote"
+            && readme_html.contains(r#"<span class="repo-owner">acme/</span>"#),
+        "expected owner/repo title and GitHub remote link in rail"
     );
 
     assert!(
@@ -424,13 +419,14 @@ Regular text after diagram.
     let root_url = format!("http://127.0.0.1:{}/", port);
     let root_html = get_html_with_retry(&root_url);
     assert!(
-        root_html.contains(r#"class="repo-header""#),
-        "expected repository header for root directory"
+        root_html.contains(r#"class="app-rail""#),
+        "expected app-rail navigation for root directory"
     );
     assert!(
         root_html.contains(r#"href="https://github.com/acme/repo""#),
-        "expected root header title to link to GitHub remote"
+        "expected root rail to link to GitHub remote"
     );
+    let _ = repo_root;
 
     // Test: Duplicate start should error
     handle
@@ -516,15 +512,16 @@ fn test_github_preview_server_serves_tree_view() {
     );
 
     assert!(
-        tree_html.contains(&format!(r#"<code>{}</code>"#, repo_root)),
-        "expected absolute root path in root tree header"
+        tree_html.contains(r#"class="app-rail""#),
+        "expected app-rail navigation on root tree page"
     );
+    let _ = repo_root;
 
     let nested_url = github_tree_url(port, repo, "docs");
     let nested_html = get_html_with_retry(&nested_url);
     assert!(
-        nested_html.contains(r#"class="repo-header""#),
-        "expected repository header for current directory path"
+        nested_html.contains(r#"class="app-rail""#),
+        "expected app-rail navigation on nested directory page"
     );
     assert!(
         !nested_html.contains(r#"<span class="context-key">Showing</span>"#),

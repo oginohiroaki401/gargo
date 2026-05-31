@@ -123,14 +123,14 @@ fn unified_github_server_serves_code_diffs_compare_commits_and_events() {
     let base_url = format!("http://127.0.0.1:{port}");
 
     let root_html = get_text_with_retry(&format!("{base_url}/"));
-    assert!(root_html.contains("repo-tab repo-tab-active"));
+    assert!(root_html.contains("app-rail-link app-rail-link-active"));
     assert!(root_html.contains(">Code</a>"));
     assert!(root_html.contains(">Status</a>"));
     assert!(root_html.contains(">Branches</a>"));
     assert!(!root_html.contains("Repository browser"));
     assert!(!root_html.contains(r#"<span class="context-key">Showing</span>"#));
     assert!(root_html.contains(r#"href="https://github.com/aplio/gargo""#));
-    assert!(root_html.contains(r#"<span class="repo-owner">aplio</span>"#));
+    assert!(root_html.contains(r#"<span class="repo-owner">aplio/</span>"#));
     assert!(root_html.contains("README.md"));
 
     let blob_html = get_text_with_retry(&format!("{base_url}/aplio/gargo/blob/master/README.md"));
@@ -198,7 +198,7 @@ fn unified_github_server_serves_code_diffs_compare_commits_and_events() {
     assert_eq!(status["untracked"][0]["path"], "scratch.txt");
     let status_html = get_text_with_retry(&format!("{base_url}/status"));
     assert!(status_html.contains(r#"href="/status">Status</a>"#));
-    assert!(status_html.contains("repo-tab repo-tab-active"));
+    assert!(status_html.contains("app-rail-link app-rail-link-active"));
     assert!(status_html.contains(r#"href="https://github.com/aplio/gargo""#));
     let file_diff = get_json_with_retry(&format!(
         "{base_url}/api/status/file?section=unstaged&path=README.md"
@@ -220,7 +220,7 @@ fn unified_github_server_serves_code_diffs_compare_commits_and_events() {
     );
     let branches_html = get_text_with_retry(&format!("{base_url}/branches"));
     assert!(branches_html.contains(r#"href="/branches">Branches</a>"#));
-    assert!(branches_html.contains("repo-tab repo-tab-active"));
+    assert!(branches_html.contains("app-rail-link app-rail-link-active"));
     assert!(branches_html.contains(r#"href="https://github.com/aplio/gargo""#));
     let commits_html = get_text_with_retry(&format!("{base_url}/aplio/gargo/commits/master"));
     assert!(commits_html.contains(r#"href="/status">Status</a>"#));

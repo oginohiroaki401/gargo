@@ -9,71 +9,11 @@
 /* Page frame */
 body {
     margin: 0;
-    padding: 20px;
+    padding: 0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     background-color: #f6f8fa;
     color: #24292f;
 }
-.container {
-    max-width: 1280px;
-    margin: 0 auto;
-}
-
-/* Repository header / tab bar */
-.repo-header {
-    background: #ffffff;
-    border: 1px solid #d0d7de;
-    border-radius: 6px;
-    margin-bottom: 16px;
-    overflow: hidden;
-}
-.repo-title {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 14px 16px 8px;
-    font-size: 20px;
-}
-.repo-title-link {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    color: inherit;
-    text-decoration: none;
-}
-.repo-title-link:hover strong { text-decoration: underline; }
-.repo-owner, .repo-sep { color: #57606a; font-weight: 400; }
-.repo-meta {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 8px;
-    padding: 0 16px 12px;
-    font-size: 13px;
-    color: #57606a;
-}
-.repo-meta code {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-    padding: 0;
-    background: transparent;
-    border: 0;
-}
-.repo-tabs {
-    display: flex;
-    gap: 4px;
-    padding: 0 8px;
-    border-top: 1px solid #d8dee4;
-}
-.repo-tab {
-    display: inline-flex;
-    padding: 10px 12px;
-    color: #24292f;
-    text-decoration: none;
-    border-bottom: 2px solid transparent;
-    font-size: 14px;
-}
-.repo-tab:hover { background: #f6f8fa; text-decoration: none; }
-.repo-tab-active { font-weight: 600; border-bottom-color: #fd8c73; }
 
 /* "Context" key/value strip used by diff_server controls and github_server header */
 .context-label {
@@ -198,38 +138,31 @@ body {
     white-space: nowrap;
 }
 
-/* App shell: left navigation rail + main content area.
- * Replaces the legacy .container + .repo-header stack with a sticky rail
- * that always shows where you are in the repo and where you can navigate
- * to next. Falls back to a horizontal nav strip at narrow widths. */
+/* App shell: a slim sticky top bar over a centred content area.
+ * The bar mirrors GitHub's app shell — repo identity, branch chip,
+ * primary nav tabs and an optional "View on GitHub" entry all share one
+ * row, leaving the full viewport width for the page body underneath. */
 .app-shell {
-    display: flex;
-    align-items: stretch;
+    display: block;
     min-height: 100vh;
-    gap: 0;
 }
 .app-rail {
-    width: 220px;
-    flex-shrink: 0;
-    padding: 16px 12px;
-    border-right: 1px solid #d0d7de;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    padding: 8px 24px;
     background: #ffffff;
+    border-bottom: 1px solid #d0d7de;
     position: sticky;
     top: 0;
-    align-self: flex-start;
-    max-height: 100vh;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    box-sizing: border-box;
+    z-index: 10;
 }
 .app-rail-repo {
     font-size: 14px;
     font-weight: 600;
     color: #1f2328;
     line-height: 1.3;
-    word-break: break-word;
 }
 .app-rail-repo a { color: inherit; text-decoration: none; }
 .app-rail-repo a:hover { text-decoration: underline; }
@@ -243,20 +176,19 @@ body {
     border-radius: 999px;
     font-size: 11px;
     font-weight: 500;
-    max-width: 100%;
+    max-width: 240px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 .app-rail-nav {
     display: flex;
-    flex-direction: column;
+    align-items: center;
     gap: 2px;
-    border-top: 1px solid #eaeef2;
-    padding-top: 12px;
+    margin-left: 12px;
 }
 .app-rail-link {
-    padding: 6px 10px;
+    padding: 5px 10px;
     border-radius: 6px;
     color: #1f2328;
     text-decoration: none;
@@ -274,39 +206,23 @@ body {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 6px 10px;
+    padding: 5px 10px;
     color: #57606a;
     font-size: 12px;
     text-decoration: none;
-    border-top: 1px solid #eaeef2;
+    border-radius: 6px;
 }
-.app-rail-github:hover { color: #0969da; }
+.app-rail-github:hover { color: #0969da; background: #f6f8fa; }
 .app-main {
-    flex: 1 1 auto;
-    min-width: 0;
-    padding: 20px 24px;
     max-width: 1280px;
+    margin: 0 auto;
+    padding: 20px 24px;
+    min-width: 0;
 }
-@media (max-width: 900px) {
-    .app-shell { flex-direction: column; }
-    .app-rail {
-        width: auto;
-        max-height: none;
-        position: static;
-        flex-direction: row;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 8px 16px;
-        border-right: 0;
-        border-bottom: 1px solid #d0d7de;
-    }
-    .app-rail-spacer { display: none; }
-    .app-rail-nav {
-        flex-direction: row;
-        border-top: 0;
-        padding-top: 0;
-    }
-    .app-rail-github { border-top: 0; }
+@media (max-width: 600px) {
+    .app-rail { padding: 8px 12px; }
+    .app-rail-nav { margin-left: 0; flex-wrap: wrap; }
+    .app-main { padding: 16px 12px; }
 }
 
 /* Row holding the breadcrumb on the left and the file-toolbar (Preview/Code)
