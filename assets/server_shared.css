@@ -167,16 +167,18 @@ body {
 .crumb-pill-current { color: #1f2328; font-weight: 600; }
 .crumb-separator { color: #8c959f; }
 
-/* Last-commit teaser shown above the code/dir content (GitHub-style) */
+/* Last-commit teaser shown above the code/dir content (GitHub-style).
+ * Flat strip (no card) so it sits quietly between the breadcrumb row and
+ * the file/dir body without competing for visual weight. */
 .commit-info {
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 8px 12px;
+    padding: 8px 0;
     margin-bottom: 16px;
-    background: #ffffff;
-    border: 1px solid #d0d7de;
-    border-radius: 6px;
+    background: transparent;
+    border-top: 1px solid #eaeef2;
+    border-bottom: 1px solid #eaeef2;
     font-size: 13px;
     min-width: 0;
 }
@@ -194,4 +196,133 @@ body {
     color: #57606a;
     flex-shrink: 0;
     white-space: nowrap;
+}
+
+/* App shell: left navigation rail + main content area.
+ * Replaces the legacy .container + .repo-header stack with a sticky rail
+ * that always shows where you are in the repo and where you can navigate
+ * to next. Falls back to a horizontal nav strip at narrow widths. */
+.app-shell {
+    display: flex;
+    align-items: stretch;
+    min-height: 100vh;
+    gap: 0;
+}
+.app-rail {
+    width: 220px;
+    flex-shrink: 0;
+    padding: 16px 12px;
+    border-right: 1px solid #d0d7de;
+    background: #ffffff;
+    position: sticky;
+    top: 0;
+    align-self: flex-start;
+    max-height: 100vh;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    box-sizing: border-box;
+}
+.app-rail-repo {
+    font-size: 14px;
+    font-weight: 600;
+    color: #1f2328;
+    line-height: 1.3;
+    word-break: break-word;
+}
+.app-rail-repo a { color: inherit; text-decoration: none; }
+.app-rail-repo a:hover { text-decoration: underline; }
+.app-rail-repo .repo-owner { color: #57606a; font-weight: 400; }
+.app-rail-branch {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 8px;
+    background: #ddf4ff;
+    color: #0969da;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 500;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.app-rail-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    border-top: 1px solid #eaeef2;
+    padding-top: 12px;
+}
+.app-rail-link {
+    padding: 6px 10px;
+    border-radius: 6px;
+    color: #1f2328;
+    text-decoration: none;
+    font-size: 13px;
+    line-height: 1.4;
+}
+.app-rail-link:hover { background: #f6f8fa; }
+.app-rail-link-active {
+    background: #ddf4ff;
+    color: #0969da;
+    font-weight: 600;
+}
+.app-rail-spacer { flex: 1 1 auto; }
+.app-rail-github {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    color: #57606a;
+    font-size: 12px;
+    text-decoration: none;
+    border-top: 1px solid #eaeef2;
+}
+.app-rail-github:hover { color: #0969da; }
+.app-main {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 20px 24px;
+    max-width: 1280px;
+}
+@media (max-width: 900px) {
+    .app-shell { flex-direction: column; }
+    .app-rail {
+        width: auto;
+        max-height: none;
+        position: static;
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px 16px;
+        border-right: 0;
+        border-bottom: 1px solid #d0d7de;
+    }
+    .app-rail-spacer { display: none; }
+    .app-rail-nav {
+        flex-direction: row;
+        border-top: 0;
+        padding-top: 0;
+    }
+    .app-rail-github { border-top: 0; }
+}
+
+/* Row holding the breadcrumb on the left and the file-toolbar (Preview/Code)
+ * on the right so they share a single vertical band above the file body. */
+.breadcrumb-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 8px;
+}
+.breadcrumb-row .breadcrumb {
+    margin-bottom: 0;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.breadcrumb-row .file-toolbar {
+    margin-bottom: 0;
+    flex-shrink: 0;
 }
