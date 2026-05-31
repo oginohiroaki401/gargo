@@ -502,7 +502,11 @@ fn push_diff_line(out: &mut String, line: &DiffLine, hl: Option<&LineHighlights>
 /// spans. Overlapping spans are resolved with "innermost wins": the
 /// shortest span covering a byte is the one that styles it. The unstyled
 /// regions are emitted as escaped text.
-fn push_highlighted_text(out: &mut String, content: &str, spans: &[(usize, usize, String)]) {
+pub(crate) fn push_highlighted_text(
+    out: &mut String,
+    content: &str,
+    spans: &[(usize, usize, String)],
+) {
     let len = content.len();
     if len == 0 {
         return;

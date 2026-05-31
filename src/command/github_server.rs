@@ -455,6 +455,7 @@ async fn run_server(
             "/api/compare/context",
             get(diff_server::handle_api_compare_context_request),
         )
+        .route("/split", get(diff_server::handle_split_request))
         .with_state(diff_state);
 
     let github_routes = Router::new()
@@ -611,7 +612,7 @@ function renderMain(files, statsByPath) {{
     const bodyInner = huge
       ? `<div class="gr-collapsed-note"><span>Large diff (${{changed}} changed lines) collapsed to keep the page light.</span><button type="button" class="gr-load-btn">Show diff</button></div>`
       : '<div class="loading">Loading diff...</div>';
-    return `<section class="${{sectionCls}}" id="${{anchor}}">`
+    return `<section class="${{sectionCls}}" id="${{anchor}}" data-path="${{escapeHtml(f.path)}}">`
       + `<div class="gr-file-header">`
       + `<button type="button" class="diff-toggle-btn" aria-label="Toggle diff" aria-expanded="${{huge ? 'false' : 'true'}}">${{toggleChar}}</button>`
       + `<div class="gr-file-name-wrapper"><span class="gr-status-tag gr-status-${{status}}">${{status}}</span><span class="gr-file-name" title="${{escapeHtml(f.path)}}">${{escapeHtml(f.path)}}</span>${{largeTag}}</div>`

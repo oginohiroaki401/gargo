@@ -8,6 +8,7 @@ pub mod input;
 pub mod log;
 pub mod plugin;
 pub mod project;
+pub mod split_render;
 pub mod syntax;
 pub mod terminal;
 pub mod ui;

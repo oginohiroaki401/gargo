@@ -127,6 +127,76 @@
         if (link) link.click();
     }
 
+    // --- split view actions --------------------------------------------
+
+    // Open the focused diff in the side-by-side split view (new tab).
+    // Each source page exposes the path / context we need on the focused
+    // .gr-file element (status: data-section + data-path; compare: data-path
+    // + base/compare from the URL; commit: data-path + hash from the URL).
+    function openSplit() {
+        const el = focusedItem();
+        if (!el) return;
+        const path = el.dataset.path
+            || (el.querySelector(".gr-file-body") && el.querySelector(".gr-file-body").dataset.path);
+        if (!path) return;
+        let url = null;
+        if (PAGE === "status") {
+            const section = el.dataset.section;
+            if (!section) return;
+            url = `/split?source=status&section=${encodeURIComponent(section)}&path=${encodeURIComponent(path)}`;
+        } else if (PAGE === "compare") {
+            const params = new URLSearchParams(window.location.search);
+            const base = params.get("base");
+            const compare = params.get("compare");
+            if (!base || !compare) return;
+            url = `/split?source=compare&base=${encodeURIComponent(base)}&compare=${encodeURIComponent(compare)}&path=${encodeURIComponent(path)}`;
+        } else if (PAGE === "commit-detail") {
+            const m = window.location.pathname.match(/\/commit\/([0-9a-f]+)/i);
+            if (!m) return;
+            url = `/split?source=commit&hash=${encodeURIComponent(m[1])}&path=${encodeURIComponent(path)}`;
+        }
+        if (url) window.open(url, "_blank");
+    }
+
+    // Per-row scroll step for j/k on the split page. Measured once from the
+    // first .sp-row; falls back to a sensible default before any row exists.
+    let splitRowHeightCache = 0;
+    function splitRowHeight() {
+        if (splitRowHeightCache > 0) return splitRowHeightCache;
+        const row = document.querySelector(".sp-row");
+        if (row) {
+            const h = row.getBoundingClientRect().height;
+            if (h > 0) {
+                splitRowHeightCache = h;
+                return h;
+            }
+        }
+        return 19; // matches font-size:12 * line-height:1.55, used until DOM is ready
+    }
+
+    // Jump to the next / previous non-context row. Picks the first row whose
+    // top is strictly past (or before) the current viewport center so repeats
+    // always make progress.
+    function jumpToChangedRow(dir) {
+        const rows = Array.from(document.querySelectorAll(".sp-row:not(.sp-context)"));
+        if (!rows.length) return;
+        const viewportCenter = window.scrollY + window.innerHeight / 2;
+        const positions = rows.map(r => r.getBoundingClientRect().top + window.scrollY);
+        let target = null;
+        if (dir > 0) {
+            for (let i = 0; i < positions.length; i++) {
+                if (positions[i] > viewportCenter + 4) { target = rows[i]; break; }
+            }
+            if (!target) target = rows[rows.length - 1];
+        } else {
+            for (let i = positions.length - 1; i >= 0; i--) {
+                if (positions[i] < viewportCenter - 4) { target = rows[i]; break; }
+            }
+            if (!target) target = rows[0];
+        }
+        if (target) target.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+
     // --- help overlay ---------------------------------------------------
 
     const HELP_SECTIONS_GLOBAL = [
@@ -146,19 +216,28 @@
         "status": [{ heading: "Diff (Status)", rows: [
             ["j / k", "Focus next / previous file"],
             ["o", "Expand / collapse focused file"],
+            ["Shift+O", "Open focused file in split view (new tab)"],
             ["v", "Toggle Viewed"],
             ["g g / G", "Jump to first / last file"],
         ]}],
         "compare": [{ heading: "Diff (Compare)", rows: [
             ["j / k", "Focus next / previous file"],
             ["o", "Expand / collapse focused file"],
+            ["Shift+O", "Open focused file in split view (new tab)"],
             ["v", "Toggle Viewed"],
             ["g g / G", "Jump to first / last file"],
         ]}],
         "commit-detail": [{ heading: "Diff (Commit)", rows: [
             ["j / k", "Focus next / previous file"],
             ["o", "Expand / collapse focused file"],
+            ["Shift+O", "Open focused file in split view (new tab)"],
             ["g g / G", "Jump to first / last file"],
+        ]}],
+        "split": [{ heading: "Split view", rows: [
+            ["j / k", "Scroll down / up one row"],
+            ["n / p", "Jump to next / previous changed row"],
+            ["g g / G", "Scroll to top / bottom"],
+            ["q", "Close this tab"],
         ]}],
         "code-tree": [{ heading: "Files", rows: [
             ["j / k", "Focus next / previous entry"],
@@ -271,7 +350,11 @@
             clearLeader();
             if (key === "g") {
                 ev.preventDefault();
-                focusAt(0);
+                if (PAGE === "split") {
+                    window.scrollTo({ top: 0, behavior: "smooth" });
+                } else {
+                    focusAt(0);
+                }
                 return;
             }
             const link = railLinkFor(key);
@@ -291,19 +374,33 @@
 
         if (key === "G") {
             ev.preventDefault();
-            const list = items();
-            if (list.length) focusAt(list.length - 1);
+            if (PAGE === "split") {
+                window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" });
+            } else {
+                const list = items();
+                if (list.length) focusAt(list.length - 1);
+            }
             return;
         }
 
         // Page-local single keys
         if (key === "j") {
+            if (PAGE === "split") {
+                ev.preventDefault();
+                window.scrollBy(0, splitRowHeight());
+                return;
+            }
             if (!ITEM_SELECTORS[PAGE]) return;
             ev.preventDefault();
             moveFocus(1);
             return;
         }
         if (key === "k") {
+            if (PAGE === "split") {
+                ev.preventDefault();
+                window.scrollBy(0, -splitRowHeight());
+                return;
+            }
             if (!ITEM_SELECTORS[PAGE]) return;
             ev.preventDefault();
             moveFocus(-1);
@@ -316,9 +413,32 @@
                 toggleCollapse();
                 return;
             }
+            if (key === "O") {
+                ev.preventDefault();
+                openSplit();
+                return;
+            }
             if (key === "v" && PAGE !== "commit-detail") {
                 ev.preventDefault();
                 toggleViewed();
+                return;
+            }
+        }
+
+        if (PAGE === "split") {
+            if (key === "n") {
+                ev.preventDefault();
+                jumpToChangedRow(1);
+                return;
+            }
+            if (key === "p") {
+                ev.preventDefault();
+                jumpToChangedRow(-1);
+                return;
+            }
+            if (key === "q") {
+                ev.preventDefault();
+                window.close();
                 return;
             }
         }

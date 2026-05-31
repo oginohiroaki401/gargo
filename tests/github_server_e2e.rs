@@ -292,6 +292,76 @@ fn unified_github_server_serves_code_diffs_compare_commits_and_events() {
 }
 
 #[test]
+fn split_view_serves_status_compare_and_commit_sources() {
+    let repo_dir = setup_repo();
+    let repo = repo_dir.path();
+    let handle = GithubServerHandle::new().expect("server handle");
+    let Some(port) = start_server(repo, &handle) else {
+        return;
+    };
+    let base_url = format!("http://127.0.0.1:{port}");
+
+    // Status source: unstaged change to README.md — expect a paired change
+    // row showing the new content and the auto-scroll marker.
+    let status_html = get_text_with_retry(&format!(
+        "{base_url}/split?source=status&section=unstaged&path=README.md"
+    ));
+    assert!(status_html.contains(r#"data-page="split""#));
+    assert!(status_html.contains("split-grid"));
+    assert!(status_html.contains("sp-row"));
+    assert!(status_html.contains(r#"id="first-diff""#));
+    // README.md is plain markdown without a registered highlighter, so its
+    // changed content appears verbatim.
+    assert!(status_html.contains("hello changed"));
+    // Back link goes to /status
+    assert!(status_html.contains(r#"href="/status""#));
+
+    // Untracked file: one-sided (right pane only) + notice banner.
+    let untracked_html = get_text_with_retry(&format!(
+        "{base_url}/split?source=status&section=untracked&path=scratch.txt"
+    ));
+    assert!(untracked_html.contains("split-notice"));
+    assert!(untracked_html.contains("sp-add"));
+
+    // Compare source between master and feature on src/lib.rs. The added
+    // function appears on the right side of a change/add row. Rust gets
+    // syntax-highlighted, so check for the function name as plain text
+    // (which falls between `<span>`s).
+    let compare_html = get_text_with_retry(&format!(
+        "{base_url}/split?source=compare&base=master&compare=feature&path=src/lib.rs"
+    ));
+    assert!(compare_html.contains("split-grid"));
+    assert!(compare_html.contains("sp-text-r"));
+    assert!(compare_html.contains("feature"));
+    // Back link preserves both refs.
+    assert!(compare_html.contains(r#"href="/compare?base=master&amp;compare=feature""#));
+
+    // Commit source: pull the initial commit hash from /api/commits and
+    // open the split view for README.md at that commit. The initial commit
+    // is a root commit, so <hash>^ does not resolve — the handler should
+    // gracefully fall back to right-only (still rendering the new side).
+    let commits = get_json_with_retry(&format!("{base_url}/api/commits"));
+    let first_hash = commits["commits"][0]["full_hash"].as_str().unwrap();
+    let commit_html = get_text_with_retry(&format!(
+        "{base_url}/split?source=commit&hash={first_hash}&path=README.md"
+    ));
+    assert!(commit_html.contains("split-grid"));
+    assert!(commit_html.contains("Test Repo"));
+    // Refs header reflects the parent → commit transition.
+    assert!(commit_html.contains(&format!("{first_hash}^")));
+
+    // Invalid source rejected with 400.
+    let bad = ureq::get(&format!("{base_url}/split?source=nope&path=README.md")).call();
+    match bad {
+        Ok(_) => panic!("expected 400 on invalid source"),
+        Err(ureq::Error::Status(status, _)) => assert_eq!(status, 400),
+        Err(other) => panic!("unexpected error: {other}"),
+    }
+
+    let _ = handle.command_tx.send(GithubServerCommand::Stop);
+}
+
+#[test]
 fn github_server_plugin_commands_replace_old_visible_server_commands() {
     let repo_dir = tempdir().expect("temp repo");
     let config = Config::default();
