@@ -1453,6 +1453,8 @@ pub(crate) async fn handle_directory_listing(
         && let Ok(text) = String::from_utf8(readme_content)
     {
         let html = render_markdown(&text);
+        let readme_dir = if display_path == "." { "" } else { display_path };
+        let html = rewrite_markdown_links(&html, ctx, readme_dir);
         content.push_str(r#"<div style="margin-top: 24px;"><div class="markdown-body">"#);
         content.push_str(&html);
         content.push_str("</div></div>");
@@ -1555,9 +1557,14 @@ pub(crate) async fn handle_file_display(
                     render_code_with_line_ids_for_path(&text, filename)
                 )
             } else {
+                let rendered = render_markdown_with_source_lines(&text);
+                let parent = Path::new(display_path)
+                    .parent()
+                    .and_then(|p| p.to_str())
+                    .unwrap_or("");
                 format!(
                     r#"<div class="markdown-body">{}</div>"#,
-                    render_markdown_with_source_lines(&text)
+                    rewrite_markdown_links(&rendered, ctx, parent)
                 )
             }
         }
@@ -1616,6 +1623,76 @@ pub(crate) fn render_markdown(text: &str) -> String {
     options.render.unsafe_ = true; // Allow HTML in markdown
 
     render_mermaid_blocks(&markdown_to_html(text, &options))
+}
+
+/// Rewrite relative `href` / `src` attributes in rendered markdown HTML so they
+/// resolve against the server's blob route rather than relying on the browser's
+/// URL-relative resolution (which depends on whether the current URL ends in a
+/// file name or a directory and breaks for nested paths). Absolute URLs,
+/// fragment-only links, and known non-HTTP schemes are left untouched.
+///
+/// `current_dir` is the directory the markdown lives in, relative to the repo
+/// root (empty for the repo root, e.g. `"docs"` for `docs/README.md`).
+pub(crate) fn rewrite_markdown_links(
+    html: &str,
+    ctx: &RepoUrlContext,
+    current_dir: &str,
+) -> String {
+    let re = regex::Regex::new(r#"(?i)(<(?:a|img)\b[^>]*?\s(?:href|src)\s*=\s*")([^"]*)(")"#)
+        .expect("valid link regex");
+    re.replace_all(html, |caps: &regex::Captures<'_>| {
+        let prefix = &caps[1];
+        let value = &caps[2];
+        let suffix = &caps[3];
+        match resolve_markdown_link(ctx, current_dir, value) {
+            Some(resolved) => format!("{prefix}{resolved}{suffix}"),
+            None => caps[0].to_string(),
+        }
+    })
+    .to_string()
+}
+
+fn resolve_markdown_link(ctx: &RepoUrlContext, current_dir: &str, value: &str) -> Option<String> {
+    if value.is_empty() || value.starts_with('/') || value.starts_with('#') {
+        return None;
+    }
+    if value.contains("://")
+        || value.starts_with("mailto:")
+        || value.starts_with("tel:")
+        || value.starts_with("javascript:")
+        || value.starts_with("data:")
+    {
+        return None;
+    }
+
+    let (path_part, suffix) = match value.find(|c| c == '#' || c == '?') {
+        Some(idx) => (&value[..idx], &value[idx..]),
+        None => (value, ""),
+    };
+    if path_part.is_empty() {
+        return None;
+    }
+
+    let mut segments: Vec<&str> = if current_dir.is_empty() || current_dir == "." {
+        Vec::new()
+    } else {
+        current_dir
+            .split('/')
+            .filter(|s| !s.is_empty() && *s != ".")
+            .collect()
+    };
+    for seg in path_part.split('/') {
+        match seg {
+            "" | "." => continue,
+            ".." => {
+                segments.pop();
+            }
+            other => segments.push(other),
+        }
+    }
+    let resolved = segments.join("/");
+    let url = blob_url(ctx, &resolved);
+    Some(format!("{url}{suffix}"))
 }
 
 /// Render markdown to HTML, then inject `data-source-line` attributes on block-level elements.
@@ -1840,4 +1917,102 @@ pub fn register(registry: &mut CommandRegistry) {
             )))
         }),
     });
+}
+
+#[cfg(test)]
+mod link_rewriting_tests {
+    use super::*;
+
+    fn ctx() -> RepoUrlContext {
+        RepoUrlContext {
+            owner: "alice".into(),
+            repo: "demo".into(),
+            branch: "main".into(),
+        }
+    }
+
+    #[test]
+    fn rewrites_relative_link_from_subdir() {
+        let html = r#"<p><a href="./bar.md">bar</a></p>"#;
+        let out = rewrite_markdown_links(html, &ctx(), "docs");
+        assert_eq!(
+            out,
+            r#"<p><a href="/alice/demo/blob/main/docs/bar.md">bar</a></p>"#
+        );
+    }
+
+    #[test]
+    fn rewrites_relative_link_without_leading_dot() {
+        let html = r#"<a href="bar.md">bar</a>"#;
+        let out = rewrite_markdown_links(html, &ctx(), "docs");
+        assert_eq!(out, r#"<a href="/alice/demo/blob/main/docs/bar.md">bar</a>"#);
+    }
+
+    #[test]
+    fn rewrites_parent_relative_link() {
+        let html = r#"<a href="../README.md">readme</a>"#;
+        let out = rewrite_markdown_links(html, &ctx(), "docs/sub");
+        assert_eq!(
+            out,
+            r#"<a href="/alice/demo/blob/main/docs/README.md">readme</a>"#
+        );
+    }
+
+    #[test]
+    fn preserves_fragment_on_relative_link() {
+        let html = r#"<a href="./bar.md#section">bar</a>"#;
+        let out = rewrite_markdown_links(html, &ctx(), "docs");
+        assert_eq!(
+            out,
+            r#"<a href="/alice/demo/blob/main/docs/bar.md#section">bar</a>"#
+        );
+    }
+
+    #[test]
+    fn leaves_fragment_only_link_untouched() {
+        let html = r##"<a href="#install">install</a>"##;
+        let out = rewrite_markdown_links(html, &ctx(), "docs");
+        assert_eq!(out, html);
+    }
+
+    #[test]
+    fn leaves_absolute_path_untouched() {
+        let html = r#"<a href="/alice/demo/blob/main/other.md">x</a>"#;
+        let out = rewrite_markdown_links(html, &ctx(), "docs");
+        assert_eq!(out, html);
+    }
+
+    #[test]
+    fn leaves_external_http_url_untouched() {
+        let html = r#"<a href="https://example.com/page">x</a>"#;
+        let out = rewrite_markdown_links(html, &ctx(), "docs");
+        assert_eq!(out, html);
+    }
+
+    #[test]
+    fn leaves_mailto_untouched() {
+        let html = r#"<a href="mailto:a@b.com">mail</a>"#;
+        let out = rewrite_markdown_links(html, &ctx(), "");
+        assert_eq!(out, html);
+    }
+
+    #[test]
+    fn rewrites_img_src() {
+        let html = r#"<img src="./img.png" alt="x" />"#;
+        let out = rewrite_markdown_links(html, &ctx(), "docs");
+        assert_eq!(
+            out,
+            r#"<img src="/alice/demo/blob/main/docs/img.png" alt="x" />"#
+        );
+    }
+
+    #[test]
+    fn rewrites_relative_from_repo_root() {
+        let html = r#"<a href="docs/intro.md">intro</a>"#;
+        let out = rewrite_markdown_links(html, &ctx(), "");
+        assert_eq!(
+            out,
+            r#"<a href="/alice/demo/blob/main/docs/intro.md">intro</a>"#
+        );
+    }
 }
