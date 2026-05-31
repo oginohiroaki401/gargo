@@ -594,25 +594,6 @@ pub(crate) async fn handle_mermaid_asset() -> impl IntoResponse {
     response
 }
 
-
-pub(crate) fn repo_title_html(root_path: &str, repo_url: Option<&str>) -> String {
-    let (owner, repo) = owner_repo_for_root(root_path, repo_url);
-    let title = format!(
-        r#"<span class="repo-owner">{}</span><span class="repo-sep">/</span><strong>{}</strong>"#,
-        html_escape(&owner),
-        html_escape(&repo)
-    );
-    if let Some(url) = repo_url {
-        format!(
-            r#"<a class="repo-title-link" href="{}" target="_blank" rel="noopener noreferrer">{}</a>"#,
-            html_escape(url),
-            title
-        )
-    } else {
-        title
-    }
-}
-
 pub(crate) fn github_owner_repo_from_url(url: &str) -> Option<(String, String)> {
     let path = url.strip_prefix("https://github.com/")?;
     let mut parts = path.trim_matches('/').split('/');

@@ -483,12 +483,15 @@ async fn run_server(
 }
 
 async fn handle_commits_html(State(state): State<Arc<GithubServerState>>) -> impl IntoResponse {
-    let root = state.repo_root.display().to_string();
     let repo_url = github_preview_server::github_repo_url(&state.repo_root).await;
-    let header = github_page_header(&root, "commits", repo_url.as_deref(), &state.url_ctx);
+    let rail = crate::command::app_shell::app_rail_html(
+        &state.url_ctx,
+        repo_url.as_deref(),
+        "commits",
+    );
     let commit_prefix = github_preview_server::commit_url(&state.url_ctx, "");
     Html(format!(
-        r#"<!doctype html><html><head><meta charset="utf-8"><title>Commits</title>{css}</head><body><div class="container">{header}<main class="commits-main"><section class="commits-section"><h1 class="commits-title">Commits</h1><div id="commits"><div class="loading">Loading commits...</div></div></section></main><script>
+        r#"<!doctype html><html><head><meta charset="utf-8"><title>Commits</title>{css}</head><body><div class="app-shell">{rail}<main class="app-main"><main class="commits-main"><section class="commits-section"><h1 class="commits-title">Commits</h1><div id="commits"><div class="loading">Loading commits...</div></div></section></main><script>
 fetch('/api/commits', {{cache:'no-store'}}).then(r=>r.json()).then(data=>{{
  const list = data.commits || [];
  const root = document.getElementById('commits');
@@ -499,9 +502,9 @@ fetch('/api/commits', {{cache:'no-store'}}).then(r=>r.json()).then(data=>{{
  }}).join('') + '</ul>';
 }});
 function escapeHtml(s) {{ return String(s).replace(/[&<>"']/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c])); }}
-</script></div></body></html>"#,
+</script></main></div></body></html>"#,
         css = app_css(),
-        header = header,
+        rail = rail,
         commit_prefix = commit_prefix,
     ))
 }
@@ -511,13 +514,16 @@ async fn handle_commit_html(
     AxumPath((_owner, _repo, hash)): AxumPath<(String, String, String)>,
 ) -> impl IntoResponse {
     let hash = github_preview_server::html_escape(&hash);
-    let root = state.repo_root.display().to_string();
     let repo_url = github_preview_server::github_repo_url(&state.repo_root).await;
-    let header = github_page_header(&root, "commits", repo_url.as_deref(), &state.url_ctx);
+    let rail = crate::command::app_shell::app_rail_html(
+        &state.url_ctx,
+        repo_url.as_deref(),
+        "commits",
+    );
     let commit_prefix = github_preview_server::commit_url(&state.url_ctx, "");
     let diff_styles = render_diff_styles();
     Html(format!(
-        r##"<!doctype html><html><head><meta charset="utf-8"><title>Commit {hash}</title>{css}<style>{diff_styles}</style></head><body><div class="container">{header}
+        r##"<!doctype html><html><head><meta charset="utf-8"><title>Commit {hash}</title>{css}<style>{diff_styles}</style></head><body><div class="app-shell">{rail}<main class="app-main">
 <section class="commit-summary section"><div id="commit-summary"><div class="loading">Loading commit...</div></div></section>
 <div class="layout">
  <aside class="sidebar">
@@ -661,10 +667,10 @@ function updateGoTopButtonVisibility() {{
 goTopButton.addEventListener('click', () => {{ window.scrollTo({{ top: 0, behavior: 'smooth' }}); }});
 window.addEventListener('scroll', updateGoTopButtonVisibility, {{ passive: true }});
 updateGoTopButtonVisibility();
-</script></div></body></html>"##,
+</script></main></div></body></html>"##,
         css = app_css(),
         diff_styles = diff_styles,
-        header = header,
+        rail = rail,
         hash = hash,
         commit_prefix = commit_prefix,
     ))
@@ -902,44 +908,6 @@ async fn handle_api_commit_file(
             "html": diff_server::empty_diff_html(),
         })),
     }
-}
-
-fn github_page_header(
-    root_path: &str,
-    active_tab: &str,
-    repo_url: Option<&str>,
-    ctx: &github_preview_server::RepoUrlContext,
-) -> String {
-    let repo_title = github_preview_server::repo_title_html(root_path, repo_url);
-    let tab = |id: &str, label: &str, href: &str| {
-        let class_name = if id == active_tab {
-            "repo-tab repo-tab-active"
-        } else {
-            "repo-tab"
-        };
-        format!(
-            r#"<a class="{class_name}" href="{}">{}</a>"#,
-            github_preview_server::html_escape(href),
-            github_preview_server::html_escape(label)
-        )
-    };
-    format!(
-        r#"<header class="repo-header">
-            <div class="repo-title">{}</div>
-            <div class="repo-meta"><span class="context-key">Root</span><code>{}</code></div>
-            <nav class="repo-tabs" aria-label="Repository views">{}{}{}{}</nav>
-        </header>"#,
-        repo_title,
-        github_preview_server::html_escape(root_path),
-        tab("code", "Code", &github_preview_server::repo_home_url(ctx)),
-        tab("status", "Status", "/status"),
-        tab("branches", "Branches", "/branches"),
-        tab(
-            "commits",
-            "Commits",
-            &github_preview_server::commits_url(ctx)
-        ),
-    )
 }
 
 fn parse_commit_hash(hash: &str) -> Option<String> {
