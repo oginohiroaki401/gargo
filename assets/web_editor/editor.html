@@ -140,6 +140,7 @@
       }
       #picker[hidden] { display: none; }
       #picker-input {
+        flex: 0 0 auto; /* stay pinned at the top while the list scrolls */
         border: 0;
         outline: none;
         background: #3c3c3c;
@@ -150,6 +151,8 @@
         border-radius: 4px;
       }
       #picker-list {
+        flex: 1 1 auto; /* take the remaining height so the input stays put */
+        min-height: 0; /* allow the flex child to shrink and scroll internally */
         list-style: none;
         margin: 0;
         padding: 0 6px 6px;
