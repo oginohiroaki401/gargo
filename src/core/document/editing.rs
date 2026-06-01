@@ -768,6 +768,40 @@ impl Document {
         combined
     }
 
+    /// Delete the whole current line including its trailing newline. The cursor
+    /// lands at the start of the (now-shifted) line. No-op on an empty buffer.
+    /// Used by the browser emacs PoC's whole-line delete (Ctrl+Shift+K).
+    pub fn delete_current_line(&mut self) {
+        let line = self.cursor_line();
+        let start = self.rope.line_to_char(line);
+        let total_lines = self.rope.len_lines();
+        let end = if line + 1 < total_lines {
+            self.rope.line_to_char(line + 1)
+        } else {
+            self.rope.len_chars()
+        };
+        self.clear_anchor();
+        self.delete_range(start, end);
+    }
+
+    /// Delete every non-empty selection range, returning the removed text
+    /// (ranges concatenated), or `None` when nothing is selected. The editor
+    /// mode is left untouched — unlike the Visual-mode `DeleteSelection` path,
+    /// the browser emacs PoC stays in Insert mode for VSCode-style editing.
+    pub fn delete_active_selection(&mut self) -> Option<String> {
+        let ranges: Vec<(usize, usize)> = self
+            .merged_selection_ranges()
+            .into_iter()
+            .filter(|&(s, e)| s < e)
+            .collect();
+        if ranges.is_empty() {
+            return None;
+        }
+        let deleted = self.delete_ranges(&ranges);
+        self.clear_anchor();
+        Some(deleted)
+    }
+
     /// Insert text at a given char position with full undo/redo recording.
     pub fn insert_text_at(&mut self, pos: usize, text: &str) {
         if text.is_empty() {

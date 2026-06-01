@@ -2185,3 +2185,45 @@ fn user_scenario_select_line_grows_into_unified_selection() {
     assert!(anchors.contains(&0));
     assert!(anchors.contains(&10));
 }
+
+// --- browser emacs PoC: whole-line delete + selection delete --------------
+
+#[test]
+fn delete_current_line_removes_middle_line_and_newline() {
+    let mut doc = doc_from_str("abc\ndef\nghi\n");
+    doc.cursors[0] = 5; // inside "def"
+    doc.delete_current_line();
+    assert_eq!(doc.rope.to_string(), "abc\nghi\n");
+    // Cursor lands at the start of the line that shifted up ("ghi").
+    assert_eq!(doc.cursors[0], 4);
+}
+
+#[test]
+fn delete_current_line_on_last_line_without_trailing_newline() {
+    let mut doc = doc_from_str("abc\ndef");
+    doc.cursors[0] = 6; // inside "def" (last line, no trailing \n)
+    doc.delete_current_line();
+    assert_eq!(doc.rope.to_string(), "abc\n");
+}
+
+#[test]
+fn delete_active_selection_removes_selection_and_returns_text() {
+    let mut doc = doc_from_str("hello world\n");
+    doc.cursors[0] = 6; // before "world"
+    doc.extend_to_line_end(); // selects "world"
+    let deleted = doc.delete_active_selection();
+    assert_eq!(deleted.as_deref(), Some("world"));
+    assert_eq!(doc.rope.to_string(), "hello \n");
+    assert!(
+        doc.selection_range().is_none(),
+        "anchor cleared after delete"
+    );
+}
+
+#[test]
+fn delete_active_selection_without_selection_is_none() {
+    let mut doc = doc_from_str("hello\n");
+    doc.cursors[0] = 2;
+    assert_eq!(doc.delete_active_selection(), None);
+    assert_eq!(doc.rope.to_string(), "hello\n");
+}

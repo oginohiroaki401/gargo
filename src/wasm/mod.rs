@@ -10,6 +10,7 @@
 
 use wasm_bindgen::prelude::*;
 
+use crate::core::document::Selection;
 use crate::core::editor::Editor;
 use crate::core::mode::Mode;
 use crate::input::action::{Action, CoreAction};
@@ -92,6 +93,77 @@ impl WebEditor {
     pub fn insert_text(&mut self, text: &str) {
         self.editor
             .dispatch_core(CoreAction::InsertText(text.to_string()), TAB_WIDTH);
+    }
+
+    /// True if any cursor has a non-empty selection. Used by the emacs PoC to
+    /// implement VSCode-style "selection delete / type-to-replace" while
+    /// staying in Insert mode.
+    pub fn has_selection(&self) -> bool {
+        self.editor
+            .active_buffer()
+            .merged_selection_ranges()
+            .into_iter()
+            .any(|(s, e)| s < e)
+    }
+
+    /// Delete the active selection(s) without changing the editor mode (unlike
+    /// `CoreAction::DeleteSelection`, which drops to Normal). Returns `true` if
+    /// anything was deleted. The deleted text goes to the editor register.
+    pub fn delete_selection(&mut self) -> bool {
+        if let Some(deleted) = self.editor.active_buffer_mut().delete_active_selection() {
+            self.editor.register = Some(deleted);
+            self.editor.mark_highlights_dirty();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Delete the whole current line including its trailing newline, staying in
+    /// the current mode. Bound to Ctrl+Shift+K in the emacs PoC.
+    pub fn delete_line(&mut self) {
+        self.editor.active_buffer_mut().delete_current_line();
+        self.editor.mark_highlights_dirty();
+    }
+
+    /// Move the primary cursor to a display (row, col) and clear any selection.
+    /// Used for mouse-click cursor placement. `col` is a display column (tab/CJK
+    /// aware), matching the coordinates produced by `render`.
+    pub fn set_cursor(&mut self, row: usize, col: usize) {
+        let off = {
+            let buf = self.editor.active_buffer();
+            line_col_to_offset(&buf.rope, row, col)
+        };
+        let buf = self.editor.active_buffer_mut();
+        buf.clear_anchor();
+        buf.cursors = vec![off];
+        buf.selections = vec![None];
+    }
+
+    /// Set a single selection from an anchor (row, col) to a head (row, col),
+    /// placing the primary cursor at the head. Used for mouse-drag selection.
+    /// An empty range (anchor == head) clears the selection.
+    pub fn set_selection(
+        &mut self,
+        anchor_row: usize,
+        anchor_col: usize,
+        head_row: usize,
+        head_col: usize,
+    ) {
+        let (anchor, head) = {
+            let buf = self.editor.active_buffer();
+            (
+                line_col_to_offset(&buf.rope, anchor_row, anchor_col),
+                line_col_to_offset(&buf.rope, head_row, head_col),
+            )
+        };
+        let buf = self.editor.active_buffer_mut();
+        buf.cursors = vec![head];
+        buf.selections = if anchor == head {
+            vec![None]
+        } else {
+            vec![Some(Selection::tail_on_forward(anchor, head))]
+        };
     }
 
     /// Full buffer contents (for saving).
@@ -206,6 +278,29 @@ fn primary_cursor(buf: &crate::core::document::Document) -> usize {
 fn offset_to_row_col(rope: &Rope, off: usize) -> (usize, usize) {
     let off = off.min(rope.len_chars());
     (rope.char_to_line(off), offset_to_display_col(rope, off))
+}
+
+/// Inverse of `offset_to_display_col`: map a display (row, col) to a char
+/// offset, clamping the row to the document and the column to the line's end
+/// (the trailing newline is never selected). Uses the same `char_display_width`
+/// accounting as the renderer/caret so clicks land where the caret is drawn.
+fn line_col_to_offset(rope: &Rope, row: usize, col: usize) -> usize {
+    let total_lines = rope.len_lines();
+    if total_lines == 0 {
+        return 0;
+    }
+    let line = row.min(total_lines - 1);
+    let line_start = rope.line_to_char(line);
+    let mut acc = 0usize;
+    let mut offset = line_start;
+    for ch in rope.line(line).chars() {
+        if ch == '\n' || ch == '\r' || acc >= col {
+            break;
+        }
+        acc += char_display_width(ch);
+        offset += 1;
+    }
+    offset
 }
 
 fn offset_to_display_col(rope: &Rope, off: usize) -> usize {
