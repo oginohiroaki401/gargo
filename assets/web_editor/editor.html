@@ -50,6 +50,8 @@
         height: var(--line-height);
         line-height: var(--line-height);
         white-space: pre;
+        /* Text sits above the selection highlight so it stays readable. */
+        z-index: 2;
       }
       .gutter {
         left: 0;
@@ -77,6 +79,8 @@
         height: var(--line-height);
         background: var(--sel);
         left: var(--gutter-w, 50px);
+        /* Behind the text (z-index:2) so selected glyphs stay visible. */
+        z-index: 1;
       }
 
       /* Hidden textarea: captures keys + IME, positioned at the caret so the
