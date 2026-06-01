@@ -163,7 +163,9 @@
         text-overflow: ellipsis;
         cursor: pointer;
       }
-      #picker-list li.sel { background: var(--sel); }
+      /* Distinct class from the editor's .sel selection overlay (which is
+         absolutely positioned) so the highlighted row stays in flow. */
+      #picker-list li.picked { background: var(--sel); }
       #picker-list li b { color: #4daafc; font-weight: 600; }
 
       /* Main row: sidebar file tree | editor. */
@@ -869,7 +871,7 @@
         els.pickerList.innerHTML = "";
         pickerResults.forEach((r, i) => {
           const li = document.createElement("li");
-          if (i === pickerSel) li.className = "sel";
+          if (i === pickerSel) li.className = "picked";
           li.innerHTML = highlightPath(r.path, r.positions);
           li.addEventListener("mousedown", (e) => {
             e.preventDefault();
