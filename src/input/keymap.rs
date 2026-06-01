@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::input::key::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::core::mode::Mode;
 use crate::input::action::{

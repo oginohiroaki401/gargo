@@ -2,6 +2,7 @@ mod buffer_manager;
 mod diagnostics;
 mod jump_list;
 pub mod search;
+mod web_dispatch;
 
 #[cfg(test)]
 #[path = "tests.rs"]

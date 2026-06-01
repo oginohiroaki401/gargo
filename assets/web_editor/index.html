@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>gargo · edit</title>
+    <style>
+      :root {
+        --bg: #1e1e1e;
+        --fg: #d4d4d4;
+        --gutter: #858585;
+        --caret: #d4d4d4;
+        --sel: #264f78;
+        --status-bg: #007acc;
+        --line-height: 20px;
+        --font: 14px Menlo, Monaco, "DejaVu Sans Mono", Consolas, monospace;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); }
+      body { display: flex; flex-direction: column; font: var(--font); }
+
+      #status {
+        height: 22px;
+        line-height: 22px;
+        padding: 0 10px;
+        background: var(--status-bg);
+        color: #fff;
+        font-size: 12px;
+        display: flex;
+        gap: 16px;
+        flex: 0 0 auto;
+      }
+      #status .mode { text-transform: uppercase; font-weight: bold; }
+      #status .spacer { flex: 1; }
+
+      #scroller {
+        flex: 1 1 auto;
+        overflow: auto;
+        position: relative;
+      }
+      /* Sized to total content so the native scrollbar reflects the document. */
+      #sizer { position: relative; }
+
+      .gutter, .row {
+        position: absolute;
+        height: var(--line-height);
+        line-height: var(--line-height);
+        white-space: pre;
+      }
+      .gutter {
+        left: 0;
+        width: var(--gutter-w, 50px);
+        color: var(--gutter);
+        text-align: right;
+        padding-right: 8px;
+        user-select: none;
+      }
+      .row { left: var(--gutter-w, 50px); }
+
+      .caret {
+        position: absolute;
+        width: 2px;
+        height: var(--line-height);
+        background: var(--caret);
+        left: var(--gutter-w, 50px);
+      }
+      .caret.block { width: var(--char-w, 8px); opacity: 0.5; }
+      .caret.blink { animation: blink 1s step-end infinite; }
+      @keyframes blink { 50% { opacity: 0; } }
+
+      .sel {
+        position: absolute;
+        height: var(--line-height);
+        background: var(--sel);
+        left: var(--gutter-w, 50px);
+      }
+
+      /* Hidden textarea: captures keys + IME, positioned at the caret so the
+         OS candidate window appears in the right place. */
+      #ime {
+        position: absolute;
+        width: 1px;
+        height: var(--line-height);
+        padding: 0;
+        margin: 0;
+        border: 0;
+        outline: none;
+        resize: none;
+        overflow: hidden;
+        background: transparent;
+        color: transparent;
+        caret-color: transparent;
+        font: var(--font);
+        z-index: 5;
+      }
+      /* Pre-edit (composing) text shown inline under the IME. */
+      #preedit {
+        position: absolute;
+        height: var(--line-height);
+        line-height: var(--line-height);
+        white-space: pre;
+        text-decoration: underline;
+        color: var(--fg);
+        z-index: 4;
+      }
+      #error {
+        position: fixed;
+        bottom: 12px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: #5a1d1d;
+        color: #fff;
+        padding: 8px 14px;
+        border-radius: 4px;
+        font-size: 13px;
+        display: none;
+        z-index: 10;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="status">
+      <span class="mode" id="mode">normal</span>
+      <span class="path" id="path"></span>
+      <span class="spacer"></span>
+      <span class="dirty" id="dirty"></span>
+      <span class="hint">Ctrl/Cmd+S to save</span>
+    </div>
+    <div id="scroller">
+      <div id="sizer">
+        <textarea id="ime" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
+        <div id="preedit"></div>
+      </div>
+    </div>
+    <div id="error"></div>
+    <script type="module" src="/assets/editor.js"></script>
+  </body>
+</html>
