@@ -488,18 +488,20 @@
         let html = "";
         let pos = 0;
         for (const s of spans) {
-          const from = Math.max(0, Math.min(s.start, len));
+          // Clamp each span's start to `pos` so overlapping/nested captures
+          // (e.g. a token tagged both "type" and "constructor") never re-emit
+          // text already painted — that produced doubled words like "SomeSome".
+          let from = Math.max(pos, Math.min(s.start, len));
           const to = Math.max(from, Math.min(s.end, len));
+          if (to <= from) continue; // fully covered by an earlier span
           if (from > pos) html += escapeHtml(chars.slice(pos, from).join(""));
-          if (to > from) {
-            html +=
-              '<span class="tok-' +
-              s.scope +
-              '">' +
-              escapeHtml(chars.slice(from, to).join("")) +
-              "</span>";
-          }
-          pos = Math.max(pos, to);
+          html +=
+            '<span class="tok-' +
+            s.scope +
+            '">' +
+            escapeHtml(chars.slice(from, to).join("")) +
+            "</span>";
+          pos = to;
         }
         if (pos < len) html += escapeHtml(chars.slice(pos).join(""));
         rowEl.innerHTML = html;
