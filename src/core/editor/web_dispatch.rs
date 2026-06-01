@@ -26,41 +26,34 @@ impl Editor {
     /// logic. Returns `false` always (there is no "quit" concept in the web
     /// editor); the return type matches `App::dispatch_core` for parity.
     pub fn dispatch_core(&mut self, action: CoreAction, tab_width: usize) -> bool {
+        // The browser editor lives in Insert mode permanently, so a *plain*
+        // motion (Ctrl+f/b/n/p/a/e, arrows) must collapse any active selection —
+        // the anchor only "sticks" when the motion is an explicit Extend* action
+        // (Ctrl+Shift+f/b/n/p, Shift+arrows). The terminal keeps the old
+        // Normal-mode-only behavior via its own `App::dispatch_core`.
         match action {
             CoreAction::MoveRight => {
-                if self.mode == Mode::Normal {
-                    self.active_buffer_mut().clear_anchor();
-                }
+                self.active_buffer_mut().clear_anchor();
                 self.active_buffer_mut().move_right();
             }
             CoreAction::MoveLeft => {
-                if self.mode == Mode::Normal {
-                    self.active_buffer_mut().clear_anchor();
-                }
+                self.active_buffer_mut().clear_anchor();
                 self.active_buffer_mut().move_left();
             }
             CoreAction::MoveDown => {
-                if self.mode == Mode::Normal {
-                    self.active_buffer_mut().clear_anchor();
-                }
+                self.active_buffer_mut().clear_anchor();
                 self.active_buffer_mut().move_down();
             }
             CoreAction::MoveUp => {
-                if self.mode == Mode::Normal {
-                    self.active_buffer_mut().clear_anchor();
-                }
+                self.active_buffer_mut().clear_anchor();
                 self.active_buffer_mut().move_up();
             }
             CoreAction::MoveToLineStart => {
-                if self.mode == Mode::Normal {
-                    self.active_buffer_mut().clear_anchor();
-                }
+                self.active_buffer_mut().clear_anchor();
                 self.active_buffer_mut().move_to_line_start();
             }
             CoreAction::MoveToLineEnd => {
-                if self.mode == Mode::Normal {
-                    self.active_buffer_mut().clear_anchor();
-                }
+                self.active_buffer_mut().clear_anchor();
                 self.active_buffer_mut().move_to_line_end();
             }
             CoreAction::MoveWordForward => {
@@ -82,15 +75,11 @@ impl Editor {
                 self.active_buffer_mut().move_word_backward();
             }
             CoreAction::MoveWordForwardNoSelect => {
-                if self.mode == Mode::Normal {
-                    self.active_buffer_mut().clear_anchor();
-                }
+                self.active_buffer_mut().clear_anchor();
                 self.active_buffer_mut().move_word_forward();
             }
             CoreAction::MoveWordBackwardNoSelect => {
-                if self.mode == Mode::Normal {
-                    self.active_buffer_mut().clear_anchor();
-                }
+                self.active_buffer_mut().clear_anchor();
                 self.active_buffer_mut().move_word_backward();
             }
             CoreAction::MoveLongWordForward => {
@@ -112,21 +101,15 @@ impl Editor {
                 self.active_buffer_mut().move_long_word_backward();
             }
             CoreAction::MoveToLineNumber(line) => {
-                if self.mode == Mode::Normal {
-                    self.active_buffer_mut().clear_anchor();
-                }
+                self.active_buffer_mut().clear_anchor();
                 self.active_buffer_mut().set_cursor_line_char(line, 0);
             }
             CoreAction::MoveToFileStart => {
-                if self.mode == Mode::Normal {
-                    self.active_buffer_mut().clear_anchor();
-                }
+                self.active_buffer_mut().clear_anchor();
                 self.active_buffer_mut().move_to_file_start();
             }
             CoreAction::MoveToFileEnd => {
-                if self.mode == Mode::Normal {
-                    self.active_buffer_mut().clear_anchor();
-                }
+                self.active_buffer_mut().clear_anchor();
                 self.active_buffer_mut().move_to_file_end();
             }
             CoreAction::DeleteForward => {
@@ -499,6 +482,27 @@ mod tests {
 
     fn content(ed: &Editor) -> String {
         ed.active_buffer().rope.to_string()
+    }
+
+    #[test]
+    fn plain_motion_collapses_selection_in_insert() {
+        let mut ed = editor_with("hello world\nsecond line\n");
+        ed.dispatch_core(CoreAction::ChangeMode(Mode::Insert), 4);
+        // Build a selection (Shift+Right style) then issue a *plain* motion.
+        ed.dispatch_core(CoreAction::ExtendRight, 4);
+        ed.dispatch_core(CoreAction::ExtendRight, 4);
+        assert!(
+            ed.active_buffer().selection_range().is_some(),
+            "selection should exist after extending"
+        );
+        ed.dispatch_core(CoreAction::MoveDown, 4);
+        assert!(
+            ed.active_buffer().selection_range().is_none(),
+            "plain motion must collapse the selection"
+        );
+        // And it must not have touched the buffer contents.
+        assert_eq!(content(&ed), "hello world\nsecond line\n");
+        assert!(!ed.active_buffer().dirty);
     }
 
     #[test]

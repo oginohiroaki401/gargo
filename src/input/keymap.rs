@@ -46,6 +46,20 @@ fn ctrl_shift_word_arrow_extend_action(code: KeyCode) -> Option<CoreAction> {
     }
 }
 
+/// Ctrl+Shift+{f,b,n,p}: extend the selection by one char/line — the shifted
+/// counterparts of the emacs-style Ctrl+{f,b,n,p} motions. Without this the
+/// shifted combos fall through to [`ctrl_motion_action`] (which ignores
+/// modifiers) and behave like a plain motion that collapses the selection.
+fn ctrl_shift_emacs_motion_extend_action(code: KeyCode) -> Option<CoreAction> {
+    match code {
+        KeyCode::Char('f') | KeyCode::Char('F') => Some(CoreAction::ExtendRight),
+        KeyCode::Char('b') | KeyCode::Char('B') => Some(CoreAction::ExtendLeft),
+        KeyCode::Char('n') | KeyCode::Char('N') => Some(CoreAction::ExtendDown),
+        KeyCode::Char('p') | KeyCode::Char('P') => Some(CoreAction::ExtendUp),
+        _ => None,
+    }
+}
+
 fn shift_char_arrow_extend_action(code: KeyCode) -> Option<CoreAction> {
     match code {
         KeyCode::Left => Some(CoreAction::ExtendLeft),
@@ -258,6 +272,11 @@ fn resolve_insert(key: KeyEvent, state: &mut KeyState) -> Action {
         {
             return core(action);
         }
+        if key.modifiers.contains(KeyModifiers::SHIFT)
+            && let Some(action) = ctrl_shift_emacs_motion_extend_action(key.code)
+        {
+            return core(action);
+        }
         if let Some(action) = ctrl_word_arrow_no_select_action(key.code) {
             return core(action);
         }
@@ -311,6 +330,11 @@ fn resolve_normal(key: KeyEvent, state: &mut KeyState, is_recording: bool) -> Ac
         }
         if key.modifiers.contains(KeyModifiers::SHIFT)
             && let Some(action) = ctrl_shift_word_arrow_extend_action(key.code)
+        {
+            return core(action);
+        }
+        if key.modifiers.contains(KeyModifiers::SHIFT)
+            && let Some(action) = ctrl_shift_emacs_motion_extend_action(key.code)
         {
             return core(action);
         }
@@ -404,6 +428,11 @@ fn resolve_visual(key: KeyEvent, state: &mut KeyState, is_recording: bool) -> Ac
         }
         if key.modifiers.contains(KeyModifiers::SHIFT)
             && let Some(action) = ctrl_shift_word_arrow_extend_action(key.code)
+        {
+            return core(action);
+        }
+        if key.modifiers.contains(KeyModifiers::SHIFT)
+            && let Some(action) = ctrl_shift_emacs_motion_extend_action(key.code)
         {
             return core(action);
         }
@@ -1003,6 +1032,45 @@ mod tests {
                 core(CoreAction::ExtendToLineEnd)
             );
             assert_eq!(state, KeyState::Normal);
+        }
+    }
+
+    #[test]
+    fn ctrl_shift_fbnp_extend_selection_in_all_modes() {
+        let cases = [
+            ('f', CoreAction::ExtendRight),
+            ('b', CoreAction::ExtendLeft),
+            ('n', CoreAction::ExtendDown),
+            ('p', CoreAction::ExtendUp),
+        ];
+        for mode in [Mode::Insert, Mode::Normal, Mode::Visual] {
+            for (ch, expected) in &cases {
+                let mut state = KeyState::Normal;
+                assert_eq!(
+                    resolve(ctrl_shift_key(KeyCode::Char(*ch)), &mut state, &mode, false),
+                    core(expected.clone()),
+                    "ctrl+shift+{ch} in {mode:?}"
+                );
+                assert_eq!(state, KeyState::Normal);
+            }
+        }
+    }
+
+    #[test]
+    fn ctrl_fbnp_stay_plain_motions_in_insert() {
+        let cases = [
+            ('f', CoreAction::MoveRight),
+            ('b', CoreAction::MoveLeft),
+            ('n', CoreAction::MoveDown),
+            ('p', CoreAction::MoveUp),
+        ];
+        for (ch, expected) in &cases {
+            let mut state = KeyState::Normal;
+            assert_eq!(
+                resolve(ctrl_key(KeyCode::Char(*ch)), &mut state, &Mode::Insert, false),
+                core(expected.clone()),
+                "ctrl+{ch} in insert"
+            );
         }
     }
 
