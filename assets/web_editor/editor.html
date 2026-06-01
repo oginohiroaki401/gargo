@@ -359,6 +359,25 @@
         return gutterWidth + col * charWidth;
       }
 
+      // Pixel width of the first `charCol` characters of a (tab-expanded) row,
+      // measured with the real editor font. Columns alone can't position the
+      // caret once a line mixes Latin and full-width (CJK) glyphs: the browser
+      // renders e.g. Japanese narrower than 2× the Latin advance, so a
+      // column×charWidth caret drifts away from the text. `char_col` from the
+      // wasm model is a character offset into the expanded row, so measuring the
+      // matching prefix lands the caret/selection exactly on the glyph boundary.
+      let _measureCtx = null;
+      function prefixPx(rowText, charCol) {
+        if (!charCol) return 0;
+        if (!_measureCtx) {
+          _measureCtx = document.createElement("canvas").getContext("2d");
+          const cs = getComputedStyle(els.scroller);
+          _measureCtx.font = cs.fontSize + " " + cs.fontFamily;
+        }
+        const chars = Array.from(rowText || "");
+        return _measureCtx.measureText(chars.slice(0, charCol).join("")).width;
+      }
+
       // ---- rendering -------------------------------------------------------
 
       // Rows currently mounted in the DOM, keyed by line index.
@@ -433,10 +452,11 @@
           if (i < model.cursors.length) {
             const c = model.cursors[i];
             el.style.display = "block";
-            el.style.left = colToPx(c.col) + "px";
+            const cRowText = model.rows[c.row - model.top] || "";
+            el.style.left = gutterWidth + prefixPx(cRowText, c.char_col) + "px";
             el.style.top = c.row * LINE_HEIGHT + "px";
-            // Always-insert PoC: caret is the blinking line everywhere.
-            el.className = "caret blink" + (c.primary ? " primary" : "");
+            // Always-insert PoC: caret is a steady (non-blinking) line.
+            el.className = "caret" + (c.primary ? " primary" : "");
           } else {
             el.style.display = "none";
           }
@@ -444,20 +464,22 @@
       }
 
       function renderSelections(model) {
-        // Expand each selection range into per-row rectangles.
+        // Expand each selection range into per-row rectangles, measured in
+        // pixels (CJK-aware) the same way the caret is.
         const rects = [];
         for (const s of model.selections) {
           for (let row = s.start_row; row <= s.end_row; row++) {
-            const from = row === s.start_row ? s.start_col : 0;
-            let to;
-            if (row === s.end_row) {
-              to = s.end_col;
-            } else {
-              const entry = mountedRows.get(row);
-              to = entry ? entry.row.textContent.length + 1 : from + 1;
-            }
-            if (to <= from) to = from + 1;
-            rects.push({ row, from, to });
+            const rowText = model.rows[row - model.top] || "";
+            const fromChar = row === s.start_row ? s.start_char : 0;
+            const lineChars = Array.from(rowText).length;
+            const toChar = row === s.end_row ? s.end_char : lineChars;
+            let fromPx = prefixPx(rowText, fromChar);
+            let toPx = prefixPx(rowText, toChar);
+            // Selections that wrap a line end extend a little past the last
+            // glyph to signal the included newline.
+            if (row !== s.end_row) toPx += charWidth;
+            if (toPx <= fromPx) toPx = fromPx + charWidth;
+            rects.push({ row, leftPx: fromPx, widthPx: toPx - fromPx });
           }
         }
         ensurePool(selPool, rects.length, "sel");
@@ -466,9 +488,9 @@
           if (i < rects.length) {
             const r = rects[i];
             el.style.display = "block";
-            el.style.left = colToPx(r.from) + "px";
+            el.style.left = gutterWidth + r.leftPx + "px";
             el.style.top = r.row * LINE_HEIGHT + "px";
-            el.style.width = (r.to - r.from) * charWidth + "px";
+            el.style.width = r.widthPx + "px";
           } else {
             el.style.display = "none";
           }
@@ -557,8 +579,9 @@
       }
 
       function positionIme(model) {
-        const c = model.cursors[0] || { row: 0, col: 0 };
-        const x = colToPx(c.col);
+        const c = model.cursors[0] || { row: 0, col: 0, char_col: 0 };
+        const rowText = model.rows[c.row - model.top] || "";
+        const x = gutterWidth + prefixPx(rowText, c.char_col);
         const y = c.row * LINE_HEIGHT;
         els.ime.style.left = x + "px";
         els.ime.style.top = y + "px";

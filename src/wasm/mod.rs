@@ -33,6 +33,10 @@ pub struct WebEditor {
 struct CursorPos {
     row: usize,
     col: usize,
+    /// Character offset into the tab-expanded row (tabs counted as their
+    /// display width). The browser measures this prefix to place the caret on
+    /// the exact glyph boundary even when Latin and full-width (CJK) glyphs mix.
+    char_col: usize,
     primary: bool,
 }
 
@@ -42,6 +46,9 @@ struct SelRange {
     start_col: usize,
     end_row: usize,
     end_col: usize,
+    /// Tab-expanded character offsets (see [`CursorPos::char_col`]).
+    start_char: usize,
+    end_char: usize,
 }
 
 #[derive(serde::Serialize)]
@@ -287,6 +294,7 @@ impl WebEditor {
                 CursorPos {
                     row,
                     col,
+                    char_col: offset_to_expanded_char_col(rope, off),
                     primary: i == 0,
                 }
             })
@@ -304,6 +312,8 @@ impl WebEditor {
                     start_col,
                     end_row,
                     end_col,
+                    start_char: offset_to_expanded_char_col(rope, s),
+                    end_char: offset_to_expanded_char_col(rope, e),
                 }
             })
             .collect();
@@ -363,6 +373,21 @@ fn offset_to_display_col(rope: &Rope, off: usize) -> usize {
     rope.slice(line_start..off)
         .chars()
         .map(char_display_width)
+        .sum()
+}
+
+/// Character offset of `off` within the tab-expanded rendering of its line:
+/// tabs count as `TAB_DISPLAY_WIDTH` characters (matching [`expand_tabs`]),
+/// every other char counts as one (CJK included — it's a single code point in
+/// the expanded string). The browser measures this many leading characters of
+/// the rendered row to place the caret/selection at the right pixel.
+fn offset_to_expanded_char_col(rope: &Rope, off: usize) -> usize {
+    let off = off.min(rope.len_chars());
+    let line = rope.char_to_line(off);
+    let line_start = rope.line_to_char(line);
+    rope.slice(line_start..off)
+        .chars()
+        .map(|c| if c == '\t' { TAB_DISPLAY_WIDTH } else { 1 })
         .sum()
 }
 
