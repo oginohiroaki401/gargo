@@ -79,13 +79,12 @@ wasm-bindgen target/wasm32-unknown-unknown/release/gargo.wasm \
 - gutter に行番号。テーマはダーク、status バーは紫(モーダル版の青と区別)。
 
 ### 既知の制約(現状)
-- syntax highlight なし。
-- `Cmd+Z` / `Cmd+Shift+Z` は未バインド(keymap の insert 分岐に `Ctrl+Z` が無く `Noop`)。機能自体は
-  `Document::undo()/redo()` / `CoreAction::Undo/Redo` で存在。
-- ダブルクリック単語選択・シフトクリック選択拡張は未対応。
+- syntax highlight:実装済み(§2.2)。ただし編集中は debounce(200ms)まで前回 span のまま
+  描画されるため、編集直後の数百 ms はずれた色になりうる(致命的でない)。
+- `Cmd+Z` / `Cmd+Shift+Z`(undo/redo):実装済み(WASM `undo()/redo()`)。`Cmd+Y` も redo。
+- ダブルクリック単語選択・シフトクリック選択拡張:実装済み(§2.1)。
+- サイドバー file tree:実装済み(§2.3)。ただしファイルを開くのはフルページ遷移。タブ/バッファは未実装。
 - 選択中の `Ctrl+h`/`Ctrl+d` は選択削除にならず 1 文字削除(`Backspace/Delete` のみ選択対応)。
-- 単一バッファ・単一ファイルのみ(Cmd+P ピッカーはあるが、サイドバー file tree・タブは未実装)。
-  ピッカーの選択はフルページ遷移(`/editor/<path>`)で開く。
 - `Ctrl+x` は chord 状態に入り次キーを 1 つ消費(App アクション扱いで実害小、放置)。
 
 ---
@@ -93,17 +92,25 @@ wasm-bindgen target/wasm32-unknown-unknown/release/gargo.wasm \
 ## 2. 本実装の方針 / やりたいこと
 
 ### 2.1 入力まわりの追加(優先・小)
-- [ ] **ダブルクリックで単語選択**:`mousedown` の `detail===2` を検出し、クリック位置の単語境界を
-      選択。WASM に `select_word_at(row, col)` を追加(`move_word_*` 系を流用)するのが素直。
-- [ ] **シフトクリックで選択拡張**:`mousedown` で `e.shiftKey` のとき、現カーソル(またはアンカー)を
-      固定し head だけクリック位置へ。既存 `set_selection(anchor, head)` を流用、アンカーは
-      「直前のカーソル位置 or 既存選択アンカー」。
-- [ ] **`Cmd+Z` / `Cmd+Shift+Z`(undo/redo)**:JS 層で `Cmd+Z`→`editor.key` 経由 or 専用 WASM
-      メソッドで `CoreAction::Undo`、`Cmd+Shift+Z`→`Redo`。keymap に依存せず WASM に
-      `undo()/redo()` を生やすのが明快(insert を維持できる）。
+- [x] **ダブルクリックで単語選択**:`mousedown` の `detail===2` を検出し、WASM
+      `select_word_at(row, col)`(`word_range_at` 流用)で単語境界を選択。
+- [x] **シフトクリックで選択拡張**:`mousedown` の `e.shiftKey` で、既存選択アンカー
+      (WASM `anchor_row()/anchor_col()`、無ければ現カーソル)を固定し head をクリック位置へ
+      (`set_selection` 流用)。以降のドラッグも同アンカーから拡張継続。
+- [x] **`Cmd+Z` / `Cmd+Shift+Z`(undo/redo)**:WASM に `undo()/redo()` を追加
+      (`dispatch_core(Undo/Redo)`、insert 維持)。JS 層で `Cmd/Ctrl+Z`→undo、
+      `Cmd+Shift+Z` / `Cmd+Y`→redo にバインド。
 
-### 2.2 syntax highlight(中・サーバ連携)
-- 方針:**tree-sitter はバンドルせず、ローカルサーバ側で計算**して highlight span をブラウザへ返す。
+### 2.2 syntax highlight(中・サーバ連携) — ✅ 実装済み
+実装サマリ:`POST /api/highlight { path, content }` → `{ lines: { "<行>": [{start, end, scope}] } }`。
+サーバは拡張子で言語判定(`LanguageRegistry::detect_by_extension`)し `syntax::highlight::highlight_text`
+を呼ぶ。span の byte offset は **タブ展開後の char offset**(`byte_to_expanded_col`、tab→4)に変換して返すので、
+クライアントは wasm が出す展開済み行文字列の部分文字列をそのまま色付けできる。`scope` は capture 名の先頭成分
+(`keyword`/`string`/`comment`/…)。クライアントは編集後 **debounce 200ms** で再取得し(`scheduleHighlight`、
+`editor.version()` で content 不変時はスキップ)、`paintRow` が `<span class="tok-...">` で塗り分け。
+色は CSS の `.tok-*`(VSCode Dark+ 系パレット)。未対応言語は空マップ。
+
+(旧方針メモ)tree-sitter はバンドルせず、ローカルサーバ側で計算して highlight span をブラウザへ返す。
   - 理由:tree-sitter grammar は native C で wasm32 ターゲットにできない。gargo 本体(native server)は
     既に tree-sitter を持っているはずなので、そこを再利用する。
 - API 案:`POST /api/highlight { path, content | version, lang }` → `{ spans: [{start, end, scope}] }`
@@ -117,12 +124,15 @@ wasm-bindgen target/wasm32-unknown-unknown/release/gargo.wasm \
 - 参考:memory `web-editor.md` の future work(server-side tree-sitter highlight を debounce 配信)。
 
 ### 2.3 UI レイアウト(中〜大)
-- [ ] **サイドバーに file tree、メインにエディタ**(VSCode 風 2 ペイン)。
-  - API 案:`GET /api/tree?path=` でディレクトリ階層(or 遅延展開で `GET /api/dir?path=`)。
-    `.gitignore` / 隠しファイルの扱いは要検討。
-  - tree のノードクリックで `/api/file` ロード → エディタに流し込み(URL も `/emacs/<path>` に同期)。
-  - 複数ファイル編集に向けて **バッファ/タブ**(開いているファイルの保持・切替・dirty 表示)。
-- レイアウト:`flex` で `sidebar | editor`、サイドバー幅リサイズ可。status バーは下 or 上。
+- [x] **サイドバーに file tree、メインにエディタ**(VSCode 風 2 ペイン)。
+  - 新規 API は作らず **`/api/files`(`collect_files` = git ls-files 相当)を流用**し、JS でフラットな
+    パス一覧から入れ子ツリーを構築(`buildTree`)。`.gitignore` 等は collect_files が考慮済み。
+  - ディレクトリは折りたたみ可(`expandedDirs`)、起動時は現在ファイルまでのパスを自動展開。
+    ファイルクリックは `/editor/<path>` へフルページ遷移(`openFile`)で開く。
+  - レイアウト:`#main` を `flex-direction:row` で `sidebar | resizer | scroller`。
+    サイドバー幅は `#sidebar-resizer` ドラッグでリサイズ(`--sidebar-w`)。
+- [ ] **(未)バッファ/タブ**:複数ファイルの保持・切替・dirty 表示。現状はクリックでフルページ遷移。
+- [ ] **(未)ツリーのインライン読み込み**:遷移せず `/api/file` で流し込み(URL 同期)。
 
 ### 2.4 実装構成の見直し(本実装移行時)
 - PoC は inline JS のペライチ。本実装では JS をモジュール分割(`input` / `render` / `mouse` /

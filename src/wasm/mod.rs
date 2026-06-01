@@ -140,6 +140,59 @@ impl WebEditor {
         buf.selections = vec![None];
     }
 
+    /// Select the word (or whitespace/punctuation run) under a display
+    /// (row, col), placing the cursor at the word end. Used for double-click
+    /// word selection. No-op (clears selection) when the click lands on a
+    /// newline / empty area. `col` is a display column, like `set_cursor`.
+    pub fn select_word_at(&mut self, row: usize, col: usize) {
+        let range = {
+            let buf = self.editor.active_buffer();
+            let off = line_col_to_offset(&buf.rope, row, col);
+            crate::core::document::expand::word_range_at(&buf.rope, off)
+        };
+        let buf = self.editor.active_buffer_mut();
+        match range {
+            Some((start, end)) => {
+                buf.cursors = vec![end];
+                buf.selections = vec![Some(Selection::tail_on_forward(start, end))];
+            }
+            None => {
+                buf.clear_anchor();
+                buf.selections = vec![None];
+            }
+        }
+    }
+
+    /// Primary cursor's selection anchor as a display (row, col), or `-1` in
+    /// both slots when there is no active selection. Used by JS shift-click to
+    /// extend from the existing anchor. Returned as a 2-element `[row, col]`.
+    pub fn anchor_row(&self) -> i64 {
+        let buf = self.editor.active_buffer();
+        match buf.selection_anchor() {
+            Some(off) => buf.rope.char_to_line(off.min(buf.rope.len_chars())) as i64,
+            None => -1,
+        }
+    }
+
+    pub fn anchor_col(&self) -> i64 {
+        let buf = self.editor.active_buffer();
+        match buf.selection_anchor() {
+            Some(off) => offset_to_display_col(&buf.rope, off) as i64,
+            None => -1,
+        }
+    }
+
+    /// Undo / redo the last edit transaction, staying in the current (Insert)
+    /// mode. Bound to Cmd+Z / Cmd+Shift+Z in the browser editor; the modal
+    /// keymap has no Ctrl+Z binding in Insert mode, so JS calls these directly.
+    pub fn undo(&mut self) {
+        self.editor.dispatch_core(CoreAction::Undo, TAB_WIDTH);
+    }
+
+    pub fn redo(&mut self) {
+        self.editor.dispatch_core(CoreAction::Redo, TAB_WIDTH);
+    }
+
     /// Set a single selection from an anchor (row, col) to a head (row, col),
     /// placing the primary cursor at the head. Used for mouse-drag selection.
     /// An empty range (anchor == head) clears the selection.

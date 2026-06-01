@@ -165,6 +165,84 @@
       }
       #picker-list li.sel { background: var(--sel); }
       #picker-list li b { color: #4daafc; font-weight: 600; }
+
+      /* Main row: sidebar file tree | editor. */
+      #main {
+        flex: 1 1 auto;
+        display: flex;
+        flex-direction: row;
+        min-height: 0;
+        overflow: hidden;
+      }
+      #sidebar {
+        flex: 0 0 auto;
+        width: var(--sidebar-w, 240px);
+        overflow: auto;
+        background: #252526;
+        border-right: 1px solid #333;
+        user-select: none;
+        font-size: 13px;
+      }
+      #sidebar[hidden] { display: none; }
+      #sidebar-resizer {
+        flex: 0 0 auto;
+        width: 4px;
+        cursor: col-resize;
+        background: transparent;
+      }
+      #sidebar-resizer:hover { background: var(--sel); }
+      #sidebar-resizer[hidden] { display: none; }
+      #tree-head {
+        padding: 6px 10px;
+        color: #aaa;
+        text-transform: uppercase;
+        font-size: 11px;
+        letter-spacing: 0.5px;
+      }
+      .tnode {
+        display: flex;
+        align-items: center;
+        height: 22px;
+        line-height: 22px;
+        white-space: nowrap;
+        cursor: pointer;
+        padding-right: 8px;
+      }
+      .tnode:hover { background: #2a2d2e; }
+      .tnode.active { background: var(--sel); }
+      .tnode .twist {
+        width: 14px;
+        text-align: center;
+        flex: 0 0 auto;
+        color: #888;
+      }
+      .tnode .tlabel {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .tnode.dir .tlabel { color: #ccc; }
+      .tnode.file .tlabel { color: #bdbdbd; }
+
+      /* Syntax highlight token colors (VSCode Dark+ palette). */
+      .tok-keyword { color: #569cd6; }
+      .tok-string { color: #ce9178; }
+      .tok-comment { color: #6a9955; font-style: italic; }
+      .tok-function { color: #dcdcaa; }
+      .tok-type { color: #4ec9b0; }
+      .tok-constructor { color: #4ec9b0; }
+      .tok-number { color: #b5cea8; }
+      .tok-constant { color: #569cd6; }
+      .tok-boolean { color: #569cd6; }
+      .tok-operator { color: #d4d4d4; }
+      .tok-variable { color: #9cdcfe; }
+      .tok-parameter { color: #9cdcfe; }
+      .tok-property { color: #9cdcfe; }
+      .tok-attribute { color: #9cdcfe; }
+      .tok-namespace { color: #4ec9b0; }
+      .tok-label { color: #c8c8c8; }
+      .tok-tag { color: #569cd6; }
+      .tok-punctuation { color: #d4d4d4; }
+      .tok-escape { color: #d7ba7d; }
     </style>
   </head>
   <body>
@@ -177,10 +255,17 @@
       <span class="dirty" id="dirty"></span>
       <span class="hint">Cmd+P でファイル · Ctrl+f/b/n/p/a/e で移動 · Ctrl/Cmd+S で保存</span>
     </div>
-    <div id="scroller">
-      <div id="sizer">
-        <textarea id="ime" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
-        <div id="preedit"></div>
+    <div id="main">
+      <nav id="sidebar">
+        <div id="tree-head">Explorer</div>
+        <div id="tree"></div>
+      </nav>
+      <div id="sidebar-resizer"></div>
+      <div id="scroller">
+        <div id="sizer">
+          <textarea id="ime" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
+          <div id="preedit"></div>
+        </div>
       </div>
     </div>
     <div id="error"></div>
@@ -215,6 +300,10 @@
         picker: document.getElementById("picker"),
         pickerInput: document.getElementById("picker-input"),
         pickerList: document.getElementById("picker-list"),
+        main: document.getElementById("main"),
+        sidebar: document.getElementById("sidebar"),
+        sidebarResizer: document.getElementById("sidebar-resizer"),
+        tree: document.getElementById("tree"),
       };
 
       let editor = null;
@@ -225,6 +314,9 @@
       let lastVersion = -1;
       let composing = false;
       let maxCols = 0; // widest row seen so far, for horizontal scroll sizing
+      // Syntax highlight: spans per line (char offsets into the expanded row
+      // text), computed server-side (tree-sitter) and refreshed on a debounce.
+      let highlightSpans = new Map(); // lineIdx -> [{start, end, scope}]
 
       function showError(msg) {
         els.error.textContent = msg;
@@ -307,7 +399,7 @@
           entry.gutter.style.top = y;
           entry.row.style.top = y;
           entry.gutter.textContent = String(line + 1);
-          entry.row.textContent = model.rows[i];
+          paintRow(entry.row, model.rows[i], highlightSpans.get(line));
           if (model.rows[i].length > maxCols) maxCols = model.rows[i].length;
         }
         // Unmount rows that scrolled out of view.
@@ -378,6 +470,71 @@
         }
       }
 
+      // Paint one row, coloring it with syntax spans when available. `spans` are
+      // {start, end, scope} char ranges into `text` (the expanded line). Falls
+      // back to plain text (no highlight / no spans for this line).
+      function paintRow(rowEl, text, spans) {
+        if (!spans || !spans.length) {
+          rowEl.textContent = text;
+          return;
+        }
+        const chars = Array.from(text);
+        const len = chars.length;
+        let html = "";
+        let pos = 0;
+        for (const s of spans) {
+          const from = Math.max(0, Math.min(s.start, len));
+          const to = Math.max(from, Math.min(s.end, len));
+          if (from > pos) html += escapeHtml(chars.slice(pos, from).join(""));
+          if (to > from) {
+            html +=
+              '<span class="tok-' +
+              s.scope +
+              '">' +
+              escapeHtml(chars.slice(from, to).join("")) +
+              "</span>";
+          }
+          pos = Math.max(pos, to);
+        }
+        if (pos < len) html += escapeHtml(chars.slice(pos).join(""));
+        rowEl.innerHTML = html;
+      }
+
+      // ---- syntax highlight (server-side tree-sitter, debounced) -----------
+
+      let highlightTimer = null;
+      let highlightedVersion = -1; // editor.version() the spans were computed for
+
+      function scheduleHighlight() {
+        if (!filePath || !editor) return;
+        if (editor.version() === highlightedVersion) return; // content unchanged
+        if (highlightTimer) clearTimeout(highlightTimer);
+        highlightTimer = setTimeout(fetchHighlight, 200);
+      }
+
+      async function fetchHighlight() {
+        if (!editor || !filePath) return;
+        highlightedVersion = editor.version();
+        const content = editor.content();
+        try {
+          const resp = await fetch("/api/highlight", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: filePath, content }),
+          });
+          if (!resp.ok) return;
+          const data = await resp.json();
+          const next = new Map();
+          for (const [line, spans] of Object.entries(data.lines || {})) {
+            next.set(Number(line), spans);
+          }
+          highlightSpans = next;
+          render();
+        } catch (_) {
+          // Highlight is best-effort; ignore network/parse errors.
+        }
+      }
+
       function syncStatus(model) {
         els.mode.textContent = model.mode;
         els.dirty.textContent = editor.is_dirty() ? "● modified" : "";
@@ -427,6 +584,7 @@
       function afterEdit() {
         ensureCursorVisible();
         render();
+        scheduleHighlight();
       }
 
       // ---- input -----------------------------------------------------------
@@ -454,6 +612,24 @@
         if (e.metaKey && (e.key === "p" || e.key === "P")) {
           e.preventDefault();
           openPicker();
+          return;
+        }
+
+        // Undo / redo (VSCode/Mac-style). The Insert-mode keymap has no Ctrl+Z
+        // binding, so drive the core undo/redo directly and stay in Insert.
+        if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) {
+          e.preventDefault();
+          if (e.shiftKey) editor.redo();
+          else editor.undo();
+          els.ime.value = "";
+          afterEdit();
+          return;
+        }
+        if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "y" || e.key === "Y")) {
+          e.preventDefault();
+          editor.redo();
+          els.ime.value = "";
+          afterEdit();
           return;
         }
 
@@ -580,11 +756,36 @@
       function onMouseDown(e) {
         if (e.button !== 0) return; // left button only
         const { row, col } = eventToRowCol(e);
+        e.preventDefault(); // suppress native text selection
+        els.ime.focus();
+
+        // Double-click: select the word under the cursor.
+        if (e.detail === 2) {
+          dragging = false;
+          editor.select_word_at(row, col);
+          render();
+          return;
+        }
+
+        // Shift-click: extend the selection from the existing anchor (or the
+        // current caret if there's no selection) to the clicked point.
+        if (e.shiftKey) {
+          let ar = editor.anchor_row();
+          let ac = editor.anchor_col();
+          if (ar < 0) {
+            ar = editor.cursor_row();
+            ac = editor.cursor_col();
+          }
+          dragAnchor = { row: ar, col: ac };
+          dragging = true;
+          editor.set_selection(ar, ac, row, col);
+          render();
+          return;
+        }
+
         dragging = true;
         dragAnchor = { row, col };
         editor.set_cursor(row, col);
-        e.preventDefault(); // suppress native text selection
-        els.ime.focus();
         render();
       }
 
@@ -608,6 +809,21 @@
       let pickerSel = 0;
       const PICKER_LIMIT = 50;
 
+      // Fetch the repository file list once; shared by the Cmd+P picker and the
+      // sidebar file tree.
+      async function loadFiles() {
+        if (allFiles !== null) return allFiles;
+        try {
+          const resp = await fetch("/api/files");
+          const data = await resp.json();
+          allFiles = data.files || [];
+        } catch (err) {
+          allFiles = [];
+          showError("File list failed: " + err);
+        }
+        return allFiles;
+      }
+
       async function openPicker() {
         if (pickerOpen) return;
         pickerOpen = true;
@@ -615,14 +831,7 @@
         els.pickerInput.value = "";
         if (allFiles === null) {
           els.pickerList.innerHTML = "<li>Loading…</li>";
-          try {
-            const resp = await fetch("/api/files");
-            const data = await resp.json();
-            allFiles = data.files || [];
-          } catch (err) {
-            allFiles = [];
-            showError("File list failed: " + err);
-          }
+          await loadFiles();
         }
         updatePicker("");
         els.pickerInput.focus();
@@ -791,6 +1000,119 @@
         return score;
       }
 
+      // ---- sidebar file tree -----------------------------------------------
+
+      let treeRoot = null;
+      const expandedDirs = new Set();
+
+      // Build a nested tree from the flat file list (same set as the picker).
+      function buildTree(files) {
+        const root = { name: "", path: "", isDir: true, children: new Map() };
+        for (const f of files) {
+          const parts = f.split("/");
+          let node = root;
+          let acc = "";
+          for (let i = 0; i < parts.length; i++) {
+            const part = parts[i];
+            acc = acc ? acc + "/" + part : part;
+            const isDir = i < parts.length - 1;
+            let child = node.children.get(part);
+            if (!child) {
+              child = { name: part, path: acc, isDir, children: new Map() };
+              node.children.set(part, child);
+            }
+            node = child;
+          }
+        }
+        return root;
+      }
+
+      // Directories first, then files, each alphabetically.
+      function sortedChildren(node) {
+        return [...node.children.values()].sort((a, b) => {
+          if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+          return a.name.localeCompare(b.name);
+        });
+      }
+
+      function expandToFile(path) {
+        if (!path) return;
+        const parts = path.split("/");
+        let acc = "";
+        for (let i = 0; i < parts.length - 1; i++) {
+          acc = acc ? acc + "/" + parts[i] : parts[i];
+          expandedDirs.add(acc);
+        }
+      }
+
+      function renderTree() {
+        els.tree.innerHTML = "";
+        if (!treeRoot) return;
+        const frag = document.createDocumentFragment();
+        renderTreeNodes(treeRoot, 0, frag);
+        els.tree.appendChild(frag);
+      }
+
+      function renderTreeNodes(node, depth, parent) {
+        for (const child of sortedChildren(node)) {
+          const open = expandedDirs.has(child.path);
+          const row = document.createElement("div");
+          row.className = "tnode " + (child.isDir ? "dir" : "file");
+          if (!child.isDir && child.path === filePath) row.classList.add("active");
+          row.style.paddingLeft = depth * 12 + 6 + "px";
+
+          const twist = document.createElement("span");
+          twist.className = "twist";
+          twist.textContent = child.isDir ? (open ? "▾" : "▸") : "";
+          const label = document.createElement("span");
+          label.className = "tlabel";
+          label.textContent = child.name;
+          row.appendChild(twist);
+          row.appendChild(label);
+
+          row.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            if (child.isDir) {
+              if (open) expandedDirs.delete(child.path);
+              else expandedDirs.add(child.path);
+              renderTree();
+            } else {
+              openFile(child.path);
+            }
+          });
+
+          parent.appendChild(row);
+          if (child.isDir && open) renderTreeNodes(child, depth + 1, parent);
+        }
+      }
+
+      async function initSidebar() {
+        const files = await loadFiles();
+        treeRoot = buildTree(files);
+        expandToFile(filePath);
+        renderTree();
+      }
+
+      // Draggable sidebar width.
+      let resizing = false;
+      function onResizerDown(e) {
+        resizing = true;
+        e.preventDefault();
+      }
+      function onResizerMove(e) {
+        if (!resizing) return;
+        const rect = els.main.getBoundingClientRect();
+        let w = Math.max(120, Math.min(e.clientX - rect.left, rect.width - 200));
+        document.documentElement.style.setProperty("--sidebar-w", w + "px");
+        render();
+      }
+      function onResizerUp() {
+        if (resizing) {
+          resizing = false;
+          render();
+        }
+      }
+
       // ---- save ------------------------------------------------------------
 
       async function save() {
@@ -874,9 +1196,16 @@
         window.addEventListener("resize", () => render());
         els.pickerInput.addEventListener("input", (e) => updatePicker(e.target.value));
         els.pickerInput.addEventListener("keydown", onPickerKeyDown);
+        els.sidebarResizer.addEventListener("mousedown", onResizerDown);
+        window.addEventListener("mousemove", onResizerMove);
+        window.addEventListener("mouseup", onResizerUp);
 
         els.ime.focus();
         render();
+
+        // Populate the sidebar file tree and the initial syntax highlight.
+        initSidebar();
+        if (filePath) fetchHighlight();
 
         // Opened without a file (the rail's "Editor" link) → jump straight to
         // the file picker.

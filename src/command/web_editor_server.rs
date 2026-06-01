@@ -111,6 +111,85 @@ pub(crate) async fn handle_api_files(State(state): State<Arc<GithubServerState>>
 }
 
 #[derive(Deserialize)]
+pub(crate) struct HighlightRequest {
+    path: String,
+    content: String,
+}
+
+#[derive(Serialize)]
+struct HighlightSpanDto {
+    /// Character offset within the tab-expanded line (matches the strings the
+    /// wasm renderer produces, so the client can wrap substrings directly).
+    start: usize,
+    end: usize,
+    /// Top-level capture category (e.g. "keyword", "string"), → CSS `tok-*`.
+    scope: String,
+}
+
+#[derive(Serialize)]
+struct HighlightResponse {
+    /// Per-line spans keyed by line index (as a string, JSON object key).
+    lines: std::collections::HashMap<String, Vec<HighlightSpanDto>>,
+}
+
+/// Compute tree-sitter highlight spans for `content` (language inferred from
+/// `path`'s extension). Spans are byte ranges within each line from the syntax
+/// layer; we convert them to character offsets into the tab-expanded line so
+/// the browser can color substrings of the rows it already renders. Returns an
+/// empty map for unknown / unsupported languages.
+pub(crate) async fn handle_api_highlight(Json(req): Json<HighlightRequest>) -> Response {
+    use crate::syntax::language::LanguageRegistry;
+
+    let registry = LanguageRegistry::new();
+    let Some(lang_def) = registry.detect_by_extension(&req.path) else {
+        return ok_json(&HighlightResponse {
+            lines: std::collections::HashMap::new(),
+        });
+    };
+
+    let by_line = crate::syntax::highlight::highlight_text(&req.content, lang_def);
+    let line_texts: Vec<&str> = req.content.split('\n').collect();
+
+    let mut lines = std::collections::HashMap::new();
+    for (line_idx, spans) in by_line {
+        let Some(text) = line_texts.get(line_idx) else {
+            continue;
+        };
+        let dtos: Vec<HighlightSpanDto> = spans
+            .into_iter()
+            .map(|s| HighlightSpanDto {
+                start: byte_to_expanded_col(text, s.start),
+                end: byte_to_expanded_col(text, s.end),
+                scope: s.capture_name.split('.').next().unwrap_or("").to_string(),
+            })
+            .filter(|s| s.start < s.end)
+            .collect();
+        if !dtos.is_empty() {
+            lines.insert(line_idx.to_string(), dtos);
+        }
+    }
+
+    ok_json(&HighlightResponse { lines })
+}
+
+/// Map a byte offset within `line` to a character offset in the tab-expanded
+/// rendering of that line (each tab → 4 chars, every other char → 1), matching
+/// the wasm renderer's `expand_tabs`.
+fn byte_to_expanded_col(line: &str, byte_off: usize) -> usize {
+    const TAB: usize = 4;
+    let mut col = 0;
+    let mut b = 0;
+    for ch in line.chars() {
+        if b >= byte_off {
+            break;
+        }
+        b += ch.len_utf8();
+        col += if ch == '\t' { TAB } else { 1 };
+    }
+    col
+}
+
+#[derive(Deserialize)]
 pub(crate) struct SaveRequest {
     path: String,
     /// Hash the client loaded; empty for a brand-new file.
