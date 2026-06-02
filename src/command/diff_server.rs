@@ -270,6 +270,55 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         .file-status.staged    { color: #2da44e; }
         .file-status.changed   { color: #d29922; }
         .file-status.untracked { color: #8b949e; }
+        .repo-controls-spacer { flex: 1 1 auto; }
+        .commit-link {
+            display: inline-flex;
+            align-items: center;
+            padding: 6px 14px;
+            border: 1px solid rgba(31,136,61,0.4);
+            border-radius: 6px;
+            background: #1f883d;
+            color: #fff;
+            font-size: 14px;
+            font-weight: 500;
+            text-decoration: none;
+        }
+        .commit-link:hover { background: #1a7f37; }
+        .sidebar-group { margin-bottom: 14px; }
+        .sidebar-group-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 4px;
+            margin-bottom: 2px;
+            border-bottom: 1px solid #eaeef2;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            color: #57606a;
+        }
+        .sidebar-group-title { font-weight: 600; flex: 1 1 auto; }
+        .sidebar-group-count {
+            flex-shrink: 0;
+            padding: 0 6px;
+            border-radius: 999px;
+            background: #eaeef2;
+            color: #57606a;
+            font-size: 11px;
+        }
+        .stage-btn {
+            flex-shrink: 0;
+            margin-left: auto;
+            padding: 2px 10px;
+            border: 1px solid #d0d7de;
+            border-radius: 6px;
+            background: #f6f8fa;
+            color: #24292f;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .stage-btn:hover { background: #eef2f7; border-color: #afb8c1; }
+        .stage-btn:disabled { opacity: 0.5; cursor: default; }
         .file-tree { list-style: none; margin: 0; padding: 0; }
         .file-tree li { margin: 0; }
         .tree-dir { margin: 0; }
@@ -385,6 +434,23 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         .gr-status-deleted   { background: #ffebe9; color: #cf222e; }
         .gr-status-renamed   { background: #ddf4ff; color: #0969da; }
         .gr-status-untracked { background: #eaeef2; color: #57606a; }
+        /* Staged files get a green left rail + a "staged" pill so they read as
+         * committed-ready at a glance, distinct from unstaged working changes. */
+        .gr-staged-badge {
+            flex-shrink: 0;
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            padding: 1px 7px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 600;
+            background: #1f883d;
+            color: #fff;
+        }
+        .gr-staged-badge::before { content: "\2713"; font-size: 10px; }
+        .gr-file[data-section="staged"] { border-left: 3px solid #1f883d; }
+        .gr-file[data-section="staged"] > .gr-file-header { background: #f0f8f2; }
         .gr-file-stats { flex-shrink: 0; display: inline-flex; gap: 8px; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
         .gr-additions { color: #1a7f37; }
         .gr-deletions { color: #cf222e; }
@@ -475,6 +541,8 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             Show untracked files
         </label>
         <button id="refresh-btn" type="button">Refresh</button>
+        <span class="repo-controls-spacer"></span>
+        <a id="commit-link" class="commit-link" href="/commit">Commit…</a>
     </div>
 
     <div id="error-banner"></div>
@@ -679,6 +747,13 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             tag.className = `gr-status-tag ${STATUS_CSS[status] || STATUS_CSS.modified}`;
             tag.textContent = STATUS_LABELS[status] || status.toUpperCase();
             nameWrapper.appendChild(tag);
+            if (section === "staged") {
+                const stagedBadge = document.createElement("span");
+                stagedBadge.className = "gr-staged-badge";
+                stagedBadge.textContent = "staged";
+                stagedBadge.title = "Staged for commit";
+                nameWrapper.appendChild(stagedBadge);
+            }
             const largeTag = document.createElement("span");
             largeTag.className = "gr-large-tag";
             largeTag.textContent = "large diff";
@@ -697,6 +772,18 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             stats.appendChild(adds);
             stats.appendChild(dels);
             header.appendChild(stats);
+
+            const isStaged = section === "staged";
+            const stageBtn = document.createElement("button");
+            stageBtn.type = "button";
+            stageBtn.className = "stage-btn";
+            stageBtn.textContent = isStaged ? "Unstage" : "Stage";
+            stageBtn.title = isStaged ? "Unstage this file (git reset)" : "Stage this file (git add)";
+            stageBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                stageFile(wrapper, isStaged);
+            });
+            header.appendChild(stageBtn);
 
             const label = document.createElement("label");
             label.className = "diff-viewed-label";
@@ -811,6 +898,30 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                 applyViewedState(wrapper, !isViewed);
                 showError(`Failed to save viewed state: ${e.message}`);
             });
+        }
+
+        // Stage (git add) or unstage (git reset) one file, then refresh the
+        // listing so it moves between the Staged / Changes sections.
+        async function stageFile(wrapper, isStaged) {
+            const path = wrapper.dataset.path;
+            const endpoint = isStaged ? "/api/status/unstage" : "/api/status/stage";
+            const btn = wrapper.querySelector(".stage-btn");
+            if (btn) btn.disabled = true;
+            try {
+                const resp = await fetch(endpoint, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ path }),
+                });
+                if (!resp.ok) {
+                    const data = await resp.json().catch(() => ({}));
+                    throw new Error(data.error || `server returned ${resp.status}`);
+                }
+                await loadStatus({ showLoading: false });
+            } catch (e) {
+                if (btn) btn.disabled = false;
+                showError(`Failed to ${isStaged ? "unstage" : "stage"}: ${e.message}`);
+            }
         }
 
         async function ensureBodyLoaded(wrapper) {
@@ -1005,11 +1116,40 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             if (counts.untracked) parts.push(`${counts.untracked} untracked`);
             filesHeading.textContent = parts.length > 0 ? `Files (${parts.join(", ")})` : "Files";
             filesListContainer.innerHTML = "";
-            const root = buildFileTree(allEntries);
-            const ul = document.createElement("ul");
-            ul.className = "file-tree";
-            appendTreeNode(ul, root);
-            filesListContainer.appendChild(ul);
+            // Render each section as its own group, staged first, so staged and
+            // unstaged changes to the same file read as distinct entries.
+            const SECTION_GROUPS = [
+                { key: "staged", title: "Staged" },
+                { key: "unstaged", title: "Changes" },
+                { key: "untracked", title: "Untracked" },
+            ];
+            for (const { key, title } of SECTION_GROUPS) {
+                const entries = allEntries.filter((e) => e.section === key);
+                if (entries.length === 0) continue;
+                const group = document.createElement("div");
+                group.className = `sidebar-group sidebar-group-${key}`;
+                const heading = document.createElement("div");
+                heading.className = "sidebar-group-header";
+                const badge = document.createElement("span");
+                badge.className = `file-status ${SECTION_LIST_CSS[key] || "changed"}`;
+                badge.textContent = SECTION_LIST_BADGE[key] || "M";
+                const titleEl = document.createElement("span");
+                titleEl.className = "sidebar-group-title";
+                titleEl.textContent = title;
+                const countEl = document.createElement("span");
+                countEl.className = "sidebar-group-count";
+                countEl.textContent = String(entries.length);
+                heading.appendChild(badge);
+                heading.appendChild(titleEl);
+                heading.appendChild(countEl);
+                group.appendChild(heading);
+                const root = buildFileTree(entries);
+                const ul = document.createElement("ul");
+                ul.className = "file-tree";
+                appendTreeNode(ul, root);
+                group.appendChild(ul);
+                filesListContainer.appendChild(group);
+            }
         }
 
         function renderMain(allEntries) {
@@ -1193,6 +1333,282 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
     </script>
     </main>
 </div>
+</body>
+</html>"#;
+
+const COMMIT_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Commit</title>
+    <style>
+{{SHARED_CSS}}
+        .commit-wrap { max-width: 760px; }
+        #error-banner {
+            display: none;
+            margin: 0 0 16px 0;
+            padding: 12px 16px;
+            border: 1px solid #fcc;
+            border-radius: 8px;
+            background: #fee;
+            color: #b20000;
+        }
+        .commit-card {
+            background: #fff;
+            border: 1px solid #d0d7de;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+        .commit-card h2 { margin: 0 0 12px 0; font-size: 16px; }
+        .commit-card h2 .count { color: #57606a; font-weight: 400; font-size: 14px; }
+        .staged-list { list-style: none; margin: 0; padding: 0; }
+        .staged-list li {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 5px 6px;
+            border-radius: 6px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 13px;
+        }
+        .staged-list li:hover { background: #f6f8fa; }
+        .staged-list .s-path { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .staged-list .s-stats { flex-shrink: 0; display: inline-flex; gap: 8px; font-size: 12px; }
+        .staged-list .gr-additions { color: #1a7f37; }
+        .staged-list .gr-deletions { color: #cf222e; }
+        .staged-list .unstage-btn {
+            flex-shrink: 0;
+            padding: 2px 8px;
+            border: 1px solid #d0d7de;
+            border-radius: 6px;
+            background: #f6f8fa;
+            color: #24292f;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .staged-list .unstage-btn:hover { background: #eef2f7; }
+        .gr-status-tag { flex-shrink: 0; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+        .gr-status-modified  { background: #fff8c5; color: #9a6700; }
+        .gr-status-added     { background: #dafbe1; color: #1a7f37; }
+        .gr-status-deleted   { background: #ffebe9; color: #cf222e; }
+        .gr-status-renamed   { background: #ddf4ff; color: #0969da; }
+        .gr-status-untracked { background: #eaeef2; color: #57606a; }
+        #commit-message {
+            width: 100%;
+            box-sizing: border-box;
+            min-height: 120px;
+            padding: 10px 12px;
+            border: 1px solid #d0d7de;
+            border-radius: 6px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 13px;
+            resize: vertical;
+        }
+        #commit-message:focus { outline: none; border-color: #0969da; box-shadow: 0 0 0 2px #ddf4ff; }
+        .commit-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
+        .amend-label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #24292f; cursor: pointer; user-select: none; }
+        .amend-label input { margin: 0; cursor: pointer; }
+        .commit-actions .spacer { flex: 1 1 auto; }
+        .btn {
+            padding: 6px 14px;
+            border: 1px solid #d0d7de;
+            border-radius: 6px;
+            background: #f6f8fa;
+            color: #24292f;
+            font-size: 14px;
+            text-decoration: none;
+            cursor: pointer;
+        }
+        .btn:hover { background: #eef2f7; }
+        .btn-primary { background: #1f883d; border-color: rgba(31,136,61,0.4); color: #fff; }
+        .btn-primary:hover { background: #1a7f37; }
+        .btn-primary:disabled { background: #94d3a2; border-color: transparent; cursor: not-allowed; }
+        .hint { color: #57606a; font-size: 12px; margin: 8px 0 0 0; }
+        .empty { padding: 16px; color: #57606a; }
+    </style>
+</head>
+<body data-page="status">
+{{REPO_CTX_SCRIPT}}
+<script>{{SHORTCUTS_JS}}</script>
+<div class="app-shell">
+    {{APP_RAIL}}
+    <main class="app-main commit-wrap">
+        <h1 style="font-size:22px;margin:0 0 16px 0;">Commit</h1>
+        <div id="error-banner"></div>
+
+        <div class="commit-card">
+            <h2>Staged files <span class="count" id="staged-count"></span></h2>
+            <ul class="staged-list" id="staged-list"><li class="empty">Loading…</li></ul>
+        </div>
+
+        <div class="commit-card">
+            <h2>Message</h2>
+            <textarea id="commit-message" placeholder="Commit message" autofocus></textarea>
+            <div class="commit-actions">
+                <label class="amend-label" id="amend-wrap" hidden>
+                    <input type="checkbox" id="amend-toggle">
+                    Amend previous commit
+                </label>
+                <span class="spacer"></span>
+                <a class="btn" href="/status">Cancel</a>
+                <button class="btn btn-primary" id="commit-btn" type="button" disabled>Commit</button>
+            </div>
+            <p class="hint" id="commit-hint"></p>
+        </div>
+    </main>
+</div>
+<script>
+    const errorBanner = document.getElementById("error-banner");
+    const stagedList = document.getElementById("staged-list");
+    const stagedCount = document.getElementById("staged-count");
+    const messageBox = document.getElementById("commit-message");
+    const amendWrap = document.getElementById("amend-wrap");
+    const amendToggle = document.getElementById("amend-toggle");
+    const commitBtn = document.getElementById("commit-btn");
+    const commitHint = document.getElementById("commit-hint");
+
+    const STATUS_LABELS = { modified: "CHANGED", added: "ADDED", deleted: "DELETED", renamed: "RENAMED", untracked: "UNTRACKED" };
+    const STATUS_CSS = { modified: "gr-status-modified", added: "gr-status-added", deleted: "gr-status-deleted", renamed: "gr-status-renamed", untracked: "gr-status-untracked" };
+
+    let lastMessage = "";
+    let stagedFiles = [];
+    let submitting = false;
+
+    const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
+    const showError = (m) => { errorBanner.textContent = `Error: ${m}`; errorBanner.style.display = "block"; };
+    const clearError = () => { errorBanner.textContent = ""; errorBanner.style.display = "none"; };
+
+    function refreshCommitButton() {
+        const hasMsg = messageBox.value.trim().length > 0;
+        const amend = amendToggle.checked;
+        const canCommit = hasMsg && (stagedFiles.length > 0 || amend) && !submitting;
+        commitBtn.disabled = !canCommit;
+        if (stagedFiles.length === 0 && !amend) {
+            commitHint.textContent = "Nothing staged — stage files on the Status page, or enable amend to edit the previous commit.";
+        } else if (!hasMsg) {
+            commitHint.textContent = "Enter a commit message.";
+        } else {
+            commitHint.textContent = amend
+                ? "Will amend (rewrite) the previous commit with the staged changes."
+                : `Will commit ${stagedFiles.length} staged file${stagedFiles.length === 1 ? "" : "s"}.`;
+        }
+    }
+
+    function renderStaged() {
+        stagedCount.textContent = stagedFiles.length ? `(${stagedFiles.length})` : "";
+        if (stagedFiles.length === 0) {
+            stagedList.innerHTML = `<li class="empty">No staged changes.</li>`;
+            return;
+        }
+        stagedList.innerHTML = "";
+        for (const meta of stagedFiles) {
+            const li = document.createElement("li");
+            const status = meta.status || "modified";
+            const tag = document.createElement("span");
+            tag.className = `gr-status-tag ${STATUS_CSS[status] || STATUS_CSS.modified}`;
+            tag.textContent = STATUS_LABELS[status] || status.toUpperCase();
+            const path = document.createElement("span");
+            path.className = "s-path";
+            path.textContent = meta.path;
+            path.title = meta.path;
+            const stats = document.createElement("span");
+            stats.className = "s-stats";
+            stats.innerHTML = `<span class="gr-additions">+${meta.additions || 0}</span><span class="gr-deletions">-${meta.deletions || 0}</span>`;
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "unstage-btn";
+            btn.textContent = "Unstage";
+            btn.addEventListener("click", () => unstage(meta.path, btn));
+            li.appendChild(tag);
+            li.appendChild(path);
+            li.appendChild(stats);
+            li.appendChild(btn);
+            stagedList.appendChild(li);
+        }
+    }
+
+    async function unstage(path, btn) {
+        btn.disabled = true;
+        try {
+            const resp = await fetch("/api/status/unstage", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ path }),
+            });
+            if (!resp.ok) {
+                const data = await resp.json().catch(() => ({}));
+                throw new Error(data.error || `server returned ${resp.status}`);
+            }
+            await load();
+        } catch (e) {
+            btn.disabled = false;
+            showError(`Failed to unstage: ${e.message}`);
+        }
+    }
+
+    async function load() {
+        clearError();
+        const resp = await fetch("/api/status/commit-prepare", { cache: "no-store" });
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error);
+        stagedFiles = Array.isArray(data.staged) ? data.staged : [];
+        lastMessage = typeof data.last_message === "string" ? data.last_message : "";
+        amendWrap.hidden = !data.has_head;
+        renderStaged();
+        // If amend is on, keep the prefilled message synced when the user hasn't typed.
+        refreshCommitButton();
+    }
+
+    amendToggle.addEventListener("change", () => {
+        if (amendToggle.checked) {
+            if (!messageBox.value.trim()) messageBox.value = lastMessage;
+        } else if (messageBox.value === lastMessage) {
+            messageBox.value = "";
+        }
+        refreshCommitButton();
+        messageBox.focus();
+    });
+
+    messageBox.addEventListener("input", refreshCommitButton);
+
+    commitBtn.addEventListener("click", async () => {
+        const message = messageBox.value.trim();
+        if (!message) return;
+        submitting = true;
+        refreshCommitButton();
+        commitBtn.textContent = "Committing…";
+        clearError();
+        try {
+            const resp = await fetch("/api/status/commit", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ message, amend: amendToggle.checked }),
+            });
+            if (!resp.ok) {
+                const data = await resp.json().catch(() => ({}));
+                throw new Error(data.error || `server returned ${resp.status}`);
+            }
+            window.location.href = "/status";
+        } catch (e) {
+            submitting = false;
+            commitBtn.textContent = "Commit";
+            refreshCommitButton();
+            showError(`Commit failed: ${e.message}`);
+        }
+    });
+
+    // Cmd/Ctrl+Enter submits.
+    messageBox.addEventListener("keydown", (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !commitBtn.disabled) {
+            e.preventDefault();
+            commitBtn.click();
+        }
+    });
+
+    load().catch((e) => showError(e.message));
+</script>
 </body>
 </html>"#;
 
@@ -2656,9 +3072,20 @@ async fn run_server(
         .route("/diff", get(handle_html_request))
         .route("/compare", get(handle_compare_html_request))
         .route("/split", get(handle_split_request))
+        .route("/commit", get(handle_commit_html_request))
         .route("/api/status", get(handle_api_status_request))
         .route("/api/status/file", get(handle_api_status_file_request))
         .route("/api/status/viewed", post(handle_api_status_viewed_request))
+        .route("/api/status/stage", post(handle_api_status_stage_request))
+        .route(
+            "/api/status/unstage",
+            post(handle_api_status_unstage_request),
+        )
+        .route(
+            "/api/status/commit-prepare",
+            get(handle_api_commit_prepare_request),
+        )
+        .route("/api/status/commit", post(handle_api_commit_request))
         .route(
             "/api/status/context",
             get(handle_api_status_context_request),
@@ -2705,6 +3132,29 @@ pub(crate) async fn handle_html_request(
                 crate::command::server_shared::SHORTCUTS_JS,
             )
             .replace("{{DIFF_STYLES}}", render_diff_styles()),
+    )
+}
+
+/// Serve the commit page: a focused view that lists the staged files and takes
+/// a commit message + optional amend, then POSTs to `/api/status/commit`.
+pub(crate) async fn handle_commit_html_request(
+    State(state): State<Arc<DiffServerState>>,
+) -> impl IntoResponse {
+    use crate::command::github_preview_server as gh;
+    let ctx = gh::resolve_repo_url_context(&state.project_root).await;
+    let repo_url = gh::github_repo_url(&state.project_root).await;
+    // Keep "Status" highlighted in the rail — the commit page is part of that flow.
+    let rail = crate::command::app_shell::app_rail_html(&ctx, repo_url.as_deref(), "status");
+    let ctx_script = repo_ctx_script(&ctx);
+    Html(
+        COMMIT_HTML_TEMPLATE
+            .replace("{{APP_RAIL}}", &rail)
+            .replace("{{REPO_CTX_SCRIPT}}", &ctx_script)
+            .replace("{{SHARED_CSS}}", crate::command::server_shared::SHARED_CSS)
+            .replace(
+                "{{SHORTCUTS_JS}}",
+                crate::command::server_shared::SHORTCUTS_JS,
+            ),
     )
 }
 
@@ -3124,6 +3574,118 @@ pub(crate) async fn handle_api_status_viewed_request(
     )
     .await;
     ok_json(serde_json::json!({ "viewed": true }))
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct StagePathRequest {
+    path: String,
+}
+
+/// POST endpoint: stage one file (`git add -- <path>`). Works for modified,
+/// deleted, and untracked paths alike — `git add` records each appropriately.
+pub(crate) async fn handle_api_status_stage_request(
+    State(state): State<Arc<DiffServerState>>,
+    Json(req): Json<StagePathRequest>,
+) -> Response {
+    let path = match parse_diff_path(&req.path) {
+        Some(p) => p,
+        None => return bad_request(format!("invalid path: {}", req.path)),
+    };
+    match git_output_in_repo(&state.project_root, &["add", "--", &path]).await {
+        Ok(_) => ok_json(serde_json::json!({ "ok": true })),
+        Err(e) => bad_request(e),
+    }
+}
+
+/// POST endpoint: unstage one file. `git reset -- <path>` restores the index
+/// entry from HEAD (and works before the first commit, where it just removes
+/// the path from the index).
+pub(crate) async fn handle_api_status_unstage_request(
+    State(state): State<Arc<DiffServerState>>,
+    Json(req): Json<StagePathRequest>,
+) -> Response {
+    let path = match parse_diff_path(&req.path) {
+        Some(p) => p,
+        None => return bad_request(format!("invalid path: {}", req.path)),
+    };
+    match git_output_in_repo(&state.project_root, &["reset", "--quiet", "--", &path]).await {
+        Ok(_) => ok_json(serde_json::json!({ "ok": true })),
+        Err(e) => bad_request(e),
+    }
+}
+
+/// GET endpoint backing the commit page: the list of staged files, the current
+/// branch, and HEAD's subject+body (so the amend toggle can prefill it).
+pub(crate) async fn handle_api_commit_prepare_request(
+    State(state): State<Arc<DiffServerState>>,
+) -> Response {
+    let repo_root = &state.project_root;
+    let staged_raw = match git_output_in_repo(repo_root, &["diff", "--cached"]).await {
+        Ok(output) => output,
+        Err(error) => return bad_request(error),
+    };
+    let staged: Vec<serde_json::Value> = parse_unified_diff(&staged_raw)
+        .iter()
+        .map(|f| file_metadata_json(f, false))
+        .collect();
+
+    // Current branch (empty on a detached HEAD or fresh repo).
+    let branch = git_output_in_repo(repo_root, &["symbolic-ref", "--short", "HEAD"])
+        .await
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    // HEAD's full message for the amend toggle to prefill. Empty before the
+    // first commit, in which case amend is not offered.
+    let last_message = git_output_in_repo(repo_root, &["log", "-1", "--pretty=%B"])
+        .await
+        .map(|s| s.trim_end().to_string())
+        .unwrap_or_default();
+    let has_head = git_output_in_repo(repo_root, &["rev-parse", "--verify", "--quiet", "HEAD"])
+        .await
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+
+    ok_json(serde_json::json!({
+        "staged": staged,
+        "branch": branch,
+        "last_message": last_message,
+        "has_head": has_head,
+    }))
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct CommitRequest {
+    message: String,
+    #[serde(default)]
+    amend: bool,
+}
+
+/// POST endpoint: create a commit from the staged changes. With `amend` it
+/// rewrites HEAD instead. The message is passed via stdin-free `-m`, and the
+/// commit runs with `--cleanup=strip` so trailing whitespace is normalized.
+pub(crate) async fn handle_api_commit_request(
+    State(state): State<Arc<DiffServerState>>,
+    Json(req): Json<CommitRequest>,
+) -> Response {
+    let message = req.message.trim().to_string();
+    if message.is_empty() {
+        return bad_request("commit message must not be empty");
+    }
+
+    let mut args: Vec<&str> = vec!["commit", "--cleanup=strip"];
+    if req.amend {
+        args.push("--amend");
+    }
+    // `-m` consumes the next argument literally, so the message can never be
+    // parsed as a flag even if it begins with `-`.
+    args.push("-m");
+    args.push(&message);
+
+    match git_output_in_repo(&state.project_root, &args).await {
+        Ok(_) => ok_json(serde_json::json!({ "ok": true })),
+        Err(e) => bad_request(e),
+    }
 }
 
 pub(crate) fn file_metadata_json(file: &DiffFile, viewed: bool) -> serde_json::Value {

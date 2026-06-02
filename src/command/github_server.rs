@@ -423,6 +423,7 @@ async fn run_server(
         .route("/diff", get(diff_server::handle_html_request))
         .route("/changes", get(diff_server::handle_html_request))
         .route("/status", get(diff_server::handle_html_request))
+        .route("/commit", get(diff_server::handle_commit_html_request))
         .route("/compare", get(diff_server::handle_compare_html_request))
         .route("/branches", get(diff_server::handle_compare_html_request))
         .route("/api/status", get(diff_server::handle_api_status_request))
@@ -437,6 +438,22 @@ async fn run_server(
         .route(
             "/api/status/context",
             get(diff_server::handle_api_status_context_request),
+        )
+        .route(
+            "/api/status/stage",
+            post(diff_server::handle_api_status_stage_request),
+        )
+        .route(
+            "/api/status/unstage",
+            post(diff_server::handle_api_status_unstage_request),
+        )
+        .route(
+            "/api/status/commit-prepare",
+            get(diff_server::handle_api_commit_prepare_request),
+        )
+        .route(
+            "/api/status/commit",
+            post(diff_server::handle_api_commit_request),
         )
         .route(
             "/api/branches",

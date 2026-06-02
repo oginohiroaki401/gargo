@@ -122,6 +122,36 @@
         cb.dispatchEvent(new Event("change", { bubbles: true }));
     }
 
+    // Stage / unstage the focused file (status page). The listing re-renders
+    // after the POST resolves and the file hops sections, so we re-focus the
+    // same path once its row reappears to keep `j u j u` flowing.
+    function toggleStage() {
+        const el = focusedItem();
+        if (!el) return;
+        const btn = el.querySelector(".stage-btn");
+        if (!btn) return;
+        const path = el.dataset.path;
+        btn.click();
+        // Staging changes the row's section, so its fileId changes and the
+        // listing re-renders with a fresh row. Wait for the old row to detach
+        // before re-focusing the same path (now in the other section).
+        if (path) refocusByPathWhenReady(path, el, 40);
+    }
+
+    function refocusByPathWhenReady(path, oldEl, tries) {
+        if (tries > 0 && oldEl && oldEl.isConnected) {
+            setTimeout(() => refocusByPathWhenReady(path, oldEl, tries - 1), 40);
+            return;
+        }
+        const list = items();
+        const idx = list.findIndex((el) => el.dataset.path === path);
+        if (idx >= 0) {
+            focusAt(idx);
+        } else if (tries > 0) {
+            setTimeout(() => refocusByPathWhenReady(path, null, tries - 1), 40);
+        }
+    }
+
     function activateFocused() {
         const el = focusedItem();
         if (!el) return;
@@ -220,6 +250,7 @@
             ["j / k", "Focus next / previous file"],
             ["o", "Expand / collapse focused file"],
             ["Shift+O", "Open focused file in split view (new tab)"],
+            ["u", "Stage / unstage focused file"],
             ["v", "Toggle Viewed"],
             ["g g / G", "Jump to first / last file"],
         ]}],
@@ -426,6 +457,11 @@
                 toggleViewed();
                 return;
             }
+            if (key === "u" && PAGE === "status") {
+                ev.preventDefault();
+                toggleStage();
+                return;
+            }
         }
 
         if (PAGE === "split") {
@@ -457,4 +493,24 @@
     }
 
     window.addEventListener("keydown", onKey);
+
+    // Publish the sticky header's height as a CSS variable so sticky sidebars
+    // (status / compare) can offset themselves below it instead of being
+    // hidden underneath. Re-measured on resize since the rail can wrap.
+    function syncRailHeightVar() {
+        const h = railHeight();
+        if (h > 0) {
+            document.documentElement.style.setProperty("--app-rail-height", `${Math.round(h)}px`);
+        }
+    }
+    // This module is injected ahead of the rail markup on some pages, so the
+    // rail may not exist yet at parse time — defer the first measurement until
+    // the DOM is ready, then keep it in sync as the rail wraps on resize.
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", syncRailHeightVar);
+    } else {
+        syncRailHeightVar();
+    }
+    window.addEventListener("load", syncRailHeightVar);
+    window.addEventListener("resize", syncRailHeightVar, { passive: true });
 })();

@@ -26,14 +26,16 @@ body {
 }
 .context-key { font-weight: 600; color: #24292f; }
 
-/* Two-column sidebar + content layout shared by status / compare / commit pages */
+/* Two-column sidebar + content layout shared by status / compare / commit pages.
+ * The page header (.app-rail) is itself sticky at top:0, so the sidebar sticks
+ * BELOW it (--app-rail-height + a small gap) instead of being hidden underneath. */
 .layout { display: flex; gap: 20px; align-items: flex-start; }
 .sidebar {
     width: 260px;
     flex-shrink: 0;
     position: sticky;
-    top: 20px;
-    max-height: calc(100vh - 40px);
+    top: calc(var(--app-rail-height, 46px) + 12px);
+    max-height: calc(100vh - var(--app-rail-height, 46px) - 24px);
     overflow-y: auto;
 }
 .sidebar .files-section { margin-bottom: 0; }
