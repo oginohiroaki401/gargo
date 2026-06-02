@@ -1448,7 +1448,15 @@
       let gsearchRows = [];
       let gsearchSel = 0;
       let gsearchQuery = "";
+      let gsearchTruncated = false;
       const gsearchCollapsed = new Set();
+      // Files the user hid with Backspace on their header. Temporary: cleared on
+      // every new query (re-running the search brings them back).
+      const gsearchRemoved = new Set();
+      // True once the user has moved the selection with the arrow keys. While
+      // false (right after typing) Backspace edits the query as usual; once
+      // navigating the result list, Backspace on a file header hides that file.
+      let gsearchNavigated = false;
       const GSEARCH_MIN = 3; // matches the server-side trigram minimum
       const GSEARCH_MAX = 500; // server caps per file, so this spans many files
 
@@ -1478,6 +1486,9 @@
 
       function runGlobalSearch(query) {
         if (gsearchDebounce) clearTimeout(gsearchDebounce);
+        // Editing the query means we're no longer navigating the result list, so
+        // Backspace goes back to its normal text-editing behavior.
+        gsearchNavigated = false;
         const q = query.trim();
         if (q.length < GSEARCH_MIN) {
           gsearchHits = [];
@@ -1511,7 +1522,9 @@
       function renderGlobalSearch(query, hits, truncated) {
         gsearchHits = hits;
         gsearchQuery = query;
+        gsearchTruncated = truncated;
         gsearchCollapsed.clear();
+        gsearchRemoved.clear();
         gsearchSel = 0;
 
         if (!hits.length) {
@@ -1520,10 +1533,7 @@
           els.gsearchStatus.textContent = "No results";
           return;
         }
-        const fileCount = new Set(hits.map((h) => h.path)).size;
-        els.gsearchStatus.textContent =
-          hits.length + (truncated ? "+" : "") + " results in " + fileCount + " files";
-        paintGsearch();
+        paintGsearch(); // sets the status line from the (visible) hits
       }
 
       // Rebuild the visible row list + DOM from `gsearchHits` and the collapse
@@ -1531,13 +1541,29 @@
       // per file followed by its (visible) match rows. Cheap enough to call on
       // every collapse/expand.
       function paintGsearch() {
+        // Hits from files the user hasn't hidden with Backspace.
+        const visible = gsearchHits.filter((h) => !gsearchRemoved.has(h.path));
         const counts = new Map();
-        for (const h of gsearchHits) counts.set(h.path, (counts.get(h.path) || 0) + 1);
+        for (const h of visible) counts.set(h.path, (counts.get(h.path) || 0) + 1);
+
+        const fileCount = counts.size;
+        if (!visible.length) {
+          els.gsearchStatus.textContent = gsearchRemoved.size
+            ? "All matching files hidden"
+            : "No results";
+        } else {
+          const hidden = gsearchRemoved.size
+            ? " (" + gsearchRemoved.size + " hidden)"
+            : "";
+          els.gsearchStatus.textContent =
+            visible.length + (gsearchTruncated ? "+" : "") +
+            " results in " + fileCount + " files" + hidden;
+        }
 
         gsearchRows = [];
         els.gsearchList.innerHTML = "";
         let curPath = null;
-        gsearchHits.forEach((h) => {
+        visible.forEach((h) => {
           if (h.path !== curPath) {
             curPath = h.path;
             const collapsed = gsearchCollapsed.has(h.path);
@@ -1626,19 +1652,40 @@
           }
           return;
         }
+        // Backspace on a file header (while navigating the list) hides that file
+        // from the results; otherwise it edits the query text as usual.
+        if (e.key === "Backspace" && gsearchNavigated) {
+          const row = gsearchRows[gsearchSel];
+          if (row && row.kind === "file") {
+            e.preventDefault();
+            removeGsearchFile(row.path);
+            return;
+          }
+        }
+        // Alt+Up/Down jumps between file headers (next/previous file).
+        if (e.altKey && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+          e.preventDefault();
+          gsearchNavigated = true;
+          moveGsearchFile(e.key === "ArrowDown" ? 1 : -1);
+          return;
+        }
         const down = e.key === "ArrowDown" || (e.ctrlKey && (e.key === "n" || e.key === "N"));
         const up = e.key === "ArrowUp" || (e.ctrlKey && (e.key === "p" || e.key === "P"));
         if (down) {
           e.preventDefault();
+          gsearchNavigated = true;
           moveGsearch(1);
         } else if (up) {
           e.preventDefault();
+          gsearchNavigated = true;
           moveGsearch(-1);
         } else if (e.key === "ArrowLeft") {
           e.preventDefault();
+          gsearchNavigated = true;
           collapseSelection();
         } else if (e.key === "ArrowRight") {
           e.preventDefault();
+          gsearchNavigated = true;
           expandSelection();
         }
       }
@@ -1647,6 +1694,31 @@
         if (!gsearchRows.length) return;
         gsearchSel = (gsearchSel + delta + gsearchRows.length) % gsearchRows.length;
         paintGsearchSelection();
+      }
+
+      // Alt+Up/Down: move the selection to the next/previous file header. Down
+      // lands on the next file's header; Up lands on the nearest header at or
+      // above the selection (so from a match it first jumps to that file's own
+      // header, then to the previous file). Clamps at the ends.
+      function moveGsearchFile(delta) {
+        if (!gsearchRows.length) return;
+        if (delta > 0) {
+          for (let i = gsearchSel + 1; i < gsearchRows.length; i++) {
+            if (gsearchRows[i].kind === "file") { gsearchSel = i; paintGsearchSelection(); return; }
+          }
+        } else {
+          for (let i = gsearchSel - 1; i >= 0; i--) {
+            if (gsearchRows[i].kind === "file") { gsearchSel = i; paintGsearchSelection(); return; }
+          }
+        }
+      }
+
+      // Backspace on a file header: temporarily drop that file's hits from the
+      // results (until the next query re-runs the search). The selection stays
+      // at the same index, which now points at the following file's header.
+      function removeGsearchFile(path) {
+        gsearchRemoved.add(path);
+        paintGsearch();
       }
 
       // Left arrow: on a match, collapse its parent file and select the header;
