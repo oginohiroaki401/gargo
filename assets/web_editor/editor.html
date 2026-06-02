@@ -1083,6 +1083,34 @@
         // address bar). Don't preventDefault and don't route it to the core.
         if ((e.metaKey || e.ctrlKey) && (e.key === "l" || e.key === "L")) return;
 
+        // Cmd+R / Cmd+Shift+R: page reload — hand straight to the browser.
+        // (Falling through would preventDefault it and route "r" into the core.)
+        if (e.metaKey && (e.key === "r" || e.key === "R")) return;
+
+        // Clipboard bridge. The modal core's selection lives in wasm, not the
+        // DOM, so the browser has nothing to copy on its own:
+        //   Cmd+C / Cmd+X — copy (and cut) the selection via the async API.
+        //   Cmd+V         — leave it for the textarea's native `paste` event
+        //                   (onPaste); preventDefault here would suppress it.
+        if (e.metaKey && !e.shiftKey && (e.key === "c" || e.key === "C")) {
+          const sel = editor.selection_text();
+          if (!sel) return; // nothing selected → let the browser have the key
+          e.preventDefault();
+          navigator.clipboard.writeText(sel).catch(() => {});
+          return;
+        }
+        if (e.metaKey && !e.shiftKey && (e.key === "x" || e.key === "X")) {
+          const sel = editor.selection_text();
+          if (!sel) return;
+          e.preventDefault();
+          navigator.clipboard.writeText(sel).catch(() => {});
+          editor.delete_selection();
+          els.ime.value = "";
+          afterEdit();
+          return;
+        }
+        if (e.metaKey && !e.shiftKey && (e.key === "v" || e.key === "V")) return;
+
         // Cmd+Shift+P: command palette (opens the picker in "> " command mode).
         // Checked before Cmd+P so the Shift variant doesn't fall through.
         if (e.metaKey && e.shiftKey && (e.key === "p" || e.key === "P")) {
