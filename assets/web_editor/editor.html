@@ -445,6 +445,19 @@
       }
       .tnode.dir .tlabel { color: var(--fg); }
       .tnode.file .tlabel { color: var(--muted); }
+      /* Inline new-entry textbox (double-click empty sidebar space). */
+      .tnode .tinput {
+        flex: 1 1 auto;
+        min-width: 0;
+        border: 1px solid var(--accent);
+        outline: none;
+        background: var(--input-bg);
+        color: var(--fg);
+        font: inherit;
+        padding: 0 4px;
+        height: 18px;
+        border-radius: 3px;
+      }
 
       /* Right-click context menu for the sidebar file tree. */
       #ctxmenu {
@@ -2291,9 +2304,15 @@
           title: "New file in " + where + " — end the name with / to make a folder",
           initial: "",
         });
+        await createFromRaw(baseDir, raw);
+      }
+
+      // Create a file/dir from a raw, possibly-nested name typed by the user.
+      // A trailing slash means "directory"; otherwise it's a file. Nested names
+      // (e.g. `some/path/here.md`) create the intermediate dirs server-side.
+      // Shared by the context-menu prompt and the inline double-click input.
+      async function createFromRaw(baseDir, raw) {
         if (!raw) return;
-        // A trailing slash means "directory"; otherwise it's a file. Nested
-        // names (e.g. `a/b/c.rs`) create the intermediate dirs server-side.
         const kind = raw.endsWith("/") ? "dir" : "file";
         const name = raw.replace(/\/+$/, "");
         if (!name) return;
@@ -2325,6 +2344,47 @@
           // Opening the file is a full navigation; it'll rebuild on load.
           openFile(path);
         }
+      }
+
+      // Inline new-entry input: a temporary textbox appended to the tree (used
+      // on double-click of empty sidebar space). Enter creates, Esc/blur cancels.
+      let inlineActive = false;
+      function startInlineCreate(baseDir) {
+        if (inlineActive) return;
+        inlineActive = true;
+        const row = document.createElement("div");
+        row.className = "tnode";
+        row.style.paddingLeft = "6px";
+        const input = document.createElement("input");
+        input.className = "tinput";
+        input.placeholder = "name… (end with / for a folder)";
+        row.appendChild(input);
+        els.tree.appendChild(row);
+        input.focus();
+
+        let done = false;
+        const cleanup = () => {
+          if (done) return;
+          done = true;
+          inlineActive = false;
+          row.remove();
+        };
+        input.addEventListener("keydown", (e) => {
+          e.stopPropagation(); // keep keys out of the editor core
+          if (e.key === "Enter") {
+            e.preventDefault();
+            const raw = input.value.trim();
+            cleanup();
+            createFromRaw(baseDir, raw);
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            cleanup();
+            els.ime.focus();
+          }
+        });
+        // Clicking away cancels (runs after a possible Enter, which is fine —
+        // cleanup is idempotent).
+        input.addEventListener("blur", cleanup);
       }
 
       async function renameEntry(node) {
@@ -2730,11 +2790,18 @@
         window.addEventListener("mousemove", onResizerMove);
         window.addEventListener("mouseup", onResizerUp);
 
-        // Right-click on empty sidebar space → root-level context menu.
-        els.tree.addEventListener("contextmenu", (e) => {
-          if (e.target.closest(".tnode")) return; // row handler covers nodes
+        // Right-click on empty sidebar space → root-level context menu. Bound
+        // to the whole sidebar so the empty area below a short file list counts;
+        // rows stop propagation, so this only fires on truly empty space.
+        els.sidebar.addEventListener("contextmenu", (e) => {
+          if (e.target.closest(".tnode") || e.target.closest("#tree-head")) return;
           e.preventDefault();
           showContextMenu(e.clientX, e.clientY, null);
+        });
+        // Double-click empty sidebar space → inline new-entry textbox at root.
+        els.sidebar.addEventListener("dblclick", (e) => {
+          if (e.target.closest(".tnode") || e.target.closest("#tree-head")) return;
+          startInlineCreate("");
         });
         // Dismiss the context menu on any outside click, scroll, or blur.
         window.addEventListener("mousedown", (e) => {
