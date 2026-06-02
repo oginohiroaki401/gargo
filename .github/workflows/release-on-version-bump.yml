@@ -90,7 +90,25 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.cargo_target }}
+          targets: ${{ matrix.cargo_target }}, wasm32-unknown-unknown
+
+      # Pinned to the `wasm-bindgen` crate version in Cargo.lock — the CLI and the
+      # crate must match exactly or the generated glue is broken at runtime.
+      - name: Install wasm-bindgen-cli
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen-cli@0.2.114
+
+      # Build the browser editor's wasm bundle BEFORE the native build, so build.rs
+      # embeds it into the binary (see src/command/web_editor_server.rs). The
+      # bundle is platform-independent; building it per matrix job keeps the
+      # pipeline simple (no cross-job artifact passing).
+      - name: Build web editor wasm bundle
+        run: |
+          set -euo pipefail
+          cargo build --lib --target wasm32-unknown-unknown --release
+          wasm-bindgen target/wasm32-unknown-unknown/release/gargo.wasm \
+            --out-dir assets/web_editor/pkg --out-name gargo_wasm --target web
 
       - name: Build
         run: |

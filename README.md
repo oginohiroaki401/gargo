@@ -63,6 +63,27 @@ Supported assets:
 cargo install --path .
 ```
 
+### Web editor (browser)
+
+`gargo --server` includes a browser-based editor whose modal core runs in-tab as
+WebAssembly. The wasm bundle is **embedded into the binary at build time**, so
+release binaries (and `gargo --update`) ship it automatically — no extra setup
+for end users.
+
+When building from source, generate the bundle before `cargo build` so it gets
+embedded (it lives in `assets/web_editor/pkg/`, which is gitignored):
+
+```bash
+cargo build --lib --target wasm32-unknown-unknown --release
+wasm-bindgen target/wasm32-unknown-unknown/release/gargo.wasm \
+  --out-dir assets/web_editor/pkg --out-name gargo_wasm --target web
+```
+
+This needs the `wasm32-unknown-unknown` target (`rustup target add
+wasm32-unknown-unknown`) and `wasm-bindgen-cli` at the exact version of the
+`wasm-bindgen` crate in `Cargo.lock`. If the bundle is missing, `cargo build`
+still succeeds and the editor's asset routes report "wasm not built".
+
 ## Basic keys
 
 - `i`: enter insert mode

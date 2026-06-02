@@ -5,6 +5,11 @@
 //! edits locally in wasm, then saves (`/api/save`) sending the hash it loaded.
 //! If the on-disk content changed since (hash mismatch) the save is rejected
 //! with `409 Conflict` so the client can warn before overwriting.
+//!
+//! Scope note: this module owns file read/write, project search, and the
+//! `/api/fs/*` filesystem operations. The git status / stage / unstage / commit
+//! endpoints (`/api/status*`) live in [`crate::command::diff_server`], which
+//! backs the separate status page the editor links to.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -23,17 +28,25 @@ use crate::command::github_server::GithubServerState;
 
 /// The browser editor: an emacs/VSCode-style always-insert editor whose modal
 /// core runs in-tab as wasm. The page template carries `{{APP_CSS}}` and
-/// `{{APP_RAIL}}` slots so it shows the same top nav as the rest of the server.
+/// `{{APP_RAIL}}` slots so it shows the same top nav as the rest of the server,
+/// plus `{{EDITOR_CSS}}`/`{{EDITOR_JS}}` slots filled from the sibling files
+/// below (kept separate from the HTML for maintainability; still embedded so the
+/// page is served as one self-contained document with no extra requests).
 const EDITOR_HTML: &str = include_str!("../../assets/web_editor/editor.html");
+const EDITOR_CSS: &str = include_str!("../../assets/web_editor/editor.css");
+const EDITOR_JS: &str = include_str!("../../assets/web_editor/editor.js");
 
-/// Directory holding the wasm-bindgen output, relative to the crate root.
-/// Build it with:
+/// The wasm-bindgen output, embedded at compile time so `gargo` is a single
+/// self-contained binary (the editor then survives `gargo --update`, which
+/// replaces only the executable). `build.rs` stages these out of
+/// `assets/web_editor/pkg/` into `OUT_DIR`; when the bundle hasn't been built it
+/// stages empty placeholders, so an empty value here means "wasm not built".
+/// Build the bundle with:
 ///   cargo build --lib --target wasm32-unknown-unknown --release
 ///   wasm-bindgen target/wasm32-unknown-unknown/release/gargo.wasm \
 ///     --out-dir assets/web_editor/pkg --out-name gargo_wasm --target web
-fn pkg_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/web_editor/pkg")
-}
+const WASM_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/gargo_wasm.js"));
+const WASM_BG: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/gargo_wasm_bg.wasm"));
 
 pub(crate) async fn handle_editor_page(
     State(state): State<Arc<GithubServerState>>,
@@ -53,6 +66,8 @@ pub(crate) async fn handle_editor_page(
     let repo_root = serde_json::to_string(&state.repo_root.to_string_lossy())
         .unwrap_or_else(|_| "\"\"".to_string());
     let page = EDITOR_HTML
+        .replace("{{EDITOR_CSS}}", EDITOR_CSS)
+        .replace("{{EDITOR_JS}}", EDITOR_JS)
         .replace("{{APP_CSS}}", &css)
         .replace("{{APP_RAIL}}", &rail)
         .replace("{{THEME_CSS}}", &theme_css)
@@ -61,17 +76,17 @@ pub(crate) async fn handle_editor_page(
 }
 
 pub(crate) async fn handle_wasm_js() -> Response {
-    match std::fs::read_to_string(pkg_dir().join("gargo_wasm.js")) {
-        Ok(body) => js_response(body),
-        Err(_) => wasm_not_built(),
+    if WASM_BG.is_empty() {
+        return wasm_not_built();
     }
+    js_response(WASM_JS.to_string())
 }
 
 pub(crate) async fn handle_wasm_binary() -> Response {
-    match std::fs::read(pkg_dir().join("gargo_wasm_bg.wasm")) {
-        Ok(bytes) => ([(header::CONTENT_TYPE, "application/wasm")], bytes).into_response(),
-        Err(_) => wasm_not_built(),
+    if WASM_BG.is_empty() {
+        return wasm_not_built();
     }
+    ([(header::CONTENT_TYPE, "application/wasm")], WASM_BG).into_response()
 }
 
 #[derive(Deserialize)]

@@ -53,6 +53,27 @@ const fn tok(scope: &'static str, color: &'static str) -> Token {
     }
 }
 
+const fn tok_italic(scope: &'static str, color: &'static str) -> Token {
+    Token {
+        italic: true,
+        ..tok(scope, color)
+    }
+}
+
+const fn tok_bold(scope: &'static str, color: &'static str) -> Token {
+    Token {
+        bold: true,
+        ..tok(scope, color)
+    }
+}
+
+const fn tok_underline(scope: &'static str, color: &'static str) -> Token {
+    Token {
+        underline: true,
+        ..tok(scope, color)
+    }
+}
+
 const LIGHT_CHROME: Chrome = Chrome {
     bg: "#ffffff",
     fg: "#1f2328",
@@ -91,21 +112,9 @@ const DARK_CHROME: Chrome = Chrome {
 
 /// Light palette — purple keywords, blue functions, green strings, red markup.
 const LIGHT_TOKENS: &[Token] = &[
-    Token {
-        scope: "keyword",
-        color: "#8250df",
-        bold: false,
-        italic: false,
-        underline: false,
-    },
+    tok("keyword", "#8250df"),
     tok("string", "#098658"),
-    Token {
-        scope: "comment",
-        color: "#6e7781",
-        bold: false,
-        italic: true,
-        underline: false,
-    },
+    tok_italic("comment", "#6e7781"),
     tok("function", "#0969da"),
     tok("type", "#0a7a6e"),
     tok("constructor", "#0a7a6e"),
@@ -124,47 +133,17 @@ const LIGHT_TOKENS: &[Token] = &[
     tok("punctuation", "#1f2328"),
     tok("escape", "#cf6a00"),
     tok("embedded", "#1f2328"),
-    Token {
-        scope: "title",
-        color: "#a31515",
-        bold: true,
-        italic: false,
-        underline: false,
-    },
-    Token {
-        scope: "link",
-        color: "#0a7a6e",
-        bold: false,
-        italic: false,
-        underline: true,
-    },
-    Token {
-        scope: "emphasis",
-        color: "inherit",
-        bold: false,
-        italic: true,
-        underline: false,
-    },
-    Token {
-        scope: "strong",
-        color: "inherit",
-        bold: true,
-        italic: false,
-        underline: false,
-    },
+    tok_bold("title", "#a31515"),
+    tok_underline("link", "#0a7a6e"),
+    tok_italic("emphasis", "inherit"),
+    tok_bold("strong", "inherit"),
 ];
 
 /// Dark palette — the VSCode-dark colors the editor originally shipped.
 const DARK_TOKENS: &[Token] = &[
     tok("keyword", "#569cd6"),
     tok("string", "#ce9178"),
-    Token {
-        scope: "comment",
-        color: "#6a9955",
-        bold: false,
-        italic: true,
-        underline: false,
-    },
+    tok_italic("comment", "#6a9955"),
     tok("function", "#dcdcaa"),
     tok("type", "#4ec9b0"),
     tok("constructor", "#4ec9b0"),
@@ -183,34 +162,10 @@ const DARK_TOKENS: &[Token] = &[
     tok("punctuation", "#d4d4d4"),
     tok("escape", "#d7ba7d"),
     tok("embedded", "#d4d4d4"),
-    Token {
-        scope: "title",
-        color: "#569cd6",
-        bold: true,
-        italic: false,
-        underline: false,
-    },
-    Token {
-        scope: "link",
-        color: "#4ec9b0",
-        bold: false,
-        italic: false,
-        underline: true,
-    },
-    Token {
-        scope: "emphasis",
-        color: "inherit",
-        bold: false,
-        italic: true,
-        underline: false,
-    },
-    Token {
-        scope: "strong",
-        color: "inherit",
-        bold: true,
-        italic: false,
-        underline: false,
-    },
+    tok_bold("title", "#569cd6"),
+    tok_underline("link", "#4ec9b0"),
+    tok_italic("emphasis", "inherit"),
+    tok_bold("strong", "inherit"),
 ];
 
 /// Build the CSS injected into the editor page's `{{THEME_CSS}}` slot: a `:root`
