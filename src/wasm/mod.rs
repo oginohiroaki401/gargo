@@ -51,6 +51,18 @@ struct SelRange {
     end_char: usize,
 }
 
+/// A single find result. `start`/`end` are char offsets (for `select_range`);
+/// `row` + `start_char`/`end_char` are the tab-expanded coordinates the browser
+/// measures to draw the highlight rectangle.
+#[derive(serde::Serialize)]
+struct FindMatch {
+    start: usize,
+    end: usize,
+    row: usize,
+    start_char: usize,
+    end_char: usize,
+}
+
 #[derive(serde::Serialize)]
 struct RenderModel {
     top: usize,
@@ -229,6 +241,92 @@ impl WebEditor {
     /// Full buffer contents (for saving).
     pub fn content(&self) -> String {
         self.editor.active_buffer().rope.to_string()
+    }
+
+    /// Char offset of the primary cursor. Used by the find box to pick the
+    /// match nearest to (at or after) the caret.
+    pub fn cursor_offset(&self) -> usize {
+        primary_cursor(self.editor.active_buffer())
+    }
+
+    /// Text of the primary selection, or `""` when nothing is selected. Used to
+    /// prefill the find box with the current selection (VSCode behaviour).
+    pub fn selection_text(&self) -> String {
+        let buf = self.editor.active_buffer();
+        match buf
+            .merged_selection_ranges()
+            .into_iter()
+            .find(|&(s, e)| s < e)
+        {
+            Some((s, e)) => buf.rope.slice(s..e).to_string(),
+            None => String::new(),
+        }
+    }
+
+    /// Select an explicit char range `[start, end)`, putting the caret at `end`.
+    /// Used by the find box to jump to (and highlight) the current match. An
+    /// empty range clears the selection. Offsets are clamped to the document.
+    pub fn select_range(&mut self, start: usize, end: usize) {
+        let buf = self.editor.active_buffer_mut();
+        let n = buf.rope.len_chars();
+        let s = start.min(n);
+        let e = end.min(n);
+        buf.cursors = vec![e];
+        buf.selections = if s == e {
+            vec![None]
+        } else {
+            vec![Some(Selection::tail_on_forward(s, e))]
+        };
+    }
+
+    /// Find every (non-overlapping, left-to-right) literal occurrence of
+    /// `query`, case-insensitive unless `case_sensitive`. Returns each match as
+    /// char offsets plus the row and tab-expanded char columns the browser needs
+    /// to draw the highlight. A `query` containing a newline never matches — the
+    /// find box is single-line, like VSCode's default. Capped at 5000 matches.
+    pub fn find(&self, query: &str, case_sensitive: bool) -> Result<JsValue, JsValue> {
+        let buf = self.editor.active_buffer();
+        let rope = &buf.rope;
+        let mut out: Vec<FindMatch> = Vec::new();
+        let needle_src: Vec<char> = query.chars().collect();
+        if needle_src.is_empty() || needle_src.contains(&'\n') {
+            return serde_wasm_bindgen::to_value(&out)
+                .map_err(|e| JsValue::from_str(&e.to_string()));
+        }
+        // Fold to a single lowercase char per source char so char indices stay
+        // 1:1 with the document (full case folding can change length).
+        let fold = |c: char| {
+            if case_sensitive {
+                c
+            } else {
+                c.to_lowercase().next().unwrap_or(c)
+            }
+        };
+        let hay: Vec<char> = rope.chars().map(fold).collect();
+        let needle: Vec<char> = needle_src.iter().map(|&c| fold(c)).collect();
+        let nlen = needle.len();
+        const MAX_MATCHES: usize = 5000;
+        let mut i = 0usize;
+        while i + nlen <= hay.len() {
+            if hay[i..i + nlen] == needle[..] {
+                let start = i;
+                let end = i + nlen;
+                out.push(FindMatch {
+                    start,
+                    end,
+                    row: rope.char_to_line(start),
+                    start_char: offset_to_expanded_char_col(rope, start),
+                    end_char: offset_to_expanded_char_col(rope, end),
+                });
+                if out.len() >= MAX_MATCHES {
+                    break;
+                }
+                i = end; // non-overlapping
+            } else {
+                i += 1;
+            }
+        }
+        serde_wasm_bindgen::to_value(&out).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Monotonic version, bumped on every edit (for render invalidation).

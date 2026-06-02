@@ -125,6 +125,65 @@
         z-index: 10;
       }
 
+      /* In-file search highlights. The current match is drawn as the editor
+         selection (.sel, blue); every other match gets this translucent band. */
+      .match-hl {
+        position: absolute;
+        height: var(--line-height);
+        background: rgba(234, 179, 8, 0.32);
+        outline: 1px solid rgba(234, 179, 8, 0.6);
+        left: var(--gutter-w, 50px);
+        z-index: 1;
+        pointer-events: none;
+      }
+
+      /* VSCode-style find widget, floating at the top-right of the editor. */
+      #find {
+        position: absolute;
+        top: 6px;
+        right: 18px;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        background: #252526;
+        border: 1px solid #454545;
+        border-radius: 4px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+        padding: 4px 6px;
+        z-index: 50;
+      }
+      #find[hidden] { display: none; }
+      #find-input {
+        border: 1px solid #3c3c3c;
+        outline: none;
+        background: #3c3c3c;
+        color: var(--fg);
+        font: var(--font);
+        padding: 3px 6px;
+        border-radius: 3px;
+        width: 200px;
+      }
+      #find-input:focus { border-color: var(--sel); }
+      #find-count {
+        color: #aaa;
+        font-size: 12px;
+        min-width: 74px;
+        text-align: center;
+        white-space: nowrap;
+      }
+      #find button {
+        border: 0;
+        background: transparent;
+        color: var(--fg);
+        cursor: pointer;
+        font-size: 14px;
+        line-height: 1;
+        padding: 3px 5px;
+        border-radius: 3px;
+      }
+      #find button:hover { background: #3a3d41; }
+      #find button.toggle.on { background: var(--sel); color: #fff; }
+
       /* Cmd+P file picker overlay. */
       #picker {
         position: fixed;
@@ -182,6 +241,8 @@
         flex-direction: row;
         min-height: 0;
         overflow: hidden;
+        /* Positioning context for the floating find widget. */
+        position: relative;
       }
       #sidebar {
         flex: 0 0 auto;
@@ -267,7 +328,7 @@
       <span class="path" id="path"></span>
       <span class="spacer"></span>
       <span class="dirty" id="dirty"></span>
-      <span class="hint">Cmd+P でファイル · Ctrl+f/b/n/p/a/e で移動 · Ctrl/Cmd+S で保存</span>
+      <span class="hint">Cmd+P でファイル · Cmd+F で検索 · Ctrl+f/b/n/p/a/e で移動 · Ctrl/Cmd+S で保存</span>
     </div>
     <div id="main">
       <nav id="sidebar">
@@ -280,6 +341,17 @@
           <textarea id="ime" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
           <div id="preedit"></div>
         </div>
+      </div>
+
+      <!-- Cmd+F in-file search (VSCode-style), floats over the editor. -->
+      <div id="find" hidden>
+        <input id="find-input" type="text" placeholder="Find"
+          autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+        <button id="find-case" class="toggle" title="Match Case">Aa</button>
+        <span id="find-count">No results</span>
+        <button id="find-prev" title="Previous match (Shift+Enter)">↑</button>
+        <button id="find-next" title="Next match (Enter)">↓</button>
+        <button id="find-close" title="Close (Esc)">✕</button>
       </div>
     </div>
     <div id="error"></div>
@@ -318,6 +390,13 @@
         sidebar: document.getElementById("sidebar"),
         sidebarResizer: document.getElementById("sidebar-resizer"),
         tree: document.getElementById("tree"),
+        find: document.getElementById("find"),
+        findInput: document.getElementById("find-input"),
+        findCase: document.getElementById("find-case"),
+        findCount: document.getElementById("find-count"),
+        findPrev: document.getElementById("find-prev"),
+        findNext: document.getElementById("find-next"),
+        findClose: document.getElementById("find-close"),
       };
 
       let editor = null;
@@ -384,6 +463,7 @@
       const mountedRows = new Map(); // line -> {gutter, row}
       const caretPool = [];
       const selPool = [];
+      const matchPool = []; // in-file search match highlights
 
       function render() {
         if (!editor) return;
@@ -401,6 +481,7 @@
         const model = editor.render(top, visible);
         renderRows(model);
         renderSelections(model);
+        renderMatches(model);
         renderCarets(model);
         syncStatus(model);
         positionIme(model);
@@ -485,6 +566,38 @@
         ensurePool(selPool, rects.length, "sel");
         for (let i = 0; i < selPool.length; i++) {
           const el = selPool[i];
+          if (i < rects.length) {
+            const r = rects[i];
+            el.style.display = "block";
+            el.style.left = gutterWidth + r.leftPx + "px";
+            el.style.top = r.row * LINE_HEIGHT + "px";
+            el.style.width = r.widthPx + "px";
+          } else {
+            el.style.display = "none";
+          }
+        }
+      }
+
+      // Draw a translucent band over every visible search match except the
+      // current one (which is the editor selection, .sel). Same CJK-aware pixel
+      // measurement as renderSelections.
+      function renderMatches(model) {
+        const rects = [];
+        if (findOpen) {
+          for (let i = 0; i < searchMatches.length; i++) {
+            if (i === searchIndex && findCurrentSelected) continue; // = editor selection
+            const m = searchMatches[i];
+            if (m.row < model.top || m.row >= model.top + model.rows.length) continue;
+            const rowText = model.rows[m.row - model.top] || "";
+            const fromPx = prefixPx(rowText, m.start_char);
+            let toPx = prefixPx(rowText, m.end_char);
+            if (toPx <= fromPx) toPx = fromPx + charWidth;
+            rects.push({ row: m.row, leftPx: fromPx, widthPx: toPx - fromPx });
+          }
+        }
+        ensurePool(matchPool, rects.length, "match-hl");
+        for (let i = 0; i < matchPool.length; i++) {
+          const el = matchPool[i];
           if (i < rects.length) {
             const r = rects[i];
             el.style.display = "block";
@@ -624,6 +737,8 @@
         ensureCursorVisible();
         render();
         scheduleHighlight();
+        // Edits shift match offsets; recompute so the find box stays accurate.
+        if (findOpen) runFind(false);
       }
 
       // ---- input -----------------------------------------------------------
@@ -651,6 +766,13 @@
         if (e.metaKey && (e.key === "p" || e.key === "P")) {
           e.preventDefault();
           openPicker();
+          return;
+        }
+
+        // Cmd+F: in-file search (VSCode-style). Ctrl+F stays emacs "move right".
+        if (e.metaKey && (e.key === "f" || e.key === "F")) {
+          e.preventDefault();
+          openFind();
           return;
         }
 
@@ -936,11 +1058,20 @@
         );
       }
 
+      // URL for a file's editor page, preserving "/" path separators.
+      function editorUrl(path) {
+        return "/editor/" + path.split("/").map(encodeURIComponent).join("/");
+      }
+
       function openFile(path) {
-        // Full navigation; boot() loads the file. Preserve "/" path separators.
-        window.location.assign(
-          "/editor/" + path.split("/").map(encodeURIComponent).join("/")
-        );
+        // Full navigation; boot() loads the file.
+        window.location.assign(editorUrl(path));
+      }
+
+      // Open a file in a separate browser window/tab (Cmd+click or Alt+click in
+      // the file explorer), leaving the current editor untouched.
+      function openFileInNewWindow(path) {
+        window.open(editorUrl(path), "_blank");
       }
 
       function onPickerKeyDown(e) {
@@ -1115,6 +1246,9 @@
               if (open) expandedDirs.delete(child.path);
               else expandedDirs.add(child.path);
               renderTree();
+            } else if (e.metaKey || e.altKey) {
+              // Cmd/Alt+click: open in a separate window.
+              openFileInNewWindow(child.path);
             } else {
               openFile(child.path);
             }
@@ -1149,6 +1283,128 @@
         if (resizing) {
           resizing = false;
           render();
+        }
+      }
+
+      // ---- Cmd+F in-file search --------------------------------------------
+
+      let findOpen = false;
+      let searchMatches = []; // [{start, end, row, start_char, end_char}]
+      let searchIndex = -1; // index into searchMatches of the current match
+      let findCurrentSelected = false; // is the current match the live selection?
+      let caseSensitive = false;
+
+      function openFind() {
+        // VSCode prefills with the current selection (single-line only).
+        const sel = editor.selection_text();
+        if (sel && !sel.includes("\n")) els.findInput.value = sel;
+        findOpen = true;
+        els.find.hidden = false;
+        runFind(true);
+        els.findInput.focus();
+        els.findInput.select();
+      }
+
+      function closeFind() {
+        if (!findOpen) return;
+        findOpen = false;
+        els.find.hidden = true;
+        searchMatches = [];
+        searchIndex = -1;
+        findCurrentSelected = false;
+        render();
+        els.ime.focus();
+      }
+
+      // Recompute matches for the current query. When `jump`, also move to the
+      // match at/after the caret; otherwise keep the current index (used after
+      // edits that shift offsets around).
+      function runFind(jump) {
+        const q = els.findInput.value;
+        if (!q) {
+          searchMatches = [];
+          searchIndex = -1;
+          findCurrentSelected = false;
+          updateFindCount();
+          render();
+          return;
+        }
+        try {
+          searchMatches = editor.find(q, caseSensitive) || [];
+        } catch (_) {
+          searchMatches = [];
+        }
+        if (!searchMatches.length) {
+          searchIndex = -1;
+          findCurrentSelected = false;
+          updateFindCount();
+          render();
+          return;
+        }
+        if (jump) {
+          const off = editor.cursor_offset();
+          let idx = searchMatches.findIndex((m) => m.start >= off);
+          if (idx < 0) idx = 0;
+          gotoMatch(idx);
+        } else {
+          if (searchIndex < 0 || searchIndex >= searchMatches.length) searchIndex = 0;
+          // Offsets shifted under us; don't claim the stale selection is current.
+          findCurrentSelected = false;
+          updateFindCount();
+          render();
+        }
+      }
+
+      // Select (highlight + scroll to) the match at `idx`, wrapping around.
+      function gotoMatch(idx) {
+        if (!searchMatches.length) return;
+        searchIndex = (idx + searchMatches.length) % searchMatches.length;
+        const m = searchMatches[searchIndex];
+        editor.select_range(m.start, m.end);
+        findCurrentSelected = true;
+        ensureCursorVisible();
+        updateFindCount();
+        render();
+      }
+
+      function findNext() {
+        if (searchMatches.length) gotoMatch(searchIndex + 1);
+      }
+
+      function findPrev() {
+        if (searchMatches.length) gotoMatch(searchIndex - 1);
+      }
+
+      function updateFindCount() {
+        const n = searchMatches.length;
+        if (!els.findInput.value) els.findCount.textContent = "";
+        else if (!n) els.findCount.textContent = "No results";
+        else els.findCount.textContent = searchIndex + 1 + " of " + n;
+      }
+
+      function toggleCase() {
+        caseSensitive = !caseSensitive;
+        els.findCase.classList.toggle("on", caseSensitive);
+        runFind(true);
+        els.findInput.focus();
+      }
+
+      function onFindKeyDown(e) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          closeFind();
+          return;
+        }
+        if (e.key === "Enter") {
+          e.preventDefault();
+          if (e.shiftKey) findPrev();
+          else findNext();
+          return;
+        }
+        // Cmd+F while open re-selects the query (VSCode focus+select behaviour).
+        if (e.metaKey && (e.key === "f" || e.key === "F")) {
+          e.preventDefault();
+          els.findInput.select();
         }
       }
 
@@ -1235,6 +1491,19 @@
         window.addEventListener("resize", () => render());
         els.pickerInput.addEventListener("input", (e) => updatePicker(e.target.value));
         els.pickerInput.addEventListener("keydown", onPickerKeyDown);
+        els.findInput.addEventListener("input", () => runFind(true));
+        els.findInput.addEventListener("keydown", onFindKeyDown);
+        // mousedown preventDefault keeps focus in the find input when clicking
+        // the widget's buttons (so the editor doesn't steal it).
+        for (const [el, fn] of [
+          [els.findCase, toggleCase],
+          [els.findPrev, findPrev],
+          [els.findNext, findNext],
+          [els.findClose, closeFind],
+        ]) {
+          el.addEventListener("mousedown", (e) => e.preventDefault());
+          el.addEventListener("click", fn);
+        }
         els.sidebarResizer.addEventListener("mousedown", onResizerDown);
         window.addEventListener("mousemove", onResizerMove);
         window.addEventListener("mouseup", onResizerUp);
