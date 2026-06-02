@@ -483,6 +483,7 @@ async fn run_server(
         )
         .route("/api/file", get(editor::handle_api_file))
         .route("/api/files", get(editor::handle_api_files))
+        .route("/api/search", get(editor::handle_api_search))
         .route("/api/save", post(editor::handle_api_save))
         .route("/api/highlight", post(editor::handle_api_highlight))
         .route("/api/git-gutter", post(editor::handle_api_git_gutter))

@@ -74,7 +74,21 @@ pub fn search_repo(
     query: &str,
     max_results: usize,
 ) -> Vec<GlobalSearchHit> {
-    if query.chars().count() < 3 || max_results == 0 {
+    search_repo_limited(repo, query, max_results, usize::MAX)
+}
+
+/// Like [`search_repo`] but also caps matches *per file* at `per_file_max`, so a
+/// single match-heavy file can't exhaust the global `max_results` budget and
+/// crowd out other matching files. Files are still visited in path order; once a
+/// file reaches `per_file_max` we move on to the next, letting results span far
+/// more files for common terms. Pass `usize::MAX` for no per-file limit.
+pub fn search_repo_limited(
+    repo: &GlobalIndexedRepo,
+    query: &str,
+    max_results: usize,
+    per_file_max: usize,
+) -> Vec<GlobalSearchHit> {
+    if query.chars().count() < 3 || max_results == 0 || per_file_max == 0 {
         return Vec::new();
     }
 
@@ -103,6 +117,7 @@ pub fn search_repo(
             continue;
         };
         let lines: Vec<&str> = content.lines().collect();
+        let mut file_hits = 0;
         for (line_idx, line) in lines.iter().enumerate() {
             let Some(m) = regex.find(line) else {
                 continue;
@@ -118,6 +133,10 @@ pub fn search_repo(
             });
             if hits.len() >= max_results {
                 return hits;
+            }
+            file_hits += 1;
+            if file_hits >= per_file_max {
+                break;
             }
         }
     }

@@ -265,6 +265,107 @@
       #picker-list li.picked { background: var(--sel); }
       #picker-list li b { color: #4daafc; font-weight: 600; }
 
+      /* Cmd+Shift+F project search: a full pane filling the editor area
+         (#main is position:relative), Zed-style — not a floating popup. */
+      #gsearch {
+        position: absolute;
+        inset: 0;
+        background: var(--bg, #1e1e1e);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        z-index: 50;
+      }
+      #gsearch[hidden] { display: none; }
+      #gsearch-bar {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 14px;
+        border-bottom: 1px solid #333;
+        background: #252526;
+      }
+      #gsearch-input {
+        flex: 1 1 auto;
+        border: 1px solid #454545;
+        outline: none;
+        background: #3c3c3c;
+        color: var(--fg);
+        font: var(--font);
+        padding: 8px 10px;
+        border-radius: 4px;
+      }
+      #gsearch-input:focus { border-color: #4daafc; }
+      #gsearch-status {
+        flex: 0 0 auto;
+        color: #888;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      #gsearch-bar #gsearch-close {
+        flex: 0 0 auto;
+        background: transparent;
+        border: 0;
+        color: #aaa;
+        cursor: pointer;
+        font-size: 14px;
+        padding: 2px 6px;
+      }
+      #gsearch-bar #gsearch-close:hover { color: var(--fg); }
+      #gsearch-list {
+        flex: 1 1 auto;
+        min-height: 0;
+        list-style: none;
+        margin: 0;
+        padding: 0 0 12px;
+        overflow-y: auto;
+      }
+      #gsearch-list li { cursor: pointer; }
+      /* File-group header: path + match count, sticky so it stays visible. */
+      #gsearch-list li.gfile {
+        position: sticky;
+        top: 0;
+        background: #2d2d2e;
+        color: #ddd;
+        padding: 5px 14px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        cursor: pointer;
+        z-index: 1;
+      }
+      #gsearch-list li.gfile.picked { background: var(--sel); color: var(--fg); }
+      #gsearch-list li.gfile .gchevron {
+        display: inline-block;
+        width: 1.2em;
+        color: #888;
+      }
+      #gsearch-list li.gfile .gcount { color: #888; margin-left: 6px; }
+      /* A single match row: line number gutter + excerpt. */
+      #gsearch-list li.ghit {
+        display: flex;
+        gap: 10px;
+        padding: 2px 14px 2px 28px;
+        white-space: pre;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #gsearch-list li.ghit:hover { background: #2a2d2e; }
+      #gsearch-list li.ghit.picked { background: var(--sel); }
+      #gsearch-list li.ghit .gline {
+        flex: 0 0 auto;
+        color: #888;
+        text-align: right;
+        min-width: 4ch;
+      }
+      #gsearch-list li.ghit .gtext {
+        flex: 1 1 auto;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #gsearch-list li.ghit b { color: #4daafc; font-weight: 600; }
+
       /* Main row: sidebar file tree | editor. */
       #main {
         flex: 1 1 auto;
@@ -359,7 +460,7 @@
       <span class="path" id="path"></span>
       <span class="spacer"></span>
       <span class="dirty" id="dirty"></span>
-      <span class="hint">Cmd+P でファイル · Cmd+F で検索 · Ctrl+f/b/n/p/a/e で移動 · Ctrl/Cmd+S で保存</span>
+      <span class="hint">Cmd+P でファイル · Cmd+F で検索 · Cmd+Shift+F で全文検索 · Ctrl+f/b/n/p/a/e で移動 · Ctrl/Cmd+S で保存</span>
     </div>
     <div id="main">
       <nav id="sidebar">
@@ -397,6 +498,18 @@
           </div>
         </div>
       </div>
+
+      <!-- Cmd+Shift+F project-wide search (Zed-style): a full pane over the
+           editor area, grouped by file. Not a floating popup. -->
+      <div id="gsearch" hidden>
+        <div id="gsearch-bar">
+          <input id="gsearch-input" type="text" placeholder="Search project…"
+            autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+          <span id="gsearch-status"></span>
+          <button id="gsearch-close" title="Close (Esc)">✕</button>
+        </div>
+        <ul id="gsearch-list"></ul>
+      </div>
     </div>
     <div id="error"></div>
 
@@ -430,6 +543,11 @@
         picker: document.getElementById("picker"),
         pickerInput: document.getElementById("picker-input"),
         pickerList: document.getElementById("picker-list"),
+        gsearch: document.getElementById("gsearch"),
+        gsearchInput: document.getElementById("gsearch-input"),
+        gsearchStatus: document.getElementById("gsearch-status"),
+        gsearchList: document.getElementById("gsearch-list"),
+        gsearchClose: document.getElementById("gsearch-close"),
         main: document.getElementById("main"),
         sidebar: document.getElementById("sidebar"),
         sidebarResizer: document.getElementById("sidebar-resizer"),
@@ -863,6 +981,14 @@
           return;
         }
 
+        // Cmd+Shift+F: project-wide search (Zed-style). Checked before Cmd+F so
+        // the Shift variant doesn't fall through to the in-file find.
+        if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "f" || e.key === "F")) {
+          e.preventDefault();
+          openGlobalSearch();
+          return;
+        }
+
         // Cmd+F: find; Cmd+Alt+F: find & replace. Ctrl+F stays emacs move-right.
         if (e.metaKey && (e.key === "f" || e.key === "F")) {
           e.preventDefault();
@@ -1128,7 +1254,9 @@
           li.innerHTML = highlightPath(r.path, r.positions);
           li.addEventListener("mousedown", (e) => {
             e.preventDefault();
-            openFile(r.path);
+            // Cmd/Alt+click: open in a separate window (like the file explorer).
+            if (e.metaKey || e.altKey) openFileInNewWindow(r.path);
+            else openFile(r.path);
           });
           els.pickerList.appendChild(li);
         });
@@ -1162,10 +1290,39 @@
         window.location.assign(editorUrl(path));
       }
 
+      // Open a file and land the caret on a specific location. The target is
+      // carried in the URL hash (#L<line>:<col>, 1-based) so it survives the
+      // full-page navigation; boot() parses it and positions the cursor.
+      function openFileAt(path, line, col) {
+        const hash = "#L" + (line + 1) + ":" + (col + 1);
+        window.location.assign(editorUrl(path) + hash);
+      }
+
+      // Parse #L<line>:<col> (1-based) from the URL and place the caret there.
+      // `col` is treated as a display column; for lines with leading tabs/CJK it
+      // may be slightly off, but the line is exact. set_cursor clamps internally.
+      function jumpToHash() {
+        if (!editor) return;
+        const m = /^#L(\d+)(?::(\d+))?$/.exec(window.location.hash);
+        if (!m) return;
+        const row = Math.max(0, parseInt(m[1], 10) - 1);
+        const col = m[2] ? Math.max(0, parseInt(m[2], 10) - 1) : 0;
+        editor.set_cursor(row, col);
+        ensureCursorVisible();
+        render();
+      }
+
       // Open a file in a separate browser window/tab (Cmd+click or Alt+click in
       // the file explorer), leaving the current editor untouched.
       function openFileInNewWindow(path) {
         window.open(editorUrl(path), "_blank");
+      }
+
+      // Same, but landing on a specific location (for global-search results
+      // opened with Cmd/Alt+click or Alt+Enter).
+      function openFileAtInNewWindow(path, line, col) {
+        const hash = "#L" + (line + 1) + ":" + (col + 1);
+        window.open(editorUrl(path) + hash, "_blank");
       }
 
       function onPickerKeyDown(e) {
@@ -1177,7 +1334,8 @@
         if (e.key === "Enter") {
           e.preventDefault();
           const r = pickerResults[pickerSel];
-          if (r) openFile(r.path);
+          // Alt+Enter: open in a separate window, leaving the current tab.
+          if (r) (e.altKey ? openFileInNewWindow : openFile)(r.path);
           return;
         }
         const down = e.key === "ArrowDown" || (e.ctrlKey && (e.key === "n" || e.key === "N"));
@@ -1262,6 +1420,265 @@
         }
         score -= Math.floor(hay.length / 4);
         return score;
+      }
+
+      // ---- Cmd+Shift+F project search --------------------------------------
+
+      let gsearchOpen = false;
+      let gsearchDebounce = null;
+      let gsearchSeq = 0; // request id, to drop out-of-order responses
+      // Raw hits from the server (sorted by path), the flat list of *visible*
+      // selectable rows, and the set of collapsed file paths. Each row is a file
+      // header {kind:'file',path} or a match {kind:'hit',path,line,col}; rows
+      // under a collapsed file are omitted, so the keyboard selection skips them.
+      let gsearchHits = [];
+      let gsearchRows = [];
+      let gsearchSel = 0;
+      let gsearchQuery = "";
+      const gsearchCollapsed = new Set();
+      const GSEARCH_MIN = 3; // matches the server-side trigram minimum
+      const GSEARCH_MAX = 500; // server caps per file, so this spans many files
+
+      function openGlobalSearch() {
+        // Already open → just re-focus and select the query (Cmd+Shift+F again).
+        if (gsearchOpen) {
+          els.gsearchInput.focus();
+          els.gsearchInput.select();
+          return;
+        }
+        gsearchOpen = true;
+        els.gsearch.hidden = false;
+        // Seed with the current selection, if any (VSCode/Zed-style).
+        const seed = editor ? editor.selection_text() : "";
+        if (seed && !seed.includes("\n")) els.gsearchInput.value = seed;
+        runGlobalSearch(els.gsearchInput.value);
+        els.gsearchInput.focus();
+        els.gsearchInput.select();
+      }
+
+      function closeGlobalSearch() {
+        if (!gsearchOpen) return;
+        gsearchOpen = false;
+        els.gsearch.hidden = true;
+        els.ime.focus();
+      }
+
+      function runGlobalSearch(query) {
+        if (gsearchDebounce) clearTimeout(gsearchDebounce);
+        const q = query.trim();
+        if (q.length < GSEARCH_MIN) {
+          gsearchHits = [];
+          els.gsearchList.innerHTML = "";
+          els.gsearchStatus.textContent = "Type " + GSEARCH_MIN + "+ characters";
+          return;
+        }
+        els.gsearchStatus.textContent = "Searching…";
+        const seq = ++gsearchSeq;
+        gsearchDebounce = setTimeout(async () => {
+          try {
+            const resp = await fetch(
+              "/api/search?q=" + encodeURIComponent(q) + "&max=" + GSEARCH_MAX
+            );
+            if (seq !== gsearchSeq) return; // a newer query superseded this one
+            if (!resp.ok) {
+              const data = await resp.json().catch(() => ({}));
+              els.gsearchStatus.textContent = "Search failed: " + (data.error || resp.status);
+              return;
+            }
+            const data = await resp.json();
+            if (seq !== gsearchSeq) return;
+            renderGlobalSearch(q, data.hits || [], !!data.truncated);
+          } catch (err) {
+            if (seq === gsearchSeq) els.gsearchStatus.textContent = "Search failed: " + err;
+          }
+        }, 120);
+      }
+
+      // New result set from the server: reset collapse/selection, then paint.
+      function renderGlobalSearch(query, hits, truncated) {
+        gsearchHits = hits;
+        gsearchQuery = query;
+        gsearchCollapsed.clear();
+        gsearchSel = 0;
+
+        if (!hits.length) {
+          gsearchRows = [];
+          els.gsearchList.innerHTML = "";
+          els.gsearchStatus.textContent = "No results";
+          return;
+        }
+        const fileCount = new Set(hits.map((h) => h.path)).size;
+        els.gsearchStatus.textContent =
+          hits.length + (truncated ? "+" : "") + " results in " + fileCount + " files";
+        paintGsearch();
+      }
+
+      // Rebuild the visible row list + DOM from `gsearchHits` and the collapse
+      // set. Hits arrive sorted by path, so a run-length pass yields one header
+      // per file followed by its (visible) match rows. Cheap enough to call on
+      // every collapse/expand.
+      function paintGsearch() {
+        const counts = new Map();
+        for (const h of gsearchHits) counts.set(h.path, (counts.get(h.path) || 0) + 1);
+
+        gsearchRows = [];
+        els.gsearchList.innerHTML = "";
+        let curPath = null;
+        gsearchHits.forEach((h) => {
+          if (h.path !== curPath) {
+            curPath = h.path;
+            const collapsed = gsearchCollapsed.has(h.path);
+            const rowIdx = gsearchRows.length;
+            gsearchRows.push({ kind: "file", path: h.path });
+            const head = document.createElement("li");
+            head.className = "gfile";
+            head.dataset.row = String(rowIdx);
+            head.innerHTML =
+              '<span class="gchevron">' + (collapsed ? "▸" : "▾") + "</span>" +
+              escapeHtml(h.path) +
+              '<span class="gcount">(' + (counts.get(h.path) || 0) + ")</span>";
+            head.addEventListener("mousedown", (e) => {
+              e.preventDefault();
+              gsearchSel = Number(head.dataset.row);
+              toggleCollapse(h.path);
+            });
+            els.gsearchList.appendChild(head);
+          }
+          if (gsearchCollapsed.has(h.path)) return; // hidden under collapsed file
+          const rowIdx = gsearchRows.length;
+          gsearchRows.push({ kind: "hit", path: h.path, line: h.line, col: h.col });
+          const li = document.createElement("li");
+          li.className = "ghit";
+          li.dataset.row = String(rowIdx);
+          li.innerHTML =
+            '<span class="gline">' + (h.line + 1) + "</span>" +
+            '<span class="gtext">' + highlightExcerpt(h.excerpt, h.col, gsearchQuery.length) + "</span>";
+          li.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            // Cmd/Alt+click: open this match in a separate window.
+            if (e.metaKey || e.altKey) openFileAtInNewWindow(h.path, h.line, h.col);
+            else openFileAt(h.path, h.line, h.col);
+          });
+          els.gsearchList.appendChild(li);
+        });
+        if (gsearchSel >= gsearchRows.length) gsearchSel = gsearchRows.length - 1;
+        if (gsearchSel < 0) gsearchSel = 0;
+        paintGsearchSelection();
+      }
+
+      function paintGsearchSelection() {
+        els.gsearchList.querySelectorAll("li").forEach((li) => {
+          const on = Number(li.dataset.row) === gsearchSel;
+          li.classList.toggle("picked", on);
+          if (on) li.scrollIntoView({ block: "nearest" });
+        });
+      }
+
+      // Bold the matched substring within an excerpt. The server gives a 0-based
+      // character column; bold `qlen` chars from there (the match is literal).
+      function highlightExcerpt(excerpt, col, qlen) {
+        const chars = Array.from(excerpt);
+        const start = Math.max(0, Math.min(col, chars.length));
+        const end = Math.max(start, Math.min(col + qlen, chars.length));
+        const pre = escapeHtml(chars.slice(0, start).join(""));
+        const mid = escapeHtml(chars.slice(start, end).join(""));
+        const post = escapeHtml(chars.slice(end).join(""));
+        return pre + (mid ? "<b>" + mid + "</b>" : "") + post;
+      }
+
+      function onGsearchKeyDown(e) {
+        // Cmd+Shift+F while the search is already focused: re-select the query
+        // instead of falling through to any browser/editor default.
+        if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "f" || e.key === "F")) {
+          e.preventDefault();
+          els.gsearchInput.focus();
+          els.gsearchInput.select();
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          closeGlobalSearch();
+          return;
+        }
+        if (e.key === "Enter") {
+          e.preventDefault();
+          const row = gsearchRows[gsearchSel];
+          if (!row) return;
+          if (row.kind === "hit") {
+            // Alt+Enter: open this match in a separate window.
+            if (e.altKey) openFileAtInNewWindow(row.path, row.line, row.col);
+            else openFileAt(row.path, row.line, row.col);
+          } else {
+            toggleCollapse(row.path);
+          }
+          return;
+        }
+        const down = e.key === "ArrowDown" || (e.ctrlKey && (e.key === "n" || e.key === "N"));
+        const up = e.key === "ArrowUp" || (e.ctrlKey && (e.key === "p" || e.key === "P"));
+        if (down) {
+          e.preventDefault();
+          moveGsearch(1);
+        } else if (up) {
+          e.preventDefault();
+          moveGsearch(-1);
+        } else if (e.key === "ArrowLeft") {
+          e.preventDefault();
+          collapseSelection();
+        } else if (e.key === "ArrowRight") {
+          e.preventDefault();
+          expandSelection();
+        }
+      }
+
+      function moveGsearch(delta) {
+        if (!gsearchRows.length) return;
+        gsearchSel = (gsearchSel + delta + gsearchRows.length) % gsearchRows.length;
+        paintGsearchSelection();
+      }
+
+      // Left arrow: on a match, collapse its parent file and select the header;
+      // on an expanded file header, collapse it.
+      function collapseSelection() {
+        const row = gsearchRows[gsearchSel];
+        if (!row) return;
+        if (row.kind === "hit") {
+          selectFileHeader(row.path);
+          gsearchCollapsed.add(row.path);
+          paintGsearch();
+        } else if (!gsearchCollapsed.has(row.path)) {
+          gsearchCollapsed.add(row.path);
+          paintGsearch();
+        }
+      }
+
+      // Right arrow: on a collapsed header, expand it; on an expanded header,
+      // step into its first match.
+      function expandSelection() {
+        const row = gsearchRows[gsearchSel];
+        if (!row || row.kind !== "file") return;
+        if (gsearchCollapsed.has(row.path)) {
+          gsearchCollapsed.delete(row.path);
+          paintGsearch();
+        } else {
+          moveGsearch(1); // first child hit sits right after the header
+        }
+      }
+
+      function toggleCollapse(path) {
+        if (gsearchCollapsed.has(path)) {
+          gsearchCollapsed.delete(path);
+        } else {
+          gsearchCollapsed.add(path);
+          selectFileHeader(path); // keep selection on the now-collapsed header
+        }
+        paintGsearch();
+      }
+
+      // Point the selection at a file's header row (so collapsing doesn't leave
+      // the selection on a row that's about to be hidden).
+      function selectFileHeader(path) {
+        const idx = gsearchRows.findIndex((r) => r.kind === "file" && r.path === path);
+        if (idx >= 0) gsearchSel = idx;
       }
 
       // ---- sidebar file tree -----------------------------------------------
@@ -1652,6 +2069,10 @@
         window.addEventListener("resize", () => render());
         els.pickerInput.addEventListener("input", (e) => updatePicker(e.target.value));
         els.pickerInput.addEventListener("keydown", onPickerKeyDown);
+        els.gsearchInput.addEventListener("input", (e) => runGlobalSearch(e.target.value));
+        els.gsearchInput.addEventListener("keydown", onGsearchKeyDown);
+        els.gsearchClose.addEventListener("mousedown", (e) => e.preventDefault());
+        els.gsearchClose.addEventListener("click", closeGlobalSearch);
         els.findInput.addEventListener("input", () => runFind(true));
         els.findInput.addEventListener("keydown", onFindKeyDown);
         els.replaceInput.addEventListener("keydown", onReplaceKeyDown);
@@ -1677,6 +2098,10 @@
 
         els.ime.focus();
         render();
+
+        // Jump to a location passed in the URL hash (#L<line>:<col>, 1-based),
+        // e.g. when opened from a global-search result. Clamp defensively.
+        if (filePath) jumpToHash();
 
         // Populate the sidebar file tree and the initial syntax highlight.
         initSidebar();

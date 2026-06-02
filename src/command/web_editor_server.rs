@@ -111,6 +111,77 @@ pub(crate) async fn handle_api_files(State(state): State<Arc<GithubServerState>>
 }
 
 #[derive(Deserialize)]
+pub(crate) struct SearchQuery {
+    q: String,
+    /// Max hits to return; 0 (the default) means "use the server default".
+    #[serde(default)]
+    max: usize,
+}
+
+#[derive(Serialize)]
+struct SearchHitDto {
+    /// Repo-relative path, as the editor opens files (`/editor/<path>`).
+    path: String,
+    /// 0-based line index of the match.
+    line: usize,
+    /// 0-based character column where the match starts.
+    col: usize,
+    /// The full matched line (trimmed of trailing whitespace).
+    excerpt: String,
+}
+
+#[derive(Serialize)]
+struct SearchResponse {
+    hits: Vec<SearchHitDto>,
+    /// True when more hits existed than `max` (results were capped).
+    truncated: bool,
+}
+
+/// Project-wide text search for the editor's Cmd+Shift+F overlay. Reuses the
+/// trigram-indexed backend ([`crate::command::global_search_index::search_repo`]):
+/// case-insensitive literal substring, `.gitignore`-aware, 3-char minimum
+/// (shorter queries return no hits). Results arrive sorted by path so the
+/// client can group them by file.
+pub(crate) async fn handle_api_search(
+    State(state): State<Arc<GithubServerState>>,
+    Query(q): Query<SearchQuery>,
+) -> Response {
+    const DEFAULT_MAX: usize = 500;
+    const HARD_MAX: usize = 1000;
+    // Cap matches per file so one match-heavy file can't consume the whole
+    // budget and hide other files (a common term like `test` otherwise stops
+    // after the first few files). Files with more get the per-file cap shown.
+    const PER_FILE_MAX: usize = 50;
+    let max = if q.max == 0 { DEFAULT_MAX } else { q.max }.min(HARD_MAX);
+
+    let repo = crate::command::global_search_index::GlobalIndexedRepo {
+        root: state.repo_root.clone(),
+        display_name: String::new(),
+    };
+    // Ask for one extra so we can tell whether results were truncated.
+    let mut hits = crate::command::global_search_index::search_repo_limited(
+        &repo,
+        &q.q,
+        max + 1,
+        PER_FILE_MAX,
+    );
+    let truncated = hits.len() > max;
+    hits.truncate(max);
+
+    let hits = hits
+        .into_iter()
+        .map(|h| SearchHitDto {
+            path: h.rel_path,
+            line: h.line,
+            col: h.char_col,
+            excerpt: h.excerpt,
+        })
+        .collect();
+
+    ok_json(&SearchResponse { hits, truncated })
+}
+
+#[derive(Deserialize)]
 pub(crate) struct HighlightRequest {
     path: String,
     content: String,
