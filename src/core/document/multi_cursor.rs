@@ -66,6 +66,21 @@ impl Document {
         true
     }
 
+    /// Add a selection `[start, end)` (cursor at `end`) as the new *primary*
+    /// cursor, keeping the existing cursors. Used by the browser editor's Cmd+D
+    /// (VSCode "add selection to next match"): inserting at the front and then
+    /// `sort_and_dedup_cursors` (which preserves the original index-0 as primary)
+    /// keeps the freshly added match primary so the viewport follows it.
+    pub fn add_primary_selection(&mut self, start: usize, end: usize) {
+        let n = self.rope.len_chars();
+        self.cursors.insert(0, end.min(n));
+        self.selections.insert(
+            0,
+            Some(Selection::tail_on_forward(start.min(n), end.min(n))),
+        );
+        self.sort_and_dedup_cursors();
+    }
+
     /// Add a cursor on the line above at the same column (best effort).
     /// Uses the primary cursor's column but adds above the topmost existing cursor.
     /// Returns true if a cursor was added.

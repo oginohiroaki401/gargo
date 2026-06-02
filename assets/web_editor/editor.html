@@ -1064,6 +1064,17 @@
           return;
         }
 
+        // Cmd+D: select the word under the caret, or (with a selection) add a
+        // cursor at the next occurrence (VSCode-style). Cmd only — Ctrl+D stays
+        // the emacs delete-forward in the core keymap.
+        if (e.metaKey && !e.shiftKey && (e.key === "d" || e.key === "D")) {
+          e.preventDefault();
+          editor.select_word_or_add_next_match();
+          els.ime.value = "";
+          afterEdit();
+          return;
+        }
+
         // Always-insert PoC: swallow Escape so we never leave Insert mode.
         if (e.key === "Escape") {
           e.preventDefault();
@@ -1247,7 +1258,8 @@
         { label: "Add Cursor Below", hint: "", run: () => { editor.add_cursor_below(); afterEdit(); } },
         { label: "Add Cursors to Top", hint: "", run: () => { editor.add_cursors_to_top(); afterEdit(); } },
         { label: "Add Cursors to Bottom", hint: "", run: () => { editor.add_cursors_to_bottom(); afterEdit(); } },
-        { label: "Remove Extra Cursors", hint: "", run: () => { editor.remove_secondary_cursors(); afterEdit(); } },
+        { label: "Select Next Occurrence", hint: "⌘D", run: () => { editor.select_word_or_add_next_match(); afterEdit(); } },
+        { label: "Clear Other Cursors", hint: "", run: () => { editor.remove_secondary_cursors(); afterEdit(); } },
       ];
 
       // Fetch the repository file list once; shared by the Cmd+P picker and the

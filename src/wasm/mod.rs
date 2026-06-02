@@ -241,6 +241,66 @@ impl WebEditor {
             .dispatch_core(CoreAction::RemoveSecondaryCursors, TAB_WIDTH);
     }
 
+    /// VSCode-style Cmd+D. With no active selection, select the word under the
+    /// primary caret. With a selection, add a cursor at the next occurrence of
+    /// the selected text (wrapping to the top), making it the new primary so
+    /// repeated calls walk through every match. Self-contained (it doesn't use
+    /// the terminal's search state), so multi-line selections are ignored.
+    pub fn select_word_or_add_next_match(&mut self) {
+        // Primary selection range (char offsets), if non-empty.
+        let primary_range = {
+            let buf = self.editor.active_buffer();
+            buf.selections
+                .first()
+                .copied()
+                .flatten()
+                .map(|s| (s.anchor.min(s.head), s.anchor.max(s.head)))
+                .filter(|&(a, b)| a < b)
+        };
+
+        let Some((start, primary_end)) = primary_range else {
+            // No selection yet → select the word under the primary caret.
+            let pos = primary_cursor(self.editor.active_buffer());
+            self.editor.active_buffer_mut().select_word_at(pos);
+            self.editor.mark_highlights_dirty();
+            return;
+        };
+
+        // The selected text drives the search. Single-line only (VSCode parity).
+        let pattern = self
+            .editor
+            .active_buffer()
+            .rope
+            .slice(start..primary_end)
+            .to_string();
+        if pattern.is_empty() || pattern.contains('\n') {
+            return;
+        }
+
+        let matches = {
+            let rope = &self.editor.active_buffer().rope;
+            collect_matches(rope, &pattern, true, false, false)
+        };
+        if matches.is_empty() {
+            return;
+        }
+
+        let existing = self.editor.active_buffer().merged_selection_ranges();
+        // `find` hands the predicate `&&(usize, usize)`; deref once to compare.
+        let is_selected = |m: &&(usize, usize)| existing.contains(*m);
+
+        // First unselected match at/after the primary end; else wrap to the top.
+        let next = matches
+            .iter()
+            .find(|m| m.0 >= primary_end && !is_selected(m))
+            .or_else(|| matches.iter().find(|m| !is_selected(m)));
+
+        if let Some(&(s, e)) = next {
+            self.editor.active_buffer_mut().add_primary_selection(s, e);
+            self.editor.mark_highlights_dirty();
+        }
+    }
+
     /// Set a single selection from an anchor (row, col) to a head (row, col),
     /// placing the primary cursor at the head. Used for mouse-drag selection.
     /// An empty range (anchor == head) clears the selection.
