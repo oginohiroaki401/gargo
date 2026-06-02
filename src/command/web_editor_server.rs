@@ -278,6 +278,50 @@ pub(crate) async fn handle_api_highlight(Json(req): Json<HighlightRequest>) -> R
 }
 
 #[derive(Deserialize)]
+pub(crate) struct PreviewRequest {
+    path: String,
+    content: String,
+}
+
+#[derive(Serialize)]
+struct PreviewResponse {
+    /// `"markdown"` | `"html"` | `"none"` — tells the client how to treat `html`.
+    kind: String,
+    /// Rendered HTML (markdown → HTML), or the raw file content for HTML files.
+    html: String,
+}
+
+/// Render a Markdown or HTML file for the editor's split preview pane. Markdown
+/// reuses the GitHub preview server's comrak config ([`render_markdown`]) so the
+/// output (GFM tables, task lists, mermaid blocks) matches the blob view; HTML
+/// files are returned verbatim since the file *is* the document. The client
+/// wraps the result in a sandboxed iframe (markdown gets a styled `markdown-body`
+/// document; HTML is shown as-is).
+///
+/// Relative links/images are intentionally left unresolved — the editor has no
+/// repo-blob URL context like the preview server, and a preview pane doesn't need
+/// working navigation.
+pub(crate) async fn handle_api_preview(Json(req): Json<PreviewRequest>) -> Response {
+    let ext = Path::new(&req.path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    let (kind, html) = match ext.as_str() {
+        "md" | "markdown" => (
+            "markdown",
+            crate::command::github_preview_server::render_markdown(&req.content),
+        ),
+        "html" | "htm" => ("html", req.content),
+        _ => ("none", String::new()),
+    };
+    ok_json(&PreviewResponse {
+        kind: kind.to_string(),
+        html,
+    })
+}
+
+#[derive(Deserialize)]
 pub(crate) struct SymbolsRequest {
     path: String,
     content: String,

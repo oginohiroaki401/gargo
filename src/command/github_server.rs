@@ -509,6 +509,7 @@ async fn run_server(
         .route("/api/highlight", post(editor::handle_api_highlight))
         .route("/api/symbols", post(editor::handle_api_symbols))
         .route("/api/git-gutter", post(editor::handle_api_git_gutter))
+        .route("/api/preview", post(editor::handle_api_preview))
         .with_state(github_state);
 
     let app = preview_routes

@@ -28,6 +28,9 @@
         main: document.getElementById("main"),
         sidebar: document.getElementById("sidebar"),
         sidebarResizer: document.getElementById("sidebar-resizer"),
+        previewPane: document.getElementById("preview-pane"),
+        previewFrame: document.getElementById("preview-frame"),
+        previewResizer: document.getElementById("preview-resizer"),
         tree: document.getElementById("tree"),
         ctxmenu: document.getElementById("ctxmenu"),
         fsprompt: document.getElementById("fsprompt"),
@@ -465,6 +468,93 @@
         }
       }
 
+      // ---- Markdown / HTML preview (server-rendered, debounced) ------------
+
+      // Which preview kind a path supports, or null if none. Drives both the
+      // palette command's visibility and how refreshPreview() wraps the result.
+      function previewableKind(p) {
+        const ext = (p || "").split(".").pop().toLowerCase();
+        if (ext === "md" || ext === "markdown") return "markdown";
+        if (ext === "html" || ext === "htm") return "html";
+        return null;
+      }
+
+      let previewOpen = false;
+      let previewTimer = null;
+
+      // Styles + mermaid bootstrap injected into the preview iframe. Mirrors the
+      // GitHub preview server's markdown-body look so the rendered output is
+      // consistent across the two surfaces.
+      const PREVIEW_CSS = [
+        "body { margin: 0; padding: 20px; color: #1f2328; background: #fff;",
+        "  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; line-height: 1.6; }",
+        ".markdown-body { max-width: 980px; margin: 0 auto; }",
+        ".markdown-body img { max-width: 100%; }",
+        ".markdown-body pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow: auto; line-height: 1.45; }",
+        ".markdown-body code { background: rgba(175,184,193,0.2); padding: 0.2em 0.4em; border-radius: 6px;",
+        "  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 85%; }",
+        ".markdown-body pre code { background: transparent; padding: 0; border-radius: 0; font-size: 100%; }",
+        ".markdown-body table { border-collapse: collapse; }",
+        ".markdown-body th, .markdown-body td { border: 1px solid #d0d7de; padding: 6px 13px; }",
+        "pre.mermaid { background: #fff; border: none; display: flex; justify-content: center; }",
+      ].join("\n");
+
+      const PREVIEW_MERMAID_BOOT =
+        '<script src="/assets/mermaid.min.js"><\/script>' +
+        "<script>(function(){if(!window.mermaid)return;" +
+        "window.mermaid.initialize({startOnLoad:false,theme:'default'});" +
+        "window.mermaid.run({querySelector:'pre.mermaid'}).catch(function(){});})();<\/script>";
+
+      function schedulePreview() {
+        if (!previewOpen || !editor || !filePath) return;
+        if (previewTimer) clearTimeout(previewTimer);
+        previewTimer = setTimeout(refreshPreview, 250);
+      }
+
+      async function refreshPreview() {
+        if (!previewOpen || !editor || !filePath) return;
+        const content = editor.content();
+        try {
+          const resp = await fetch("/api/preview", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: filePath, content }),
+          });
+          if (!resp.ok) return;
+          const data = await resp.json();
+          if (data.kind === "html") {
+            els.previewFrame.srcdoc = data.html;
+          } else if (data.kind === "markdown") {
+            els.previewFrame.srcdoc =
+              '<!DOCTYPE html><html><head><meta charset="utf-8"><style>' +
+              PREVIEW_CSS +
+              '</style></head><body><div class="markdown-body">' +
+              data.html +
+              "</div>" +
+              PREVIEW_MERMAID_BOOT +
+              "</body></html>";
+          } else {
+            els.previewFrame.srcdoc = "";
+          }
+        } catch (_) {
+          // Preview is best-effort; ignore network/parse errors.
+        }
+      }
+
+      // Toggle the split preview pane (palette command). Only meaningful for
+      // Markdown/HTML files; the editor re-measures its narrower width on render.
+      function togglePreview() {
+        if (!previewableKind(filePath)) {
+          showError("Preview is only available for Markdown and HTML files.");
+          return;
+        }
+        previewOpen = !previewOpen;
+        els.previewPane.hidden = !previewOpen;
+        els.previewResizer.hidden = !previewOpen;
+        render();
+        if (previewOpen) refreshPreview();
+      }
+
       function syncStatus(model) {
         els.mode.textContent = model.mode;
         els.dirty.textContent = editor.is_dirty() ? "● modified" : "";
@@ -770,6 +860,7 @@
         render();
         scheduleHighlight();
         scheduleGitGutter();
+        if (previewOpen) schedulePreview();
         // Edits shift match offsets; recompute so the find box stays accurate.
         if (findOpen) runFind(false);
       }
@@ -1148,6 +1239,7 @@
         { label: "Select All Occurrences", hint: "⇧⌘L", run: () => { editor.add_cursors_to_all_matches(); afterEdit(); } },
         { label: "Clear Other Cursors", hint: "", run: () => { editor.remove_secondary_cursors(); afterEdit(); } },
         { label: "Toggle Word Wrap", hint: "⌥Z", run: () => toggleWrap() },
+        { label: "Toggle Preview", hint: "", when: () => previewableKind(filePath), run: () => togglePreview() },
         { label: "Wrap Selection in ( )", hint: "", run: () => { editor.wrap_selection("(", ")"); afterEdit(); } },
         { label: "Wrap Selection in [ ]", hint: "", run: () => { editor.wrap_selection("[", "]"); afterEdit(); } },
         { label: "Wrap Selection in { }", hint: "", run: () => { editor.wrap_selection("{", "}"); afterEdit(); } },
@@ -1246,9 +1338,12 @@
           hint: cmd.hint,
           onChoose: () => { closePicker(); cmd.run(); },
         });
-        if (!q) return COMMANDS.map((c) => toResult(c, []));
+        // Some commands are context-sensitive (e.g. "Toggle Preview" only for
+        // Markdown/HTML files); hide those whose `when` predicate is false.
+        const available = COMMANDS.filter((c) => !c.when || c.when());
+        if (!q) return available.map((c) => toResult(c, []));
         const scored = [];
-        for (const c of COMMANDS) {
+        for (const c of available) {
           const m = fuzzyMatch(c.label, q);
           if (m) scored.push({ c, score: m.score, positions: m.positions });
         }
@@ -1994,17 +2089,32 @@
         e.preventDefault();
       }
       function onResizerMove(e) {
-        if (!resizing) return;
-        const rect = els.main.getBoundingClientRect();
-        let w = Math.max(120, Math.min(e.clientX - rect.left, rect.width - 200));
-        document.documentElement.style.setProperty("--sidebar-w", w + "px");
-        render();
-      }
-      function onResizerUp() {
         if (resizing) {
-          resizing = false;
+          const rect = els.main.getBoundingClientRect();
+          let w = Math.max(120, Math.min(e.clientX - rect.left, rect.width - 200));
+          document.documentElement.style.setProperty("--sidebar-w", w + "px");
+          render();
+        } else if (previewResizing) {
+          // Preview pane is on the right: width measured from main's right edge.
+          const rect = els.main.getBoundingClientRect();
+          let w = Math.max(200, Math.min(rect.right - e.clientX, rect.width - 300));
+          document.documentElement.style.setProperty("--preview-w", w + "px");
           render();
         }
+      }
+      function onResizerUp() {
+        if (resizing || previewResizing) {
+          resizing = false;
+          previewResizing = false;
+          render();
+        }
+      }
+
+      // Draggable preview-pane width (only present when the preview is open).
+      let previewResizing = false;
+      function onPreviewResizerDown(e) {
+        previewResizing = true;
+        e.preventDefault();
       }
 
       // ---- sidebar context menu + filesystem ops ---------------------------
@@ -2653,6 +2763,7 @@
           el.addEventListener("click", fn);
         }
         els.sidebarResizer.addEventListener("mousedown", onResizerDown);
+        els.previewResizer.addEventListener("mousedown", onPreviewResizerDown);
         window.addEventListener("mousemove", onResizerMove);
         window.addEventListener("mouseup", onResizerUp);
 

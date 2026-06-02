@@ -41,6 +41,15 @@
         </div>
       </div>
 
+      <!-- Rendered Markdown/HTML preview, split to the right of the editor.
+           Toggled from the command palette for .md/.html files. The rendered
+           output lives in a sandboxed iframe so its styles/scripts (incl.
+           mermaid) can't leak into the editor chrome. -->
+      <div id="preview-resizer" hidden></div>
+      <div id="preview-pane" hidden>
+        <iframe id="preview-frame" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>
+      </div>
+
       <!-- Cmd+F in-file search / replace (VSCode-style), floats over editor. -->
       <div id="find" hidden>
         <button id="find-expand" title="Toggle Replace">▸</button>
