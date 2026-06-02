@@ -159,6 +159,16 @@
         if (link) link.click();
     }
 
+    // Open the focused file in the browser editor (new tab) by clicking its
+    // existing ".open-in-editor" link, so URL/target conventions stay in one
+    // place. No-op when the focused item has no such link (e.g. a directory).
+    function openInEditor() {
+        const el = focusedItem();
+        if (!el) return;
+        const link = el.querySelector(".open-in-editor");
+        if (link) link.click();
+    }
+
     // --- split view actions --------------------------------------------
 
     // Open the focused diff in the side-by-side split view (new tab).
@@ -250,6 +260,7 @@
             ["j / k", "Focus next / previous file"],
             ["o", "Expand / collapse focused file"],
             ["Shift+O", "Open focused file in split view (new tab)"],
+            ["e", "Open focused file in editor (new tab)"],
             ["u", "Stage / unstage focused file"],
             ["v", "Toggle Viewed"],
             ["g g / G", "Jump to first / last file"],
@@ -258,6 +269,7 @@
             ["j / k", "Focus next / previous file"],
             ["o", "Expand / collapse focused file"],
             ["Shift+O", "Open focused file in split view (new tab)"],
+            ["e", "Open focused file in editor (new tab)"],
             ["v", "Toggle Viewed"],
             ["g g / G", "Jump to first / last file"],
         ]}],
@@ -265,6 +277,7 @@
             ["j / k", "Focus next / previous file"],
             ["o", "Expand / collapse focused file"],
             ["Shift+O", "Open focused file in split view (new tab)"],
+            ["e", "Open focused file in editor (new tab)"],
             ["g g / G", "Jump to first / last file"],
         ]}],
         "split": [{ heading: "Split view", rows: [
@@ -455,6 +468,11 @@
             if (key === "v" && PAGE !== "commit-detail") {
                 ev.preventDefault();
                 toggleViewed();
+                return;
+            }
+            if (key === "e") {
+                ev.preventDefault();
+                openInEditor();
                 return;
             }
             if (key === "u" && PAGE === "status") {
