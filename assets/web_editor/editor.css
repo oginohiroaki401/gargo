@@ -65,6 +65,45 @@
       }
       .row { left: var(--gutter-w, 50px); }
 
+      /* Soft-wrap mode: rows flow normally (no absolute positioning) and the
+         browser wraps long lines; gutter and text sit in a flex row so the line
+         number aligns to the first visual row. Caret/selection overlays are still
+         absolute children of #sizer, positioned from real DOM rects (Range
+         getClientRects), so they follow the wrapping exactly. */
+      #sizer.wrap { width: 100% !important; }
+      .wline { display: flex; align-items: flex-start; }
+      .wgutter {
+        position: relative; /* anchor for the git-deleted ::after marker */
+        flex: 0 0 var(--gutter-w, 50px);
+        width: var(--gutter-w, 50px);
+        line-height: var(--line-height);
+        color: var(--gutter);
+        text-align: right;
+        padding-right: 8px;
+        user-select: none;
+      }
+      .wgutter.git-added { border-left: 3px solid var(--git-added); }
+      .wgutter.git-modified { border-left: 3px solid var(--git-modified); }
+      .wgutter.git-deleted::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        bottom: 0;
+        width: 3px;
+        height: 6px;
+        background: var(--git-deleted);
+      }
+      .wrow {
+        position: relative; /* so z-index applies, keeping text above .sel */
+        z-index: 2;
+        flex: 1 1 auto;
+        min-width: 0; /* allow the flex item to shrink so text wraps */
+        min-height: var(--line-height);
+        line-height: var(--line-height);
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
       /* Git change gutter: a colored bar on the gutter's left edge. Added and
          modified lines get a full-height bar; a deletion sits between lines, so
          it shows as a short marker at the bottom edge (like the terminal's ▔). */

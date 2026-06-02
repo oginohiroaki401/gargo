@@ -58,8 +58,15 @@ pub(crate) async fn handle_editor_page(
     );
     // Syntax + chrome colors come from `[theme.editor]` in the user's config,
     // mirroring the terminal editor's `[theme]`. Defaults to a light palette.
-    let theme_css =
-        crate::command::web_editor_theme::editor_theme_css(&crate::config::Config::load().theme);
+    let config = crate::config::Config::load();
+    let theme_css = crate::command::web_editor_theme::editor_theme_css(&config.theme);
+    // Default soft-wrap state (`[theme.editor] wrap`); the client persists a
+    // per-tab override in localStorage on top of this.
+    let wrap_default = if config.theme.editor.wrap {
+        "true"
+    } else {
+        "false"
+    };
     // The repo root, JSON-encoded, so the client can build absolute paths for
     // "Copy Path" in the sidebar context menu. `to_string` yields a quoted,
     // escaped JS string literal we drop straight into the inline script.
@@ -71,7 +78,8 @@ pub(crate) async fn handle_editor_page(
         .replace("{{APP_CSS}}", &css)
         .replace("{{APP_RAIL}}", &rail)
         .replace("{{THEME_CSS}}", &theme_css)
-        .replace("{{REPO_ROOT}}", &repo_root);
+        .replace("{{REPO_ROOT}}", &repo_root)
+        .replace("{{EDITOR_WRAP}}", wrap_default);
     Html(page)
 }
 

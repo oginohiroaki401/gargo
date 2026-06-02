@@ -64,6 +64,23 @@
       // native-only, so the wasm core can't produce it), refreshed on a debounce.
       let gitGutter = new Map(); // lineIdx -> "added" | "modified" | "deleted"
 
+      // Soft-wrap mode. Default from server config (window.__GARGO_WRAP__),
+      // overridden per-tab via Alt+Z and remembered in localStorage. In wrap mode
+      // the renderer switches to a flow layout and measures caret/selection rects
+      // from the real DOM (see renderWrap); above WRAP_MAX_LINES wrap is ignored
+      // (the virtualized horizontal-scroll renderer stays on) for performance.
+      const WRAP_MAX_LINES = 4000;
+      let wrapMode = (function () {
+        let saved = null;
+        try { saved = localStorage.getItem("gargo_wrap"); } catch (_) {}
+        return saved !== null ? saved === "true" : window.__GARGO_WRAP__ === true;
+      })();
+      let renderedWrap = null; // the mode the surface DOM is currently built for
+      const wrapLineEls = new Map(); // line -> {wline, wgutter, wrow}
+      let wrapBuiltVersion = -1;
+      let wrapRowsDirty = false; // force a row rebuild (highlight/gutter changed)
+      let wrapPrimaryCaretTop = 0; // content-Y of the primary caret, for scrolling
+
       function showError(msg) {
         els.error.textContent = msg;
         els.error.style.display = "block";
@@ -120,6 +137,41 @@
 
       function render() {
         if (!editor) return;
+        const useWrap = wrapMode && editor.line_count() <= WRAP_MAX_LINES;
+        if (useWrap !== renderedWrap) {
+          resetSurface(useWrap);
+          renderedWrap = useWrap;
+        }
+        if (useWrap) renderWrap();
+        else renderVirtual();
+      }
+
+      // Tear down all dynamic surface DOM when switching wrap on/off so the two
+      // renderers never collide. ensurePool/buildWrapRows recreate as needed.
+      function resetSurface(useWrap) {
+        for (const e of mountedRows.values()) {
+          e.gutter.remove();
+          e.row.remove();
+        }
+        mountedRows.clear();
+        for (const e of wrapLineEls.values()) e.wline.remove();
+        wrapLineEls.clear();
+        for (const pool of [caretPool, selPool, matchPool]) {
+          for (const el of pool) el.remove();
+          pool.length = 0;
+        }
+        wrapBuiltVersion = -1;
+        wrapRowsDirty = false;
+        lastVersion = -1;
+        maxCols = 0;
+        els.sizer.classList.toggle("wrap", useWrap);
+        if (useWrap) {
+          els.sizer.style.height = "";
+          els.sizer.style.width = "";
+        }
+      }
+
+      function renderVirtual() {
         const version = editor.version();
         const total = editor.line_count();
         const scrollTop = els.scroller.scrollTop;
@@ -335,6 +387,7 @@
             next.set(Number(line), spans);
           }
           highlightSpans = next;
+          wrapRowsDirty = true; // spans changed → repaint wrapped rows
           render();
         } catch (_) {
           // Highlight is best-effort; ignore network/parse errors.
@@ -368,6 +421,7 @@
             next.set(Number(line), status);
           }
           gitGutter = next;
+          wrapRowsDirty = true; // gutter status changed → repaint wrapped rows
           render();
         } catch (_) {
           // Gutter is best-effort; ignore network/parse errors.
@@ -390,10 +444,247 @@
         els.preedit.style.top = y + "px";
       }
 
+      // ---- soft-wrap renderer ----------------------------------------------
+      //
+      // In wrap mode lines flow normally (the browser wraps them); we read the
+      // exact caret/selection geometry back from the DOM via Range rects, so
+      // overlays follow the wrapping precisely. Rows are rebuilt only when the
+      // content (version) or highlight/gutter spans change — not on cursor moves.
+
+      function renderWrap() {
+        const total = editor.line_count();
+        setGutterWidth(total);
+        els.sizer.style.height = "";
+        els.sizer.style.width = "";
+        const model = editor.render(0, total);
+        const v = editor.version();
+        if (v !== wrapBuiltVersion || wrapRowsDirty) {
+          buildWrapRows(model);
+          wrapBuiltVersion = v;
+          wrapRowsDirty = false;
+        }
+        positionWrapOverlays(model);
+        syncStatus(model);
+        positionImeWrap(model);
+        lastVersion = v;
+      }
+
+      function buildWrapRows(model) {
+        for (const e of wrapLineEls.values()) e.wline.remove();
+        wrapLineEls.clear();
+        const frag = document.createDocumentFragment();
+        for (let line = 0; line < model.rows.length; line++) {
+          const wline = document.createElement("div");
+          wline.className = "wline";
+          wline.dataset.line = String(line);
+          const wgutter = document.createElement("div");
+          const gst = gitGutter.get(line);
+          wgutter.className = "wgutter" + (gst ? " git-" + gst : "");
+          wgutter.textContent = String(line + 1);
+          const wrow = document.createElement("div");
+          wrow.className = "wrow";
+          paintRow(wrow, model.rows[line], highlightSpans.get(line));
+          wline.appendChild(wgutter);
+          wline.appendChild(wrow);
+          frag.appendChild(wline);
+          wrapLineEls.set(line, { wline, wgutter, wrow });
+        }
+        els.sizer.appendChild(frag);
+      }
+
+      function positionWrapOverlays(model) {
+        const base = els.sizer.getBoundingClientRect();
+
+        ensurePool(caretPool, model.cursors.length, "caret");
+        for (let i = 0; i < caretPool.length; i++) {
+          const el = caretPool[i];
+          const c = i < model.cursors.length ? model.cursors[i] : null;
+          const e = c ? wrapLineEls.get(c.row) : null;
+          const rect = e ? caretRectInRow(e.wrow, c.char_col) : null;
+          if (rect) {
+            el.style.display = "block";
+            el.style.left = rect.left - base.left + "px";
+            el.style.top = rect.top - base.top + "px";
+            el.className = "caret" + (c.primary ? " primary" : "");
+            if (c.primary) wrapPrimaryCaretTop = rect.top - base.top;
+          } else {
+            el.style.display = "none";
+          }
+        }
+
+        // One rectangle per wrapped segment, courtesy of Range.getClientRects().
+        const selRects = [];
+        for (const s of model.selections) {
+          for (let row = s.start_row; row <= s.end_row; row++) {
+            const e = wrapLineEls.get(row);
+            if (!e) continue;
+            const text = model.rows[row] || "";
+            const lineChars = Array.from(text).length;
+            const fromChar = row === s.start_row ? s.start_char : 0;
+            const toChar = row === s.end_row ? s.end_char : lineChars;
+            for (const r of rangeRectsInRow(e.wrow, fromChar, toChar)) selRects.push(r);
+          }
+        }
+        placeWrapRects(selPool, "sel", selRects, base);
+
+        const matchRects = [];
+        if (findOpen) {
+          for (let i = 0; i < searchMatches.length; i++) {
+            if (i === searchIndex && findCurrentSelected) continue;
+            const m = searchMatches[i];
+            const e = wrapLineEls.get(m.row);
+            if (!e) continue;
+            for (const r of rangeRectsInRow(e.wrow, m.start_char, m.end_char)) matchRects.push(r);
+          }
+        }
+        placeWrapRects(matchPool, "match-hl", matchRects, base);
+      }
+
+      function placeWrapRects(pool, cls, rects, base) {
+        ensurePool(pool, rects.length, cls);
+        for (let i = 0; i < pool.length; i++) {
+          const el = pool[i];
+          if (i < rects.length) {
+            const r = rects[i];
+            el.style.display = "block";
+            el.style.left = r.left - base.left + "px";
+            el.style.top = r.top - base.top + "px";
+            el.style.width = r.width + "px";
+            el.style.height = r.height + "px";
+          } else {
+            el.style.display = "none";
+          }
+        }
+      }
+
+      // Locate the text node + UTF-16 offset for character index `charIdx` inside
+      // a wrapped row (whose descendants may be syntax <span>s). For all non-astral
+      // text (incl. CJK) a char index equals a code-unit offset.
+      function locateChar(wrow, charIdx) {
+        const walk = document.createTreeWalker(wrow, NodeFilter.SHOW_TEXT);
+        let node = walk.nextNode();
+        let acc = 0;
+        let last = null;
+        while (node) {
+          const len = node.nodeValue.length;
+          last = node;
+          if (charIdx <= acc + len) return { node, offset: charIdx - acc };
+          acc += len;
+          node = walk.nextNode();
+        }
+        return last ? { node: last, offset: last.nodeValue.length } : null;
+      }
+
+      // Viewport-coord rect for the caret at `charIdx` within a wrapped row.
+      function caretRectInRow(wrow, charIdx) {
+        const loc = locateChar(wrow, charIdx);
+        if (!loc) {
+          const r = wrow.getBoundingClientRect();
+          return { left: r.left, top: r.top, width: 0, height: r.height };
+        }
+        const range = document.createRange();
+        range.setStart(loc.node, loc.offset);
+        range.setEnd(loc.node, loc.offset);
+        let rect = range.getBoundingClientRect();
+        if (!rect.height && loc.offset < loc.node.nodeValue.length) {
+          range.setEnd(loc.node, loc.offset + 1);
+          rect = range.getBoundingClientRect();
+        }
+        if (!rect.height) {
+          const r = wrow.getBoundingClientRect();
+          return { left: rect.left || r.left, top: r.top, width: 0, height: r.height };
+        }
+        return { left: rect.left, top: rect.top, width: 0, height: rect.height };
+      }
+
+      // Per-visual-row rects covering [fromChar, toChar) within a wrapped row.
+      function rangeRectsInRow(wrow, fromChar, toChar) {
+        if (toChar <= fromChar) return [];
+        const a = locateChar(wrow, fromChar);
+        const b = locateChar(wrow, toChar);
+        if (!a || !b) return [];
+        const range = document.createRange();
+        range.setStart(a.node, a.offset);
+        range.setEnd(b.node, b.offset);
+        return Array.from(range.getClientRects());
+      }
+
+      // Character offset within `wrow` for a DOM (node, offset) hit-test result.
+      function charOffsetWithin(wrow, node, offset) {
+        const walk = document.createTreeWalker(wrow, NodeFilter.SHOW_TEXT);
+        let n = walk.nextNode();
+        let acc = 0;
+        while (n) {
+          if (n === node) return acc + offset;
+          acc += n.nodeValue.length;
+          n = walk.nextNode();
+        }
+        return acc;
+      }
+
+      // Map a mouse event to a (row, col) using the browser's hit-testing, which
+      // is wrap-aware. `col` is a character index (treated as a display column by
+      // set_cursor, exact for ASCII, approximate for tabs/CJK — like the
+      // non-wrap path).
+      function wrapEventToRowCol(e) {
+        let node = null;
+        let offset = 0;
+        if (document.caretPositionFromPoint) {
+          const p = document.caretPositionFromPoint(e.clientX, e.clientY);
+          if (p) {
+            node = p.offsetNode;
+            offset = p.offset;
+          }
+        } else if (document.caretRangeFromPoint) {
+          const r = document.caretRangeFromPoint(e.clientX, e.clientY);
+          if (r) {
+            node = r.startContainer;
+            offset = r.startOffset;
+          }
+        }
+        if (!node) return null;
+        const startEl = node.nodeType === 3 ? node.parentNode : node;
+        const wline = startEl && startEl.closest ? startEl.closest(".wline") : null;
+        if (!wline) return null;
+        const row = Number(wline.dataset.line);
+        const wrow = wline.querySelector(".wrow");
+        const col = wrow && node.nodeType === 3 ? charOffsetWithin(wrow, node, offset) : 0;
+        return { row, col };
+      }
+
+      function positionImeWrap(model) {
+        const c = model.cursors[0];
+        const e = c ? wrapLineEls.get(c.row) : null;
+        const base = els.sizer.getBoundingClientRect();
+        let x = 0;
+        let y = 0;
+        if (e) {
+          const r = caretRectInRow(e.wrow, c.char_col);
+          x = r.left - base.left;
+          y = r.top - base.top;
+        }
+        els.ime.style.left = x + "px";
+        els.ime.style.top = y + "px";
+        els.preedit.style.left = x + "px";
+        els.preedit.style.top = y + "px";
+      }
+
+      // Toggle soft-wrap (Alt+Z / palette), remembering the choice per browser.
+      function toggleWrap() {
+        wrapMode = !wrapMode;
+        try { localStorage.setItem("gargo_wrap", String(wrapMode)); } catch (_) {}
+        render();
+        ensureCursorVisible();
+      }
+
       // ---- cursor-follow scrolling (vertical + horizontal) -----------------
 
       function ensureCursorVisible() {
         if (!editor) return;
+        if (renderedWrap) {
+          ensureCursorVisibleWrap();
+          return;
+        }
         const row = editor.cursor_row();
         const col = editor.cursor_col();
 
@@ -417,6 +708,22 @@
           els.scroller.scrollLeft = Math.max(0, cx - gutterWidth - mx);
         } else if (cx + charWidth > left + w - mx) {
           els.scroller.scrollLeft = cx + charWidth - w + mx;
+        }
+      }
+
+      // Wrap mode: scroll the primary caret into view. renderWrap() refreshes the
+      // rows/overlays first so the measured caret rect reflects the latest edit,
+      // regardless of whether callers run render() before or after this.
+      function ensureCursorVisibleWrap() {
+        renderWrap();
+        const top = els.scroller.scrollTop;
+        const h = els.scroller.clientHeight;
+        const m = LINE_HEIGHT * 2;
+        const cy = wrapPrimaryCaretTop;
+        if (cy < top + m) {
+          els.scroller.scrollTop = Math.max(0, cy - m);
+        } else if (cy + LINE_HEIGHT > top + h - m) {
+          els.scroller.scrollTop = cy + LINE_HEIGHT - h + m;
         }
       }
 
@@ -576,6 +883,14 @@
           return;
         }
 
+        // Alt+Z: toggle soft word-wrap. Use e.code since Alt rewrites e.key on
+        // some layouts (Mac Option produces e.g. "Ω").
+        if (e.altKey && !e.metaKey && !e.ctrlKey && e.code === "KeyZ") {
+          e.preventDefault();
+          toggleWrap();
+          return;
+        }
+
         // Always-insert PoC: swallow Escape so we never leave Insert mode.
         if (e.key === "Escape") {
           e.preventDefault();
@@ -682,6 +997,10 @@
       // positioned rows; its bounding rect already accounts for scroll, so
       // clientX/Y minus the rect maps straight into document coordinates.
       function eventToRowCol(e) {
+        if (renderedWrap) {
+          const rc = wrapEventToRowCol(e);
+          if (rc) return rc;
+        }
         const rect = els.sizer.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
@@ -792,6 +1111,7 @@
         { label: "Select Next Occurrence", hint: "⌘D", run: () => { editor.select_word_or_add_next_match(); afterEdit(); } },
         { label: "Select All Occurrences", hint: "⇧⌘L", run: () => { editor.add_cursors_to_all_matches(); afterEdit(); } },
         { label: "Clear Other Cursors", hint: "", run: () => { editor.remove_secondary_cursors(); afterEdit(); } },
+        { label: "Toggle Word Wrap", hint: "⌥Z", run: () => toggleWrap() },
         { label: "Wrap Selection in ( )", hint: "", run: () => { editor.wrap_selection("(", ")"); afterEdit(); } },
         { label: "Wrap Selection in [ ]", hint: "", run: () => { editor.wrap_selection("[", "]"); afterEdit(); } },
         { label: "Wrap Selection in { }", hint: "", run: () => { editor.wrap_selection("{", "}"); afterEdit(); } },
@@ -2267,7 +2587,11 @@
         els.ime.addEventListener("compositionend", onCompositionEnd);
         els.ime.addEventListener("input", onInput);
         els.ime.addEventListener("paste", onPaste);
-        els.scroller.addEventListener("scroll", () => render());
+        // In wrap mode rows flow and overlays scroll with the content, so a
+        // scroll needs no re-render; the virtualized renderer does need one.
+        els.scroller.addEventListener("scroll", () => {
+          if (!renderedWrap) render();
+        });
         els.scroller.addEventListener("mousedown", onMouseDown);
         window.addEventListener("mousemove", onMouseMove);
         window.addEventListener("mouseup", onMouseUp);

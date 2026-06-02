@@ -163,6 +163,10 @@ pub struct ThemeEditorConfig {
     /// Per-scope syntax color overrides (e.g. `keyword`, `string`). Each value
     /// is a CSS color (`#rrggbb` or a named color); `bold`/`italic` optional.
     pub tokens: HashMap<String, ThemeCaptureConfig>,
+    /// Soft-wrap long lines by default in the browser editor. When false
+    /// (default) lines scroll horizontally; a per-tab toggle (Alt+Z) overrides
+    /// this and is remembered in the browser.
+    pub wrap: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
