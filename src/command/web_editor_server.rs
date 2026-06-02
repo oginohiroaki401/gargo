@@ -207,6 +207,47 @@ fn byte_to_expanded_col(line: &str, byte_off: usize) -> usize {
 }
 
 #[derive(Deserialize)]
+pub(crate) struct GitGutterRequest {
+    path: String,
+    content: String,
+}
+
+#[derive(Serialize)]
+struct GitGutterResponse {
+    /// Per-line git status keyed by 0-based line index (as a string JSON key):
+    /// `"added"`, `"modified"`, or `"deleted"`. Matches `/api/highlight`'s
+    /// string-keyed-map shape so the client parses both the same way.
+    lines: std::collections::HashMap<String, String>,
+}
+
+/// Compute the git change gutter for `content` (line-level diff against `HEAD`).
+/// Mirrors `/api/highlight`: the client posts the live editor content so the
+/// gutter updates as you type. The diff backend (`gix`) is native-only — the
+/// browser's wasm core can't compute it — so it must run here on the server.
+/// Returns an empty map outside a repo or when nothing changed.
+pub(crate) async fn handle_api_git_gutter(
+    State(state): State<Arc<GithubServerState>>,
+    Json(req): Json<GitGutterRequest>,
+) -> Response {
+    let Some(full) = resolve_in_repo(&state.repo_root, &req.path) else {
+        return bad_request("invalid path");
+    };
+    let status = crate::command::git_backend::diff_line_status_for_content(&full, &req.content);
+    let lines = status
+        .into_iter()
+        .map(|(line, st)| {
+            let label = match st {
+                crate::command::git::GitLineStatus::Added => "added",
+                crate::command::git::GitLineStatus::Modified => "modified",
+                crate::command::git::GitLineStatus::Deleted => "deleted",
+            };
+            (line.to_string(), label.to_string())
+        })
+        .collect();
+    ok_json(&GitGutterResponse { lines })
+}
+
+#[derive(Deserialize)]
 pub(crate) struct SaveRequest {
     path: String,
     /// Hash the client loaded; empty for a brand-new file.

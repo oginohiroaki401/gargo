@@ -13,6 +13,9 @@
         --gutter: #858585;
         --caret: #d4d4d4;
         --sel: #264f78;
+        --git-added: #587c0c;
+        --git-modified: #bb8009;
+        --git-deleted: #94151b;
         --status-bg: #6a2c91; /* distinct from modal editor's blue */
         --line-height: 20px;
         --font: 14px Menlo, Monaco, "DejaVu Sans Mono", Consolas, monospace;
@@ -62,6 +65,21 @@
         user-select: none;
       }
       .row { left: var(--gutter-w, 50px); }
+
+      /* Git change gutter: a colored bar on the gutter's left edge. Added and
+         modified lines get a full-height bar; a deletion sits between lines, so
+         it shows as a short marker at the bottom edge (like the terminal's ▔). */
+      .gutter.git-added { border-left: 3px solid var(--git-added); }
+      .gutter.git-modified { border-left: 3px solid var(--git-modified); }
+      .gutter.git-deleted::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        bottom: 0;
+        width: 3px;
+        height: 6px;
+        background: var(--git-deleted);
+      }
 
       .caret {
         position: absolute;
@@ -443,6 +461,9 @@
       // Syntax highlight: spans per line (char offsets into the expanded row
       // text), computed server-side (tree-sitter) and refreshed on a debounce.
       let highlightSpans = new Map(); // lineIdx -> [{start, end, scope}]
+      // Git change gutter: per-line status computed server-side (gix is
+      // native-only, so the wasm core can't produce it), refreshed on a debounce.
+      let gitGutter = new Map(); // lineIdx -> "added" | "modified" | "deleted"
 
       function showError(msg) {
         els.error.textContent = msg;
@@ -546,6 +567,8 @@
           entry.gutter.style.top = y;
           entry.row.style.top = y;
           entry.gutter.textContent = String(line + 1);
+          const gst = gitGutter.get(line);
+          entry.gutter.className = "gutter" + (gst ? " git-" + gst : "");
           paintRow(entry.row, model.rows[i], highlightSpans.get(line));
           if (model.rows[i].length > maxCols) maxCols = model.rows[i].length;
         }
@@ -719,6 +742,39 @@
         }
       }
 
+      let gitGutterTimer = null;
+      let gitGutterVersion = -1; // editor.version() the gutter was computed for
+
+      function scheduleGitGutter() {
+        if (!filePath || !editor) return;
+        if (editor.version() === gitGutterVersion) return; // content unchanged
+        if (gitGutterTimer) clearTimeout(gitGutterTimer);
+        gitGutterTimer = setTimeout(fetchGitGutter, 200);
+      }
+
+      async function fetchGitGutter() {
+        if (!editor || !filePath) return;
+        gitGutterVersion = editor.version();
+        const content = editor.content();
+        try {
+          const resp = await fetch("/api/git-gutter", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: filePath, content }),
+          });
+          if (!resp.ok) return;
+          const data = await resp.json();
+          const next = new Map();
+          for (const [line, status] of Object.entries(data.lines || {})) {
+            next.set(Number(line), status);
+          }
+          gitGutter = next;
+          render();
+        } catch (_) {
+          // Gutter is best-effort; ignore network/parse errors.
+        }
+      }
+
       function syncStatus(model) {
         els.mode.textContent = model.mode;
         els.dirty.textContent = editor.is_dirty() ? "● modified" : "";
@@ -770,6 +826,7 @@
         ensureCursorVisible();
         render();
         scheduleHighlight();
+        scheduleGitGutter();
         // Edits shift match offsets; recompute so the find box stays accurate.
         if (findOpen) runFind(false);
       }
@@ -1458,6 +1515,7 @@
         ensureCursorVisible();
         render();
         scheduleHighlight();
+        scheduleGitGutter();
         runFind(true);
       }
 
@@ -1474,6 +1532,7 @@
         ensureCursorVisible();
         render();
         scheduleHighlight();
+        scheduleGitGutter();
         runFind(false);
         if (n) els.findCount.textContent = "Replaced " + n;
       }
@@ -1622,6 +1681,7 @@
         // Populate the sidebar file tree and the initial syntax highlight.
         initSidebar();
         if (filePath) fetchHighlight();
+        if (filePath) fetchGitGutter();
 
         // Opened without a file (the rail's "Editor" link) → jump straight to
         // the file picker.

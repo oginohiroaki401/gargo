@@ -485,6 +485,7 @@ async fn run_server(
         .route("/api/files", get(editor::handle_api_files))
         .route("/api/save", post(editor::handle_api_save))
         .route("/api/highlight", post(editor::handle_api_highlight))
+        .route("/api/git-gutter", post(editor::handle_api_git_gutter))
         .with_state(github_state);
 
     let app = preview_routes
