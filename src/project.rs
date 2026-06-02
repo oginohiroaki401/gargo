@@ -116,12 +116,39 @@ fn collect_files_git(root: &Path) -> Option<Vec<String>> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // `--cached` lists index entries even when their working-tree copy is gone
+    // (e.g. a tracked file deleted with a plain `rm` instead of `git rm`, which
+    // is what the web editor's Delete does). Without this, such a file — and any
+    // directory that only held it — lingers in the sidebar as a phantom after a
+    // restart. Drop anything git reports as deleted from the working tree.
+    let deleted = git_deleted_set(root);
     let files: Vec<String> = stdout
         .lines()
         .filter(|l| !l.is_empty())
+        .filter(|l| !deleted.contains(*l))
         .map(|l| l.to_string())
         .collect();
     Some(files)
+}
+
+/// Paths that git tracks but whose working-tree copy is missing (`git ls-files
+/// --deleted`). Empty on any error so the caller simply keeps the full list.
+fn git_deleted_set(root: &Path) -> std::collections::HashSet<String> {
+    Command::new("git")
+        .args(["-c", "core.quotepath=off", "ls-files", "--deleted"])
+        .current_dir(root)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(|l| l.to_string())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn collect_files_walk(dir: &Path, root: &Path) -> Vec<String> {
@@ -296,6 +323,38 @@ mod tests {
         assert!(files.contains(&"tracked.txt".to_string()));
         assert!(files.contains(&"untracked.txt".to_string()));
         assert!(!files.contains(&"ignored.txt".to_string()));
+    }
+
+    #[test]
+    fn collect_files_excludes_tracked_files_deleted_from_working_tree() {
+        // Regression: a tracked file removed from disk with a plain `rm` (as the
+        // web editor's Delete does) stays in git's index, so `git ls-files
+        // --cached` still reports it — and the sidebar would show it (and its
+        // now-empty parent dir) as a phantom after a restart.
+        let tmp = tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_git_repo(&repo);
+
+        std::fs::create_dir_all(repo.join("foo")).unwrap();
+        std::fs::write(repo.join("foo/bar.md"), "content").unwrap();
+        std::fs::write(repo.join("keep.txt"), "keep").unwrap();
+        let output = Command::new("git")
+            .args(["add", "--all"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+
+        // Delete the working-tree copy without touching the index.
+        std::fs::remove_dir_all(repo.join("foo")).unwrap();
+
+        let files = collect_files(&repo);
+        assert!(
+            !files.contains(&"foo/bar.md".to_string()),
+            "deleted file should not appear: {files:?}"
+        );
+        assert!(files.contains(&"keep.txt".to_string()));
     }
 
     #[test]
