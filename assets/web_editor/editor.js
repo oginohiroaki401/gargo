@@ -558,6 +558,17 @@
           return;
         }
 
+        // Cmd+Shift+L: select every occurrence of the word/selection and place a
+        // cursor on each (VSCode "Select All Occurrences"). Plain Cmd+L is left
+        // to the browser (focus address bar).
+        if (e.metaKey && e.shiftKey && (e.key === "l" || e.key === "L")) {
+          e.preventDefault();
+          editor.add_cursors_to_all_matches();
+          els.ime.value = "";
+          afterEdit();
+          return;
+        }
+
         // Always-insert PoC: swallow Escape so we never leave Insert mode.
         if (e.key === "Escape") {
           e.preventDefault();
@@ -591,6 +602,16 @@
         const noMod = !e.ctrlKey && !e.metaKey && !e.altKey;
         const isDelete = name === "Backspace" || name === "Delete";
         const isTextInput = noMod && (name.length === 1 || name === "Enter" || name === "Tab");
+
+        // Auto-surround: typing an opening bracket/quote with text selected wraps
+        // the selection instead of replacing it (VSCode behaviour).
+        if (noMod && SURROUND_PAIRS[name] && editor.has_selection()) {
+          editor.wrap_selection(name, SURROUND_PAIRS[name]);
+          els.ime.value = "";
+          afterEdit();
+          return;
+        }
+
         if ((isDelete || isTextInput) && editor.has_selection()) {
           editor.delete_selection();
           if (isDelete) {
@@ -723,6 +744,10 @@
       let pickerSel = 0;
       const PICKER_LIMIT = 50;
 
+      // Opening bracket/quote → its closing partner, for auto-surround and the
+      // "Wrap Selection" palette commands.
+      const SURROUND_PAIRS = { "(": ")", "[": "]", "{": "}", '"': '"', "'": "'", "`": "`" };
+
       // Command palette entries. `run` is the action; `hint` is the keybinding
       // shown muted on the right. Commands that open another overlay close the
       // picker first so the overlay can take focus; editing commands run and let
@@ -742,7 +767,17 @@
         { label: "Add Cursors to Top", hint: "", run: () => { editor.add_cursors_to_top(); afterEdit(); } },
         { label: "Add Cursors to Bottom", hint: "", run: () => { editor.add_cursors_to_bottom(); afterEdit(); } },
         { label: "Select Next Occurrence", hint: "⌘D", run: () => { editor.select_word_or_add_next_match(); afterEdit(); } },
+        { label: "Select All Occurrences", hint: "⇧⌘L", run: () => { editor.add_cursors_to_all_matches(); afterEdit(); } },
         { label: "Clear Other Cursors", hint: "", run: () => { editor.remove_secondary_cursors(); afterEdit(); } },
+        { label: "Wrap Selection in ( )", hint: "", run: () => { editor.wrap_selection("(", ")"); afterEdit(); } },
+        { label: "Wrap Selection in [ ]", hint: "", run: () => { editor.wrap_selection("[", "]"); afterEdit(); } },
+        { label: "Wrap Selection in { }", hint: "", run: () => { editor.wrap_selection("{", "}"); afterEdit(); } },
+        { label: "Wrap Selection in \" \"", hint: "", run: () => { editor.wrap_selection('"', '"'); afterEdit(); } },
+        { label: "Wrap Selection in ' '", hint: "", run: () => { editor.wrap_selection("'", "'"); afterEdit(); } },
+        { label: "Wrap Selection in ` `", hint: "", run: () => { editor.wrap_selection("`", "`"); afterEdit(); } },
+        { label: "Copy File Path", hint: "", run: () => copyText(absPath(filePath)) },
+        { label: "Copy Relative Path", hint: "", run: () => copyText(filePath) },
+        { label: "Reveal in Finder", hint: "", run: () => { if (filePath) revealInFinder(filePath); } },
       ];
 
       // Fetch the repository file list once; shared by the Cmd+P picker and the

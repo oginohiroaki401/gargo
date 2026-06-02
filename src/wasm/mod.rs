@@ -241,6 +241,18 @@ impl WebEditor {
             .dispatch_core(CoreAction::RemoveSecondaryCursors, TAB_WIDTH);
     }
 
+    /// Wrap the primary selection with `open`/`close` (e.g. `"("` / `")"`) as a
+    /// single undoable edit, staying in Insert mode. No-op without a selection.
+    /// Exposed for the command palette and JS auto-surround (typing a bracket or
+    /// quote while text is selected). Only the first char of each string is used.
+    pub fn wrap_selection(&mut self, open: &str, close: &str) {
+        let (Some(open), Some(close)) = (open.chars().next(), close.chars().next()) else {
+            return;
+        };
+        self.editor
+            .dispatch_core(CoreAction::WrapSelection { open, close }, TAB_WIDTH);
+    }
+
     /// VSCode-style Cmd+D. With no active selection, select the word under the
     /// primary caret. With a selection, add a cursor at the next occurrence of
     /// the selected text (wrapping to the top), making it the new primary so
@@ -299,6 +311,63 @@ impl WebEditor {
             self.editor.active_buffer_mut().add_primary_selection(s, e);
             self.editor.mark_highlights_dirty();
         }
+    }
+
+    /// VSCode-style "Select All Occurrences" (Cmd+Shift+L): select every match of
+    /// the current selection — or the word under the caret when nothing is
+    /// selected — and drop a cursor on each, so the next edit applies to all.
+    /// Single-line pattern only (matches `select_word_or_add_next_match`). The
+    /// originally-selected match stays primary so the viewport doesn't jump.
+    pub fn add_cursors_to_all_matches(&mut self) {
+        // Pattern range: the primary selection, else the word under the caret.
+        let range = {
+            let buf = self.editor.active_buffer();
+            let primary = buf
+                .selections
+                .first()
+                .copied()
+                .flatten()
+                .map(|s| (s.anchor.min(s.head), s.anchor.max(s.head)))
+                .filter(|&(a, b)| a < b);
+            match primary {
+                Some(r) => Some(r),
+                None => {
+                    let pos = primary_cursor(buf);
+                    crate::core::document::expand::word_range_at(&buf.rope, pos)
+                }
+            }
+        };
+        let Some((start, end)) = range else { return };
+
+        let pattern = self
+            .editor
+            .active_buffer()
+            .rope
+            .slice(start..end)
+            .to_string();
+        if pattern.is_empty() || pattern.contains('\n') {
+            return;
+        }
+
+        let mut matches = {
+            let rope = &self.editor.active_buffer().rope;
+            collect_matches(rope, &pattern, true, false, false)
+        };
+        if matches.is_empty() {
+            return;
+        }
+        // Rotate so the originally-selected match is primary (index 0).
+        if let Some(idx) = matches.iter().position(|&(s, _)| s == start) {
+            matches.rotate_left(idx);
+        }
+
+        let buf = self.editor.active_buffer_mut();
+        buf.cursors = matches.iter().map(|&(_, e)| e).collect();
+        buf.selections = matches
+            .iter()
+            .map(|&(s, e)| Some(Selection::tail_on_forward(s, e)))
+            .collect();
+        self.editor.mark_highlights_dirty();
     }
 
     /// Set a single selection from an anchor (row, col) to a head (row, col),

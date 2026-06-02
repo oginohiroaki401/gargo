@@ -559,4 +559,23 @@ mod tests {
         ed.dispatch_core(CoreAction::Paste, 4);
         assert_eq!(content(&ed), "abc");
     }
+
+    #[test]
+    fn wrap_selection_surrounds_in_insert_mode_without_leaving_it() {
+        let mut ed = editor_with("foo bar\n");
+        ed.dispatch_core(CoreAction::ChangeMode(Mode::Insert), 4);
+        // Select "foo" (offsets 0..3) the way JS does for auto-surround.
+        ed.active_buffer_mut().selections = vec![Some(Selection::tail_on_forward(0, 3))];
+        ed.active_buffer_mut().cursors = vec![3];
+        ed.dispatch_core(
+            CoreAction::WrapSelection {
+                open: '(',
+                close: ')',
+            },
+            4,
+        );
+        assert_eq!(content(&ed), "(foo) bar\n");
+        // Auto-surround must keep the editor in Insert mode.
+        assert_eq!(ed.mode, Mode::Insert);
+    }
 }
