@@ -17,6 +17,14 @@
         --git-modified: #bb8009;
         --git-deleted: #94151b;
         --status-bg: #6a2c91; /* distinct from modal editor's blue */
+        /* Overlay/panel chrome (find widget, pickers, sidebar). Themed by the
+           server alongside the editor surface so a light theme stays coherent. */
+        --panel-bg: #252526;
+        --panel-border: #454545;
+        --input-bg: #3c3c3c;
+        --hover-bg: #2a2d2e;
+        --muted: #8a8a8a;
+        --accent: #4daafc;
         --line-height: 20px;
         --font: 14px Menlo, Monaco, "DejaVu Sans Mono", Consolas, monospace;
       }
@@ -163,8 +171,8 @@
         display: flex;
         align-items: flex-start;
         gap: 2px;
-        background: #252526;
-        border: 1px solid #454545;
+        background: var(--panel-bg);
+        border: 1px solid var(--panel-border);
         border-radius: 4px;
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
         padding: 4px 6px 4px 2px;
@@ -176,9 +184,9 @@
       /* Replace row only shows once expanded (chevron / Cmd+Alt+F). */
       #find:not(.with-replace) #replace-row { display: none; }
       #find-input, #replace-input {
-        border: 1px solid #3c3c3c;
+        border: 1px solid var(--panel-border);
         outline: none;
-        background: #3c3c3c;
+        background: var(--input-bg);
         color: var(--fg);
         font: var(--font);
         padding: 3px 6px;
@@ -187,7 +195,7 @@
       }
       #find-input:focus, #replace-input:focus { border-color: var(--sel); }
       #find-count {
-        color: #aaa;
+        color: var(--muted);
         font-size: 12px;
         min-width: 74px;
         text-align: center;
@@ -203,7 +211,7 @@
         padding: 3px 5px;
         border-radius: 3px;
       }
-      #find button:hover { background: #3a3d41; }
+      #find button:hover { background: var(--hover-bg); }
       #find button.toggle.on { background: var(--sel); color: #fff; }
       #find button u { text-decoration: underline; }
       /* The expand chevron sits in its own left column, full widget height. */
@@ -211,7 +219,7 @@
         align-self: stretch;
         display: flex;
         align-items: center;
-        color: #aaa;
+        color: var(--muted);
       }
       #find.with-replace #find-expand { transform: rotate(90deg); }
 
@@ -223,8 +231,8 @@
         transform: translateX(-50%);
         width: min(640px, 90vw);
         max-height: 60vh;
-        background: #252526;
-        border: 1px solid #454545;
+        background: var(--panel-bg);
+        border: 1px solid var(--panel-border);
         border-radius: 6px;
         box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
         display: flex;
@@ -237,7 +245,7 @@
         flex: 0 0 auto; /* stay pinned at the top while the list scrolls */
         border: 0;
         outline: none;
-        background: #3c3c3c;
+        background: var(--input-bg);
         color: var(--fg);
         font: var(--font);
         padding: 8px 10px;
@@ -263,7 +271,7 @@
       /* Distinct class from the editor's .sel selection overlay (which is
          absolutely positioned) so the highlighted row stays in flow. */
       #picker-list li.picked { background: var(--sel); }
-      #picker-list li b { color: #4daafc; font-weight: 600; }
+      #picker-list li b { color: var(--accent); font-weight: 600; }
 
       /* Cmd+Shift+F project search: a full pane filling the editor area
          (#main is position:relative), Zed-style — not a floating popup. */
@@ -283,23 +291,23 @@
         align-items: center;
         gap: 10px;
         padding: 10px 14px;
-        border-bottom: 1px solid #333;
-        background: #252526;
+        border-bottom: 1px solid var(--panel-border);
+        background: var(--panel-bg);
       }
       #gsearch-input {
         flex: 1 1 auto;
-        border: 1px solid #454545;
+        border: 1px solid var(--panel-border);
         outline: none;
-        background: #3c3c3c;
+        background: var(--input-bg);
         color: var(--fg);
         font: var(--font);
         padding: 8px 10px;
         border-radius: 4px;
       }
-      #gsearch-input:focus { border-color: #4daafc; }
+      #gsearch-input:focus { border-color: var(--accent); }
       #gsearch-status {
         flex: 0 0 auto;
-        color: #888;
+        color: var(--muted);
         font-size: 12px;
         white-space: nowrap;
       }
@@ -307,7 +315,7 @@
         flex: 0 0 auto;
         background: transparent;
         border: 0;
-        color: #aaa;
+        color: var(--muted);
         cursor: pointer;
         font-size: 14px;
         padding: 2px 6px;
@@ -326,8 +334,8 @@
       #gsearch-list li.gfile {
         position: sticky;
         top: 0;
-        background: #2d2d2e;
-        color: #ddd;
+        background: var(--hover-bg);
+        color: var(--fg);
         padding: 5px 14px;
         white-space: nowrap;
         overflow: hidden;
@@ -339,9 +347,9 @@
       #gsearch-list li.gfile .gchevron {
         display: inline-block;
         width: 1.2em;
-        color: #888;
+        color: var(--muted);
       }
-      #gsearch-list li.gfile .gcount { color: #888; margin-left: 6px; }
+      #gsearch-list li.gfile .gcount { color: var(--muted); margin-left: 6px; }
       /* A single match row: line number gutter + excerpt. */
       #gsearch-list li.ghit {
         display: flex;
@@ -351,11 +359,11 @@
         overflow: hidden;
         text-overflow: ellipsis;
       }
-      #gsearch-list li.ghit:hover { background: #2a2d2e; }
+      #gsearch-list li.ghit:hover { background: var(--hover-bg); }
       #gsearch-list li.ghit.picked { background: var(--sel); }
       #gsearch-list li.ghit .gline {
         flex: 0 0 auto;
-        color: #888;
+        color: var(--muted);
         text-align: right;
         min-width: 4ch;
       }
@@ -380,8 +388,8 @@
         flex: 0 0 auto;
         width: var(--sidebar-w, 240px);
         overflow: auto;
-        background: #252526;
-        border-right: 1px solid #333;
+        background: var(--panel-bg);
+        border-right: 1px solid var(--panel-border);
         user-select: none;
         font-size: 13px;
       }
@@ -396,7 +404,7 @@
       #sidebar-resizer[hidden] { display: none; }
       #tree-head {
         padding: 6px 10px;
-        color: #aaa;
+        color: var(--muted);
         text-transform: uppercase;
         font-size: 11px;
         letter-spacing: 0.5px;
@@ -410,20 +418,20 @@
         cursor: pointer;
         padding-right: 8px;
       }
-      .tnode:hover { background: #2a2d2e; }
+      .tnode:hover { background: var(--hover-bg); }
       .tnode.active { background: var(--sel); }
       .tnode .twist {
         width: 14px;
         text-align: center;
         flex: 0 0 auto;
-        color: #888;
+        color: var(--muted);
       }
       .tnode .tlabel {
         overflow: hidden;
         text-overflow: ellipsis;
       }
-      .tnode.dir .tlabel { color: #ccc; }
-      .tnode.file .tlabel { color: #bdbdbd; }
+      .tnode.dir .tlabel { color: var(--fg); }
+      .tnode.file .tlabel { color: var(--muted); }
 
       /* Syntax highlight token colors (VSCode Dark+ palette). */
       .tok-keyword { color: #569cd6; }
@@ -450,6 +458,11 @@
       .tok-link { color: #4ec9b0; text-decoration: underline; }
       .tok-emphasis { font-style: italic; }
       .tok-strong { font-weight: 700; }
+
+      /* Theme injected by the server from `[theme.editor]` (light by default).
+         It overrides the chrome variables and token colors above; the statics
+         are only a fallback for when the page is served without substitution. */
+      {{THEME_CSS}}
     </style>
   </head>
   <body>

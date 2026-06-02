@@ -43,9 +43,14 @@ pub(crate) async fn handle_editor_page(
         "<style>\n{}</style>",
         crate::command::server_shared::SHARED_CSS
     );
+    // Syntax + chrome colors come from `[theme.editor]` in the user's config,
+    // mirroring the terminal editor's `[theme]`. Defaults to a light palette.
+    let theme_css =
+        crate::command::web_editor_theme::editor_theme_css(&crate::config::Config::load().theme);
     let page = EDITOR_HTML
         .replace("{{APP_CSS}}", &css)
-        .replace("{{APP_RAIL}}", &rail);
+        .replace("{{APP_RAIL}}", &rail)
+        .replace("{{THEME_CSS}}", &theme_css);
     Html(page)
 }
 

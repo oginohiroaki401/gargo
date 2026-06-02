@@ -128,6 +128,41 @@ pub struct ThemeConfig {
     pub preset: String,
     pub captures: HashMap<String, ThemeCaptureConfig>,
     pub ui: ThemeUiConfig,
+    /// Coloring for the browser editor (`gargo server`). The terminal UI uses
+    /// `preset`/`captures` above; the web editor renders in a browser with its
+    /// own light/dark palettes and chrome, configured here.
+    pub editor: ThemeEditorConfig,
+}
+
+/// Theme for the browser editor served by `gargo server`. Mirrors the terminal
+/// theme in spirit (a preset plus per-scope overrides) but carries web-specific
+/// chrome colors (background, gutter, selection, …) and uses CSS colors so it
+/// can target a browser. Defaults to a light palette; set `preset = "dark"` for
+/// the VSCode-dark palette.
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
+#[serde(default)]
+pub struct ThemeEditorConfig {
+    /// `"light"` (default) or `"dark"`. Selects the built-in base palette.
+    pub preset: Option<String>,
+    /// Editor background.
+    pub bg: Option<String>,
+    /// Default foreground (text without a more specific token color).
+    pub fg: Option<String>,
+    /// Line-number gutter color.
+    pub gutter: Option<String>,
+    /// Caret color.
+    pub caret: Option<String>,
+    /// Selection / current-search-match background.
+    pub selection: Option<String>,
+    /// Status bar background.
+    pub status_bg: Option<String>,
+    /// Git change-gutter bar colors.
+    pub git_added: Option<String>,
+    pub git_modified: Option<String>,
+    pub git_deleted: Option<String>,
+    /// Per-scope syntax color overrides (e.g. `keyword`, `string`). Each value
+    /// is a CSS color (`#rrggbb` or a named color); `bold`/`italic` optional.
+    pub tokens: HashMap<String, ThemeCaptureConfig>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
@@ -195,6 +230,7 @@ impl Default for ThemeConfig {
             preset: "ansi_dark".to_string(),
             captures: HashMap::new(),
             ui: ThemeUiConfig::default(),
+            editor: ThemeEditorConfig::default(),
         }
     }
 }
