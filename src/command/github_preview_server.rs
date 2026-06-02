@@ -899,7 +899,7 @@ const DIRECTORY_TEMPLATE: &str = r#"<!DOCTYPE html>
         }
         .file-item {
             display: grid;
-            grid-template-columns: 20px 1fr;
+            grid-template-columns: 20px 1fr auto;
             gap: 12px;
             align-items: center;
             padding: 8px 16px;
@@ -912,6 +912,9 @@ const DIRECTORY_TEMPLATE: &str = r#"<!DOCTYPE html>
         .file-item:hover {
             background: #f6f8fa;
         }
+        /* Reveal the per-file "Open in editor" button only on row hover. */
+        .file-item .open-in-editor { visibility: hidden; }
+        .file-item:hover .open-in-editor { visibility: visible; }
         .file-icon {
             font-size: 16px;
             text-align: center;
@@ -1437,9 +1440,10 @@ pub(crate) async fn handle_directory_listing(
             format!("{}/{}", display_path, file)
         };
         file_list.push_str(&format!(
-            r#"<div class="file-item"><div class="file-icon">📄</div><div class="file-name"><a href="{}">{}</a></div></div>"#,
+            r#"<div class="file-item"><div class="file-icon">📄</div><div class="file-name"><a href="{}">{}</a></div>{}</div>"#,
             html_escape(&blob_url(ctx, &link_path)),
-            html_escape(&file)
+            html_escape(&file),
+            crate::command::app_shell::open_in_editor_button(&link_path),
         ));
     }
 
@@ -1540,16 +1544,17 @@ pub(crate) async fn handle_file_display(
 
     // Preview/Code toggle goes into the breadcrumb row. View on GitHub now
     // lives in the rail, so the in-body toolbar only carries view-mode chips.
+    let editor_btn = crate::command::app_shell::open_in_editor_button(display_path);
     let toolbar = if is_markdown {
         let blob = blob_url(ctx, display_path);
         format!(
-            r#"<div class="file-toolbar"><div class="md-view-toggle"><a class="md-toggle-btn{preview}" href="{blob}">Preview</a><a class="md-toggle-btn{code}" href="{blob}?plain=1">Code</a></div></div>"#,
+            r#"<div class="file-toolbar"><div class="md-view-toggle"><a class="md-toggle-btn{preview}" href="{blob}">Preview</a><a class="md-toggle-btn{code}" href="{blob}?plain=1">Code</a></div>{editor_btn}</div>"#,
             preview = if plain { "" } else { " active" },
             code = if plain { " active" } else { "" },
             blob = html_escape(&blob),
         )
     } else {
-        String::new()
+        format!(r#"<div class="file-toolbar">{editor_btn}</div>"#)
     };
 
     let rendered_content = match text {

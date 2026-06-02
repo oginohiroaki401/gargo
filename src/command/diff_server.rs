@@ -715,6 +715,21 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             button.setAttribute("title", collapsed ? "Show diff" : "Hide diff");
         };
 
+        // A small "Open in editor" link that opens the file in the browser editor
+        // (/editor/<path>) in a new tab. stopPropagation so it never toggles the
+        // file's collapse state.
+        function openInEditorLink(path) {
+            const a = document.createElement("a");
+            a.className = "open-in-editor";
+            a.href = "/editor/" + path.split("/").map(encodeURIComponent).join("/");
+            a.target = "_blank";
+            a.rel = "noopener";
+            a.title = "Open in editor";
+            a.textContent = "✎ Edit";
+            a.addEventListener("click", (e) => e.stopPropagation());
+            return a;
+        }
+
         function createFileRow(section, meta) {
             const fileId = fileIdOf(section, meta.path);
             const wrapper = document.createElement("div");
@@ -772,6 +787,8 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             stats.appendChild(adds);
             stats.appendChild(dels);
             header.appendChild(stats);
+
+            header.appendChild(openInEditorLink(meta.path));
 
             const isStaged = section === "staged";
             const stageBtn = document.createElement("button");
@@ -2066,6 +2083,18 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             button.setAttribute("title", collapsed ? "Show diff" : "Hide diff");
         };
 
+        function openInEditorLink(path) {
+            const a = document.createElement("a");
+            a.className = "open-in-editor";
+            a.href = "/editor/" + path.split("/").map(encodeURIComponent).join("/");
+            a.target = "_blank";
+            a.rel = "noopener";
+            a.title = "Open in editor";
+            a.textContent = "✎ Edit";
+            a.addEventListener("click", (e) => e.stopPropagation());
+            return a;
+        }
+
         function createFileRow(meta) {
             const fileId = fileIdOf(meta.path);
             const wrapper = document.createElement("div");
@@ -2115,6 +2144,8 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             stats.appendChild(adds);
             stats.appendChild(dels);
             header.appendChild(stats);
+
+            header.appendChild(openInEditorLink(meta.path));
 
             const label = document.createElement("label");
             label.className = "diff-viewed-label";
@@ -2995,6 +3026,11 @@ pub(crate) async fn handle_split_request(
         }
         _ => html_escape(&path),
     };
+    let path_label = format!(
+        "{} {}",
+        path_label,
+        crate::command::app_shell::open_in_editor_button(&path)
+    );
     let refs_label = format!(
         "{} → {}",
         html_escape(&ref_label(old_ref.as_deref())),

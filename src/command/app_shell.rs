@@ -81,6 +81,18 @@ pub(crate) fn app_rail_html(
     out
 }
 
+/// An "Open in editor" pill that opens `rel_path` in the browser editor
+/// (`/editor/<path>`) in a new tab. Shared across every server file view
+/// (code explorer, status, compare, split, commit) so the affordance is
+/// consistent. `rel_path` is a repo-relative path; it is HTML-escaped for the
+/// attribute (matching the un-percent-encoded convention of `blob_url`/`tree_url`).
+pub(crate) fn open_in_editor_button(rel_path: &str) -> String {
+    format!(
+        r#"<a class="open-in-editor" href="/editor/{path}" target="_blank" rel="noopener" title="Open in editor">✎ Edit</a>"#,
+        path = html_escape(rel_path),
+    )
+}
+
 fn rail_link(id: &str, label: &str, href: &str, shortcut: &str, active: &str) -> String {
     let class = if id == active {
         "app-rail-link app-rail-link-active"
@@ -134,6 +146,14 @@ mod tests {
     fn shows_branch_chip_when_branch_known() {
         let html = app_rail_html(&ctx(), None, "code");
         assert!(html.contains(r#"<span class="app-rail-branch" title="master">master</span>"#));
+    }
+
+    #[test]
+    fn open_in_editor_button_targets_editor_in_new_tab() {
+        let html = open_in_editor_button("src/main.rs");
+        assert!(html.contains(r#"href="/editor/src/main.rs""#));
+        assert!(html.contains(r#"target="_blank""#));
+        assert!(html.contains(r#"class="open-in-editor""#));
     }
 
     #[test]

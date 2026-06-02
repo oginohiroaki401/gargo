@@ -657,6 +657,7 @@ function renderMain(files, statsByPath) {{
       + `<button type="button" class="diff-toggle-btn" aria-label="Toggle diff" aria-expanded="${{huge ? 'false' : 'true'}}">${{toggleChar}}</button>`
       + `<div class="gr-file-name-wrapper"><span class="gr-status-tag gr-status-${{status}}">${{status}}</span><span class="gr-file-name" title="${{escapeHtml(f.path)}}">${{escapeHtml(f.path)}}</span>${{largeTag}}</div>`
       + `<span class="gr-file-stats"><span class="gr-additions">+${{adds}}</span><span class="gr-deletions">-${{dels}}</span></span>`
+      + `<a class="open-in-editor" href="/editor/${{f.path.split('/').map(encodeURIComponent).join('/')}}" target="_blank" rel="noopener" title="Open in editor">✎ Edit</a>`
       + `</div>`
       + `<div class="gr-file-body" data-path="${{escapeHtml(f.path)}}">${{bodyInner}}</div>`
       + `</section>`;
