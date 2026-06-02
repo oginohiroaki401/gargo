@@ -269,6 +269,55 @@ pub(crate) async fn handle_api_highlight(Json(req): Json<HighlightRequest>) -> R
     ok_json(&HighlightResponse { lines })
 }
 
+#[derive(Deserialize)]
+pub(crate) struct SymbolsRequest {
+    path: String,
+    content: String,
+}
+
+#[derive(Serialize)]
+struct SymbolDto {
+    /// Symbol name (function/class/method/heading/…).
+    name: String,
+    /// Capture kind (`function`, `class`, `section`, …) → shown as a hint.
+    kind: String,
+    /// 0-based line of the symbol's name.
+    line: usize,
+    /// 0-based character column of the symbol's name.
+    col: usize,
+}
+
+#[derive(Serialize)]
+struct SymbolsResponse {
+    symbols: Vec<SymbolDto>,
+}
+
+/// Extract the document's symbol outline (functions, types, headings, …) for the
+/// editor's `@` palette ("Go to Symbol in File"). Mirrors `/api/highlight`:
+/// language is inferred from `path`'s extension and the tree-sitter tags query
+/// runs server-side (it can't run in the browser's wasm core). Returns an empty
+/// list for unknown / unsupported languages.
+pub(crate) async fn handle_api_symbols(Json(req): Json<SymbolsRequest>) -> Response {
+    use crate::syntax::language::LanguageRegistry;
+
+    let registry = LanguageRegistry::new();
+    let Some(lang_def) = registry.detect_by_extension(&req.path) else {
+        return ok_json(&SymbolsResponse { symbols: vec![] });
+    };
+
+    let symbols = crate::syntax::symbol::extract_symbols(&req.content, lang_def)
+        .into_iter()
+        .map(|s| SymbolDto {
+            name: s.name,
+            kind: s.kind,
+            line: s.line,
+            col: s.char_col,
+        })
+        .collect();
+
+    ok_json(&SymbolsResponse { symbols })
+}
+
 /// Map a tree-sitter capture name to the CSS `tok-*` scope the editor styles.
 ///
 /// Most grammars use dotted names whose first segment is the scope we want

@@ -569,6 +569,13 @@
           return;
         }
 
+        // Cmd+Shift+O: go to symbol in file (opens the picker in "@" mode).
+        if (e.metaKey && e.shiftKey && (e.key === "o" || e.key === "O")) {
+          e.preventDefault();
+          openSymbolPicker();
+          return;
+        }
+
         // Always-insert PoC: swallow Escape so we never leave Insert mode.
         if (e.key === "Escape") {
           e.preventDefault();
@@ -686,6 +693,20 @@
       function onMouseDown(e) {
         if (e.button !== 0) return; // left button only
         const { row, col } = eventToRowCol(e);
+
+        // Cmd+click a link (markdown [text](target) or a bare URL) → open it in
+        // another tab: http(s) in a new browser tab, a repo/relative path in a
+        // new editor tab. Falls through to normal caret placement if no link.
+        if (e.metaKey) {
+          const entry = mountedRows.get(row);
+          const target = entry ? linkAt(entry.row.textContent, col) : null;
+          if (target) {
+            e.preventDefault();
+            openLink(target);
+            return;
+          }
+        }
+
         e.preventDefault(); // suppress native text selection
         els.ime.focus();
 
@@ -740,6 +761,7 @@
 
       let pickerOpen = false;
       let allFiles = null; // cached list from /api/files
+      let allSymbols = []; // symbols for the current file, refreshed when @ opens
       let pickerResults = [];
       let pickerSel = 0;
       const PICKER_LIMIT = 50;
@@ -759,6 +781,7 @@
         { label: "Find and Replace", hint: "⌥⌘F", run: () => openFind(true) },
         { label: "Go to File", hint: "⌘P", run: () => reopenPicker("") },
         { label: "Go to Line…", hint: "", run: () => reopenPicker(":") },
+        { label: "Go to Symbol in File…", hint: "⇧⌘O", run: () => openSymbolPicker() },
         { label: "Undo", hint: "⌘Z", run: () => { editor.undo(); afterEdit(); } },
         { label: "Redo", hint: "⇧⌘Z", run: () => { editor.redo(); afterEdit(); } },
         { label: "Delete Line", hint: "⇧⌘K", run: () => { editor.delete_line(); afterEdit(); } },
@@ -835,6 +858,7 @@
       function updatePicker(query) {
         if (query.startsWith(">")) pickerResults = commandResults(query.slice(1).trim());
         else if (query.startsWith(":")) pickerResults = gotoLineResults(query.slice(1).trim());
+        else if (query.startsWith("@")) pickerResults = symbolResults(query.slice(1).trim());
         else pickerResults = fileResults(query.trim());
         pickerSel = 0;
         renderPickerList();
@@ -874,6 +898,52 @@
         }
         scored.sort((a, b) => b.score - a.score);
         return scored.map((s) => toResult(s.c, s.positions));
+      }
+
+      // Symbol mode ("@"): fuzzy-match the current file's symbol outline
+      // (fetched into `allSymbols` when the picker opens); choosing one jumps the
+      // caret to its definition. The kind ("function", "class", …) is the hint.
+      function symbolResults(q) {
+        if (!allSymbols.length) {
+          return [{ text: "No symbols in this file", positions: [] }];
+        }
+        const toResult = (s, positions) => ({
+          text: s.name,
+          positions,
+          hint: s.kind,
+          onChoose: () => {
+            closePicker();
+            editor.set_cursor(s.line, s.col);
+            ensureCursorVisible();
+            render();
+          },
+        });
+        if (!q) return allSymbols.slice(0, PICKER_LIMIT).map((s) => toResult(s, []));
+        const scored = [];
+        for (const s of allSymbols) {
+          const m = fuzzyMatch(s.name, q);
+          if (m) scored.push({ s, score: m.score, positions: m.positions });
+        }
+        scored.sort((a, b) => b.score - a.score);
+        return scored.slice(0, PICKER_LIMIT).map((r) => toResult(r.s, r.positions));
+      }
+
+      // Cmd+Shift+O: fetch the current file's symbols, then open the picker in
+      // "@" mode. Symbols are recomputed each open so they reflect live edits.
+      async function openSymbolPicker() {
+        if (!editor || !filePath) return;
+        allSymbols = [];
+        try {
+          const resp = await fetch("/api/symbols", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: filePath, content: editor.content() }),
+          });
+          if (resp.ok) allSymbols = (await resp.json()).symbols || [];
+        } catch (_) {
+          // Symbol outline is best-effort; an empty list shows a placeholder.
+        }
+        await showPicker("@");
       }
 
       // Goto-line mode (":<n>"): a single synthetic result that jumps the caret.
@@ -973,6 +1043,53 @@
       // the file explorer), leaving the current editor untouched.
       function openFileInNewWindow(path) {
         window.open(editorUrl(path), "_blank");
+      }
+
+      // Find a link covering display column `col` in `text`: a markdown
+      // `[label](target)` (returns target) or a bare/autolinked http(s) URL.
+      // Returns the target string, or null when the click isn't on a link.
+      function linkAt(text, col) {
+        let m;
+        const md = /\[[^\]]*\]\(([^)\s]+)[^)]*\)/g;
+        while ((m = md.exec(text))) {
+          if (col >= m.index && col <= m.index + m[0].length) return m[1];
+        }
+        const url = /<?(https?:\/\/[^\s)>\]]+)>?/g;
+        while ((m = url.exec(text))) {
+          if (col >= m.index && col <= m.index + m[0].length) return m[1];
+        }
+        return null;
+      }
+
+      // Collapse "." / ".." segments in a repo-relative path.
+      function normalizePath(p) {
+        const out = [];
+        for (const seg of p.split("/")) {
+          if (seg === "" || seg === ".") continue;
+          if (seg === "..") out.pop();
+          else out.push(seg);
+        }
+        return out.join("/");
+      }
+
+      // Open a link target found under a Cmd+click. URLs/mailto open in a new
+      // browser tab; an in-page anchor is ignored; anything else is treated as a
+      // path (root-relative if it starts with "/", else relative to the current
+      // file's directory) and opened in a new editor tab.
+      function openLink(target) {
+        if (/^(https?:)?\/\//i.test(target) || /^mailto:/i.test(target)) {
+          window.open(target, "_blank");
+          return;
+        }
+        if (target.startsWith("#")) return;
+        let path = target.replace(/[#?].*$/, "");
+        if (path.startsWith("/")) path = path.slice(1);
+        else {
+          const dir = parentDir(filePath);
+          path = dir ? dir + "/" + path : path;
+        }
+        path = normalizePath(path);
+        if (path) openFileInNewWindow(path);
       }
 
       // Same, but landing on a specific location (for global-search results

@@ -507,6 +507,7 @@ async fn run_server(
         .route("/api/fs/delete", post(editor::handle_api_fs_delete))
         .route("/api/fs/reveal", post(editor::handle_api_fs_reveal))
         .route("/api/highlight", post(editor::handle_api_highlight))
+        .route("/api/symbols", post(editor::handle_api_symbols))
         .route("/api/git-gutter", post(editor::handle_api_git_gutter))
         .with_state(github_state);
 
