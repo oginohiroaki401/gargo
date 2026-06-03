@@ -142,6 +142,34 @@ pub(crate) async fn handle_api_files(State(state): State<Arc<GargoServerState>>)
     ok_json(&FilesResponse { files })
 }
 
+#[derive(Serialize)]
+struct GitStatusResponse {
+    /// Repo-relative path -> working-tree git status: `"modified"`, `"added"`,
+    /// `"untracked"`, `"deleted"`, or `"conflict"`. Only changed paths appear;
+    /// the client treats absent paths as clean.
+    statuses: std::collections::HashMap<String, String>,
+}
+
+/// Working-tree git status per file, for the editor sidebar's change decorations.
+/// Mirrors the terminal status colors via [`crate::command::git_backend::status_map`]
+/// (`gix`, native-only). Returns an empty map outside a repo or with no changes.
+pub(crate) async fn handle_api_git_status(State(state): State<Arc<GargoServerState>>) -> Response {
+    let statuses = crate::command::git_backend::status_map(&state.repo_root)
+        .into_iter()
+        .map(|(path, st)| {
+            let label = match st {
+                crate::command::git::GitFileStatus::Modified => "modified",
+                crate::command::git::GitFileStatus::Added => "added",
+                crate::command::git::GitFileStatus::Untracked => "untracked",
+                crate::command::git::GitFileStatus::Deleted => "deleted",
+                crate::command::git::GitFileStatus::Conflict => "conflict",
+            };
+            (path, label.to_string())
+        })
+        .collect();
+    ok_json(&GitStatusResponse { statuses })
+}
+
 #[derive(Deserialize)]
 pub(crate) struct SearchQuery {
     q: String,

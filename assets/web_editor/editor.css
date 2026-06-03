@@ -514,6 +514,28 @@
       }
       .tnode.dir .tlabel { color: var(--fg); }
       .tnode.file .tlabel { color: var(--muted); }
+      /* Git status decorations (colors match the editor gutter / terminal). The
+         one-letter badge sits right-aligned; the label is recolored to match.
+         These follow the .dir/.file rules so equal-specificity selectors win. */
+      .tnode .tstatus {
+        margin-left: auto;
+        padding-left: 8px;
+        flex: 0 0 auto;
+        font-size: 11px;
+        font-weight: 600;
+      }
+      .tnode.git-modified .tlabel,
+      .tnode.git-modified .tstatus { color: var(--git-modified); }
+      .tnode.git-added .tlabel,
+      .tnode.git-added .tstatus,
+      .tnode.git-untracked .tlabel,
+      .tnode.git-untracked .tstatus { color: var(--git-added); }
+      .tnode.git-deleted .tlabel,
+      .tnode.git-deleted .tstatus { color: var(--git-deleted); }
+      .tnode.git-conflict .tlabel,
+      .tnode.git-conflict .tstatus { color: #b267e6; }
+      /* Dir roll-up: keep the folder name its normal color, just show a dot. */
+      .tnode.git-dir .tstatus { color: var(--git-modified); }
       /* Inline new-entry textbox (double-click empty sidebar space). */
       .tnode .tinput {
         flex: 1 1 auto;

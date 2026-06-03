@@ -55,6 +55,23 @@
       let editor = null;
       let filePath = "";
       let baseHash = ""; // hash of the content we loaded (for conflict detection)
+      // Content as last loaded/saved, for the "● modified" indicator. The wasm
+      // `dirty` flag stays true once you've made any edit, so it can't tell that
+      // you've manually undone back to the original state — we compare the live
+      // content against this baseline instead. Cached per editor version so we
+      // only re-stringify the rope when the document actually changes.
+      let baseContent = "";
+      let modifiedVersion = -1;
+      let modifiedValue = false;
+      function isModified() {
+        if (!editor) return false;
+        const v = editor.version();
+        if (v !== modifiedVersion) {
+          modifiedValue = editor.content() !== baseContent;
+          modifiedVersion = v;
+        }
+        return modifiedValue;
+      }
       let charWidth = 8;
       let gutterWidth = 50;
       let lastVersion = -1;
@@ -576,7 +593,7 @@
 
       function syncStatus(model) {
         els.mode.textContent = model.mode;
-        els.dirty.textContent = editor.is_dirty() ? "● modified" : "";
+        els.dirty.textContent = isModified() ? "● modified" : "";
       }
 
       function positionIme(model) {
@@ -2015,6 +2032,55 @@
       // the `.focused` ring (distinct from `.active`, the currently-open file).
       let focusedPath = null;
 
+      // Working-tree git status for the sidebar decorations: repo-relative path
+      // -> "modified" | "added" | "untracked" | "deleted" | "conflict". Only
+      // changed paths appear; everything else is treated as clean. `dirtyDirs`
+      // holds every ancestor directory of a changed path so folders can show a
+      // roll-up marker. Both are recomputed from `/api/git-status`.
+      let gitStatus = new Map();
+      let dirtyDirs = new Set();
+
+      // Single-letter badge shown on a sidebar row, matching the terminal's
+      // status indicators (dirs roll up to a dot).
+      function statusChar(st) {
+        switch (st) {
+          case "modified": return "M";
+          case "added": return "A";
+          case "untracked": return "?";
+          case "deleted": return "D";
+          case "conflict": return "U";
+          case "dir": return "•";
+          default: return "";
+        }
+      }
+
+      // Recompute `dirtyDirs` from the current `gitStatus` keys: a directory is
+      // "dirty" if any file under it has a status.
+      function computeDirtyDirs() {
+        dirtyDirs = new Set();
+        for (const path of gitStatus.keys()) {
+          const parts = path.split("/");
+          let acc = "";
+          for (let i = 0; i < parts.length - 1; i++) {
+            acc = acc ? acc + "/" + parts[i] : parts[i];
+            dirtyDirs.add(acc);
+          }
+        }
+      }
+
+      // Fetch working-tree git status and repaint the sidebar decorations.
+      async function refreshGitStatus() {
+        try {
+          const resp = await fetch("/api/git-status");
+          const data = await resp.json();
+          gitStatus = new Map(Object.entries(data.statuses || {}));
+        } catch (_) {
+          gitStatus = new Map();
+        }
+        computeDirtyDirs();
+        if (treeRoot) renderTree();
+      }
+
       // Build a nested tree from the flat file list (same set as the picker),
       // plus any session-created empty directories.
       function buildTree(files) {
@@ -2093,6 +2159,14 @@
           row.dataset.dir = child.isDir ? "1" : "";
           row.style.paddingLeft = depth * 12 + 6 + "px";
 
+          // Git decoration: files carry their own status; dirs roll up to a dot
+          // when anything under them changed. The class colors the label; the
+          // badge shows the one-letter status (M/A/?/D/U) on the right.
+          const st = child.isDir
+            ? (dirtyDirs.has(child.path) ? "dir" : null)
+            : gitStatus.get(child.path) || null;
+          if (st) row.classList.add("git-" + st);
+
           const twist = document.createElement("span");
           twist.className = "twist";
           twist.textContent = child.isDir ? (open ? "▾" : "▸") : "";
@@ -2101,6 +2175,12 @@
           label.textContent = child.name;
           row.appendChild(twist);
           row.appendChild(label);
+          if (st) {
+            const badge = document.createElement("span");
+            badge.className = "tstatus";
+            badge.textContent = statusChar(st);
+            row.appendChild(badge);
+          }
 
           row.addEventListener("mousedown", (e) => {
             if (e.button !== 0) return; // let right-click open the context menu
@@ -2138,6 +2218,9 @@
         treeRoot = buildTree(files);
         expandToFile(filePath);
         renderTree();
+        // Decorations are best-effort and async; paint the tree first, then
+        // overlay git status when it arrives (re-renders the tree).
+        refreshGitStatus();
       }
 
       // ---- explorer keyboard navigation ------------------------------------
@@ -2465,6 +2548,7 @@
           extraDirs.add(path);
           expandedDirs.add(path);
           rebuildTree();
+          refreshGitStatus();
         } else {
           if (allFiles && !allFiles.includes(path)) allFiles.push(path);
           // Opening the file is a full navigation; it'll rebuild on load.
@@ -2545,6 +2629,7 @@
         }
         applyRenameLocal(node.path, to, node.isDir);
         rebuildTree();
+        refreshGitStatus();
       }
 
       // Rewrite the cached file list / extra dirs / expansion state to reflect a
@@ -2606,6 +2691,7 @@
         }
         applyDeleteLocal(node.path, node.isDir);
         rebuildTree();
+        refreshGitStatus();
       }
 
       // Drop a deleted file/dir (and anything under it) from the cached file
@@ -2835,7 +2921,13 @@
           }
           const data = await resp.json();
           baseHash = data.hash;
+          // New baseline: the content we just persisted is now the "original",
+          // so an edit-then-undo back to it reads as unmodified again.
+          baseContent = content;
+          modifiedVersion = -1;
           els.dirty.textContent = "✓ saved";
+          // Saving changes the working tree, so refresh the sidebar git decorations.
+          refreshGitStatus();
           setTimeout(() => render(), 800);
         } catch (err) {
           showError("Save failed: " + err);
@@ -2873,10 +2965,24 @@
         }
 
         editor = new WebEditor(filePath, content);
+        // Baseline for the "● modified" indicator. Read it back from the editor
+        // (not the raw server string) so any normalization the core applies on
+        // load doesn't make a freshly-opened file look modified.
+        baseContent = editor.content();
         // Always-insert: switch into Insert mode once at boot (Normal 'i' →
         // ChangeMode(Insert); also begins the undo transaction). Escape is
         // swallowed in onKeyDown so we stay here.
         editor.key("i", false, false, false);
+
+        // Warn before leaving (tab close, reload, or navigating to another file)
+        // while there are unsaved edits. Native browsers ignore custom text and
+        // show their own prompt; setting returnValue is what triggers it.
+        window.addEventListener("beforeunload", (e) => {
+          if (isModified()) {
+            e.preventDefault();
+            e.returnValue = "";
+          }
+        });
 
         els.ime.addEventListener("keydown", onKeyDown);
         els.ime.addEventListener("compositionstart", onCompositionStart);

@@ -507,6 +507,7 @@ async fn run_server(
         )
         .route("/api/file", get(editor::handle_api_file))
         .route("/api/files", get(editor::handle_api_files))
+        .route("/api/git-status", get(editor::handle_api_git_status))
         .route("/api/search", get(editor::handle_api_search))
         .route("/api/save", post(editor::handle_api_save))
         .route("/api/fs/create", post(editor::handle_api_fs_create))
