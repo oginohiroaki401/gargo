@@ -196,8 +196,8 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Git Diff</title>
+    {{SHARED_CSS}}
     <style>
-{{SHARED_CSS}}
         .repo-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 10px 14px; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; margin-bottom: 16px; }
         .repo-controls input[list] { min-width: 220px; padding: 4px 8px; border: 1px solid #d0d7de; border-radius: 6px; background: #fff; font: inherit; }
         .context-row {
@@ -530,7 +530,7 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
 </head>
 <body data-page="status">
 {{REPO_CTX_SCRIPT}}
-<script>{{SHORTCUTS_JS}}</script>
+{{SHORTCUTS_JS}}
 <code id="root-path" hidden>{{ROOT_PATH}}</code>
 <div class="app-shell">
     {{APP_RAIL}}
@@ -1359,8 +1359,8 @@ const COMMIT_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Commit</title>
+    {{SHARED_CSS}}
     <style>
-{{SHARED_CSS}}
         .commit-wrap { max-width: 760px; }
         #error-banner {
             display: none;
@@ -1448,7 +1448,7 @@ const COMMIT_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
 </head>
 <body data-page="status">
 {{REPO_CTX_SCRIPT}}
-<script>{{SHORTCUTS_JS}}</script>
+{{SHORTCUTS_JS}}
 <div class="app-shell">
     {{APP_RAIL}}
     <main class="app-main commit-wrap">
@@ -1636,8 +1636,8 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Git Compare Branches</title>
+    {{SHARED_CSS}}
     <style>
-{{SHARED_CSS}}
         .repo-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 10px 14px; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; margin-bottom: 16px; }
         .repo-controls input[list] { min-width: 220px; padding: 4px 8px; border: 1px solid #d0d7de; border-radius: 6px; background: #fff; font: inherit; }
         .context-row {
@@ -1901,7 +1901,7 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
 </head>
 <body data-page="compare">
 {{REPO_CTX_SCRIPT}}
-<script>{{SHORTCUTS_JS}}</script>
+{{SHORTCUTS_JS}}
 <code id="root-path" hidden>{{ROOT_PATH}}</code>
 <div class="app-shell">
     {{APP_RAIL}}
@@ -2715,8 +2715,8 @@ const SPLIT_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Split — {{PATH}}</title>
+    {{SHARED_CSS}}
     <style>
-{{SHARED_CSS}}
 {{DIFF_STYLES}}
     </style>
 {{SPLIT_STYLES}}
@@ -2735,7 +2735,7 @@ const SPLIT_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
 <div class="split-grid">{{SPLIT_BODY}}</div>
 </main>
 </div>
-<script>{{SHORTCUTS_JS}}</script>
+{{SHORTCUTS_JS}}
 <script>
 document.addEventListener("DOMContentLoaded", function () {
     var target = document.getElementById("first-diff");
@@ -3084,10 +3084,13 @@ pub(crate) async fn handle_split_request(
         .replace("{{REFS_LABEL}}", &refs_label)
         .replace("{{APP_RAIL}}", &rail)
         .replace("{{REPO_CTX_SCRIPT}}", &ctx_script)
-        .replace("{{SHARED_CSS}}", crate::command::server_shared::SHARED_CSS)
+        .replace(
+            "{{SHARED_CSS}}",
+            &crate::command::server_shared::shared_css_link(),
+        )
         .replace(
             "{{SHORTCUTS_JS}}",
-            crate::command::server_shared::SHORTCUTS_JS,
+            &crate::command::server_shared::shortcuts_js_tag(),
         )
         .replace("{{DIFF_STYLES}}", render_diff_styles())
         .replace("{{SPLIT_STYLES}}", render_split_styles())
@@ -3105,6 +3108,14 @@ async fn run_server(
     state: Arc<DiffServerState>,
 ) {
     let app = Router::new()
+        .route(
+            "/assets/server-shared.css",
+            get(crate::command::github_preview_server::handle_shared_css_asset),
+        )
+        .route(
+            "/assets/server-shortcuts.js",
+            get(crate::command::github_preview_server::handle_shortcuts_js_asset),
+        )
         .route("/diff", get(handle_html_request))
         .route("/compare", get(handle_compare_html_request))
         .route("/split", get(handle_split_request))
@@ -3162,10 +3173,13 @@ pub(crate) async fn handle_html_request(
             .replace("{{ROOT_PATH}}", &html_escape(&root_path))
             .replace("{{APP_RAIL}}", &rail)
             .replace("{{REPO_CTX_SCRIPT}}", &ctx_script)
-            .replace("{{SHARED_CSS}}", crate::command::server_shared::SHARED_CSS)
+            .replace(
+                "{{SHARED_CSS}}",
+                &crate::command::server_shared::shared_css_link(),
+            )
             .replace(
                 "{{SHORTCUTS_JS}}",
-                crate::command::server_shared::SHORTCUTS_JS,
+                &crate::command::server_shared::shortcuts_js_tag(),
             )
             .replace("{{DIFF_STYLES}}", render_diff_styles()),
     )
@@ -3186,10 +3200,13 @@ pub(crate) async fn handle_commit_html_request(
         COMMIT_HTML_TEMPLATE
             .replace("{{APP_RAIL}}", &rail)
             .replace("{{REPO_CTX_SCRIPT}}", &ctx_script)
-            .replace("{{SHARED_CSS}}", crate::command::server_shared::SHARED_CSS)
+            .replace(
+                "{{SHARED_CSS}}",
+                &crate::command::server_shared::shared_css_link(),
+            )
             .replace(
                 "{{SHORTCUTS_JS}}",
-                crate::command::server_shared::SHORTCUTS_JS,
+                &crate::command::server_shared::shortcuts_js_tag(),
             ),
     )
 }
@@ -3978,10 +3995,13 @@ pub(crate) async fn handle_compare_html_request(
             .replace("{{ROOT_PATH}}", &html_escape(&root_path))
             .replace("{{APP_RAIL}}", &rail)
             .replace("{{REPO_CTX_SCRIPT}}", &ctx_script)
-            .replace("{{SHARED_CSS}}", crate::command::server_shared::SHARED_CSS)
+            .replace(
+                "{{SHARED_CSS}}",
+                &crate::command::server_shared::shared_css_link(),
+            )
             .replace(
                 "{{SHORTCUTS_JS}}",
-                crate::command::server_shared::SHORTCUTS_JS,
+                &crate::command::server_shared::shortcuts_js_tag(),
             )
             .replace("{{DIFF_STYLES}}", render_diff_styles()),
     )

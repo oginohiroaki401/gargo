@@ -404,6 +404,14 @@ async fn run_server(
             "/assets/mermaid.min.js",
             get(github_preview_server::handle_mermaid_asset),
         )
+        .route(
+            "/assets/server-shared.css",
+            get(github_preview_server::handle_shared_css_asset),
+        )
+        .route(
+            "/assets/server-shortcuts.js",
+            get(github_preview_server::handle_shortcuts_js_asset),
+        )
         .route("/{owner}/{repo}", get(github_preview_server::handle_root))
         .route(
             "/{owner}/{repo}/tree/{*rest}",
@@ -976,18 +984,18 @@ fn normalize_api_path(path: &str) -> String {
 }
 
 fn app_css() -> String {
+    // Shared chrome is linked as a cacheable asset; only the page-specific
+    // rules stay inline. `APP_CSS_PAGE_SPECIFIC` carries its own `<style>` open
+    // tag and trailing `</style>`.
     format!(
-        "<style>\n{}\n{}",
-        crate::command::server_shared::SHARED_CSS,
+        "{}\n<style>{}",
+        crate::command::server_shared::shared_css_link(),
         APP_CSS_PAGE_SPECIFIC,
     )
 }
 
 fn shortcuts_script() -> String {
-    format!(
-        "<script>{}</script>",
-        crate::command::server_shared::SHORTCUTS_JS
-    )
+    crate::command::server_shared::shortcuts_js_tag()
 }
 
 const APP_CSS_PAGE_SPECIFIC: &str = r#"

@@ -330,9 +330,20 @@ fn test_diff_server_start_stop_and_status_api_results() {
         html.contains("flex-wrap: nowrap") && html.contains("text-overflow: ellipsis"),
         "expected diff UI file header to use single-line ellipsis layout"
     );
+    // Shared chrome (incl. the sticky sidebar rule) is now served as an
+    // external cacheable stylesheet rather than inlined on every page, so the
+    // page links it and the rule lives in the asset.
     assert!(
-        html.contains("position: sticky"),
-        "expected diff UI sidebar to be sticky"
+        html.contains(r#"<link rel="stylesheet" href="/assets/server-shared.css"#),
+        "expected diff UI to link the shared stylesheet"
+    );
+    let shared_css = get_text_with_retry(&format!(
+        "http://127.0.0.1:{}/assets/server-shared.css",
+        port
+    ));
+    assert!(
+        shared_css.contains("position: sticky"),
+        "expected shared stylesheet to make the sidebar sticky"
     );
     assert!(
         !html.contains("diff2html"),
@@ -927,7 +938,12 @@ fn test_diff_server_compare_html_page() {
             && html.contains("class=\"content\"")
     );
     assert!(html.contains("flex-wrap: nowrap") && html.contains("text-overflow: ellipsis"));
-    assert!(html.contains("position: sticky"));
+    assert!(html.contains(r#"<link rel="stylesheet" href="/assets/server-shared.css"#));
+    let shared_css = get_text_with_retry(&format!(
+        "http://127.0.0.1:{}/assets/server-shared.css",
+        port
+    ));
+    assert!(shared_css.contains("position: sticky"));
     assert!(
         !html.contains("diff2html"),
         "expected /compare HTML to no longer depend on diff2html"

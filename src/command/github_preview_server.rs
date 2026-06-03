@@ -581,8 +581,51 @@ const MERMAID_INIT_SCRIPT: &str = r#"<script>
 })();
 </script>"#;
 
+/// The mermaid runtime is 3.3MB; load it (and its init) only when the rendered
+/// page actually contains a diagram. `render_mermaid_blocks` emits
+/// `<pre class="mermaid">`, so its presence is the trigger. Most pages have no
+/// diagram and skip the script entirely.
+fn mermaid_script_block(rendered_content: &str) -> String {
+    if rendered_content.contains(r#"class="mermaid""#) {
+        format!(r#"<script src="/assets/mermaid.min.js"></script>{MERMAID_INIT_SCRIPT}"#)
+    } else {
+        String::new()
+    }
+}
+
 pub(crate) async fn handle_mermaid_asset() -> impl IntoResponse {
     let mut response = (StatusCode::OK, MERMAID_JS).into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/javascript; charset=utf-8"),
+    );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=31536000, immutable"),
+    );
+    response
+}
+
+/// Serve the shared chrome stylesheet as a cacheable asset. Pages link it with
+/// a `?v=<version>` stamp, so the `immutable` cache is only busted on release.
+pub(crate) async fn handle_shared_css_asset() -> impl IntoResponse {
+    let mut response = (StatusCode::OK, crate::command::server_shared::SHARED_CSS).into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/css; charset=utf-8"),
+    );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=31536000, immutable"),
+    );
+    response
+}
+
+/// Serve the shared keyboard-shortcuts module as a cacheable asset (see
+/// [`handle_shared_css_asset`]).
+pub(crate) async fn handle_shortcuts_js_asset() -> impl IntoResponse {
+    let mut response =
+        (StatusCode::OK, crate::command::server_shared::SHORTCUTS_JS).into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/javascript; charset=utf-8"),
@@ -862,8 +905,8 @@ const DIRECTORY_TEMPLATE: &str = r#"<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{TITLE}}</title>
+    {{SHARED_CSS}}
     <style>
-{{SHARED_CSS}}
         .header {
             background: #ffffff;
             padding: 16px 20px;
@@ -982,7 +1025,7 @@ const DIRECTORY_TEMPLATE: &str = r#"<!DOCTYPE html>
     </style>
 </head>
 <body data-page="code-tree">
-    <script>{{SHORTCUTS_JS}}</script>
+    {{SHORTCUTS_JS}}
     <div class="app-shell">
         {{APP_RAIL}}
         <main class="app-main">
@@ -991,8 +1034,7 @@ const DIRECTORY_TEMPLATE: &str = r#"<!DOCTYPE html>
             {{CONTENT}}
         </main>
     </div>
-    <script src="/assets/mermaid.min.js"></script>
-    {{MERMAID_INIT_SCRIPT}}
+    {{MERMAID_SCRIPT}}
     {{LIVE_SYNC_SCRIPT}}
 </body>
 </html>"#;
@@ -1004,8 +1046,8 @@ const FILE_TEMPLATE: &str = r#"<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{TITLE}}</title>
+    {{SHARED_CSS}}
     <style>
-{{SHARED_CSS}}
         .header {
             background: #ffffff;
             padding: 16px 20px;
@@ -1099,7 +1141,7 @@ const FILE_TEMPLATE: &str = r#"<!DOCTYPE html>
     </style>
 </head>
 <body data-page="code-blob">
-    <script>{{SHORTCUTS_JS}}</script>
+    {{SHORTCUTS_JS}}
     <div class="app-shell">
         {{APP_RAIL}}
         <main class="app-main">
@@ -1108,8 +1150,7 @@ const FILE_TEMPLATE: &str = r#"<!DOCTYPE html>
             {{CONTENT}}
         </main>
     </div>
-    <script src="/assets/mermaid.min.js"></script>
-    {{MERMAID_INIT_SCRIPT}}
+    {{MERMAID_SCRIPT}}
     {{LIVE_SYNC_SCRIPT}}
 </body>
 </html>"#;
@@ -1125,6 +1166,11 @@ async fn run_server(
         .route("/", get(handle_bare_root))
         .route("/events", get(handle_events))
         .route("/assets/mermaid.min.js", get(handle_mermaid_asset))
+        .route("/assets/server-shared.css", get(handle_shared_css_asset))
+        .route(
+            "/assets/server-shortcuts.js",
+            get(handle_shortcuts_js_asset),
+        )
         .route("/{owner}/{repo}", get(handle_root))
         .route("/{owner}/{repo}/tree/{*rest}", get(handle_tree))
         .route("/{owner}/{repo}/blob/{*rest}", get(handle_blob))
@@ -1500,13 +1546,16 @@ pub(crate) async fn handle_directory_listing(
         .replace("{{BREADCRUMB}}", &breadcrumb)
         .replace("{{COMMIT_INFO}}", &commit_info)
         .replace("{{CONTENT}}", &content)
-        .replace("{{SHARED_CSS}}", crate::command::server_shared::SHARED_CSS)
+        .replace(
+            "{{SHARED_CSS}}",
+            &crate::command::server_shared::shared_css_link(),
+        )
         .replace(
             "{{SHORTCUTS_JS}}",
-            crate::command::server_shared::SHORTCUTS_JS,
+            &crate::command::server_shared::shortcuts_js_tag(),
         )
         .replace("{{SYNTAX_STYLES}}", render_diff_styles())
-        .replace("{{MERMAID_INIT_SCRIPT}}", MERMAID_INIT_SCRIPT)
+        .replace("{{MERMAID_SCRIPT}}", &mermaid_script_block(&content))
         .replace("{{LIVE_SYNC_SCRIPT}}", LIVE_SYNC_SCRIPT);
 
     Html(html)
@@ -1603,13 +1652,19 @@ pub(crate) async fn handle_file_display(
         .replace("{{BREADCRUMB}}", &breadcrumb)
         .replace("{{COMMIT_INFO}}", &commit_info)
         .replace("{{CONTENT}}", &rendered_content)
-        .replace("{{SHARED_CSS}}", crate::command::server_shared::SHARED_CSS)
+        .replace(
+            "{{SHARED_CSS}}",
+            &crate::command::server_shared::shared_css_link(),
+        )
         .replace(
             "{{SHORTCUTS_JS}}",
-            crate::command::server_shared::SHORTCUTS_JS,
+            &crate::command::server_shared::shortcuts_js_tag(),
         )
         .replace("{{SYNTAX_STYLES}}", render_diff_styles())
-        .replace("{{MERMAID_INIT_SCRIPT}}", MERMAID_INIT_SCRIPT)
+        .replace(
+            "{{MERMAID_SCRIPT}}",
+            &mermaid_script_block(&rendered_content),
+        )
         .replace("{{LIVE_SYNC_SCRIPT}}", LIVE_SYNC_SCRIPT);
 
     Html(html)
