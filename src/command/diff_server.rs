@@ -388,8 +388,12 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             border: 1px solid #d0d7de;
             border-radius: 6px;
             margin-bottom: 12px;
-            overflow: hidden;
+            /* No overflow:hidden here — it would trap the sticky header in a
+             * non-scrolling box and stop it pinning. Corners are rounded on the
+             * header (top) and body (bottom) instead. */
         }
+        /* The header pins below the sticky app-rail while its diff scrolls, so the
+         * filename + Viewed checkbox stay in view for the file you're reading. */
         .gr-file-header {
             display: flex;
             align-items: center;
@@ -399,9 +403,18 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             padding: 8px 12px;
             background: #f6f8fa;
             border-bottom: 1px solid #d0d7de;
+            border-top-left-radius: 6px;
+            border-top-right-radius: 6px;
+            position: sticky;
+            top: var(--app-rail-height, 46px);
+            z-index: 5;
         }
         .gr-file-collapsed .gr-file-body { display: none; }
-        .gr-file-collapsed .gr-file-header { border-bottom: none; }
+        .gr-file-collapsed .gr-file-header {
+            border-bottom: none;
+            border-bottom-left-radius: 6px;
+            border-bottom-right-radius: 6px;
+        }
         .gr-large-tag { display: none; flex-shrink: 0; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #fff1e5; color: #bc4c00; }
         .gr-file-large.gr-file-collapsed .gr-large-tag { display: inline-flex; }
         .gr-file-viewed .gr-file-header { background: #eef2f7; opacity: 0.85; }
@@ -488,7 +501,7 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         }
         .diff-viewed-label:hover { background: #eef2f7; }
         .diff-viewed-label input { margin: 0; cursor: pointer; }
-        .gr-file-body { background: white; }
+        .gr-file-body { background: white; border-bottom-left-radius: 6px; border-bottom-right-radius: 6px; overflow: hidden; }
         .gr-file-body .loading, .gr-file-body .empty { padding: 12px; color: #57606a; font-size: 12px; }
 {{DIFF_STYLES}}
         #bottom-controls {
@@ -1781,8 +1794,12 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             border: 1px solid #d0d7de;
             border-radius: 6px;
             margin-bottom: 12px;
-            overflow: hidden;
+            /* No overflow:hidden here — it would trap the sticky header in a
+             * non-scrolling box and stop it pinning. Corners are rounded on the
+             * header (top) and body (bottom) instead. */
         }
+        /* The header pins below the sticky app-rail while its diff scrolls, so the
+         * filename + Viewed checkbox stay in view for the file you're reading. */
         .gr-file-header {
             display: flex;
             align-items: center;
@@ -1792,9 +1809,18 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             padding: 8px 12px;
             background: #f6f8fa;
             border-bottom: 1px solid #d0d7de;
+            border-top-left-radius: 6px;
+            border-top-right-radius: 6px;
+            position: sticky;
+            top: var(--app-rail-height, 46px);
+            z-index: 5;
         }
         .gr-file-collapsed .gr-file-body { display: none; }
-        .gr-file-collapsed .gr-file-header { border-bottom: none; }
+        .gr-file-collapsed .gr-file-header {
+            border-bottom: none;
+            border-bottom-left-radius: 6px;
+            border-bottom-right-radius: 6px;
+        }
         .gr-large-tag { display: none; flex-shrink: 0; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #fff1e5; color: #bc4c00; }
         .gr-file-large.gr-file-collapsed .gr-large-tag { display: inline-flex; }
         .gr-file-viewed .gr-file-header { background: #eef2f7; opacity: 0.85; }
@@ -1864,7 +1890,7 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         }
         .diff-viewed-label:hover { background: #eef2f7; }
         .diff-viewed-label input { margin: 0; cursor: pointer; }
-        .gr-file-body { background: white; }
+        .gr-file-body { background: white; border-bottom-left-radius: 6px; border-bottom-right-radius: 6px; overflow: hidden; }
         .gr-file-body .loading, .gr-file-body .empty { padding: 12px; color: #57606a; font-size: 12px; }
 {{DIFF_STYLES}}
         #bottom-controls {
