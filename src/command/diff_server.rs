@@ -2822,7 +2822,7 @@ fn split_refs(source: &SplitSource) -> (Option<String>, Option<String>) {
     }
 }
 
-/// 64-hex limit covers SHA-256; the github_server module has a duplicate.
+/// 64-hex limit covers SHA-256; the gargo_server module has a duplicate.
 /// Kept private here so `/split` doesn't depend on the github router module.
 fn parse_commit_hash_value(hash: &str) -> Option<String> {
     if hash.is_empty() || hash.len() > 64 {
@@ -2934,7 +2934,7 @@ fn build_line_highlights(lines: &[String], path: &str) -> Option<LineHl> {
 
 fn split_back_url(
     source: &SplitSource,
-    url_ctx: &crate::command::github_preview_server::RepoUrlContext,
+    url_ctx: &crate::command::gargo_preview_server::RepoUrlContext,
 ) -> String {
     // Inputs are pre-validated (parse_branch_name, parse_commit_hash_value,
     // owner/repo from git config), so no percent-encoding needed here.
@@ -3018,10 +3018,9 @@ pub(crate) async fn handle_split_request(
         deletions: 0,
     });
 
-    let ctx = crate::command::github_preview_server::resolve_repo_url_context(repo_root).await;
-    let repo_url = crate::command::github_preview_server::github_repo_url(repo_root).await;
-    let default_branch =
-        crate::command::github_preview_server::default_branch_name(repo_root).await;
+    let ctx = crate::command::gargo_preview_server::resolve_repo_url_context(repo_root).await;
+    let repo_url = crate::command::gargo_preview_server::github_repo_url(repo_root).await;
+    let default_branch = crate::command::gargo_preview_server::default_branch_name(repo_root).await;
     let active_tab = match &source {
         SplitSource::Status { .. } => "status",
         SplitSource::Compare { .. } => "branches",
@@ -3126,11 +3125,11 @@ async fn run_server(
     let app = Router::new()
         .route(
             "/assets/server-shared.css",
-            get(crate::command::github_preview_server::handle_shared_css_asset),
+            get(crate::command::gargo_preview_server::handle_shared_css_asset),
         )
         .route(
             "/assets/server-shortcuts.js",
-            get(crate::command::github_preview_server::handle_shortcuts_js_asset),
+            get(crate::command::gargo_preview_server::handle_shortcuts_js_asset),
         )
         .route("/diff", get(handle_html_request))
         .route("/compare", get(handle_compare_html_request))
@@ -3178,7 +3177,7 @@ async fn run_server(
 pub(crate) async fn handle_html_request(
     State(state): State<Arc<DiffServerState>>,
 ) -> impl IntoResponse {
-    use crate::command::github_preview_server as gh;
+    use crate::command::gargo_preview_server as gh;
     let root_path = state.project_root.display().to_string();
     let ctx = gh::resolve_repo_url_context(&state.project_root).await;
     let repo_url = gh::github_repo_url(&state.project_root).await;
@@ -3207,7 +3206,7 @@ pub(crate) async fn handle_html_request(
 pub(crate) async fn handle_commit_html_request(
     State(state): State<Arc<DiffServerState>>,
 ) -> impl IntoResponse {
-    use crate::command::github_preview_server as gh;
+    use crate::command::gargo_preview_server as gh;
     let ctx = gh::resolve_repo_url_context(&state.project_root).await;
     let repo_url = gh::github_repo_url(&state.project_root).await;
     // Keep "Status" highlighted in the rail — the commit page is part of that flow.
@@ -4084,7 +4083,7 @@ pub(crate) fn ok_json(payload: serde_json::Value) -> Response {
 }
 
 fn repo_ctx_script(
-    ctx: &crate::command::github_preview_server::RepoUrlContext,
+    ctx: &crate::command::gargo_preview_server::RepoUrlContext,
     github_base: Option<&str>,
     default_branch: Option<&str>,
 ) -> String {
@@ -4101,7 +4100,7 @@ fn repo_ctx_script(
 pub(crate) async fn handle_compare_html_request(
     State(state): State<Arc<DiffServerState>>,
 ) -> impl IntoResponse {
-    use crate::command::github_preview_server as gh;
+    use crate::command::gargo_preview_server as gh;
     let root_path = state.project_root.display().to_string();
     let ctx = gh::resolve_repo_url_context(&state.project_root).await;
     let repo_url = gh::github_repo_url(&state.project_root).await;

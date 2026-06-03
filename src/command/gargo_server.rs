@@ -16,13 +16,13 @@ use tower_http::cors::CorsLayer;
 
 use crate::command::diff_server::{self, DiffServerState};
 use crate::command::diff_viewed::ViewedStore;
-use crate::command::github_preview_server::{
-    self, GithubPreviewEvent, PreviewBrowserEvent, PreviewBrowserEventKind, PreviewServerState,
+use crate::command::gargo_preview_server::{
+    self, GargoPreviewEvent, PreviewBrowserEvent, PreviewBrowserEventKind, PreviewServerState,
 };
 use crate::diff_render::{parse_unified_diff, render_diff_styles};
 
 #[derive(Debug, Clone)]
-pub enum GithubServerRoute {
+pub enum GargoServerRoute {
     Root,
     Tree { path: String },
     Blob { path: String },
@@ -33,10 +33,10 @@ pub enum GithubServerRoute {
 }
 
 #[derive(Debug, Clone)]
-pub enum GithubServerCommand {
+pub enum GargoServerCommand {
     Start { repo_root: PathBuf },
     Stop,
-    OpenRoute { route: GithubServerRoute },
+    OpenRoute { route: GargoServerRoute },
     SetActivePath { rel_path: Option<String> },
     RefreshActive,
     UpdateBufferContent { content: String, cursor_line: usize },
@@ -44,7 +44,7 @@ pub enum GithubServerCommand {
 }
 
 #[derive(Debug, Clone)]
-pub enum GithubServerEvent {
+pub enum GargoServerEvent {
     Started { port: u16, root_url: String },
     Stopped,
     Detached { requested_path: String },
@@ -52,17 +52,17 @@ pub enum GithubServerEvent {
     Error(String),
 }
 
-pub struct GithubServerHandle {
-    pub command_tx: mpsc::Sender<GithubServerCommand>,
-    pub event_rx: mpsc::Receiver<GithubServerEvent>,
+pub struct GargoServerHandle {
+    pub command_tx: mpsc::Sender<GargoServerCommand>,
+    pub event_rx: mpsc::Receiver<GargoServerEvent>,
     _worker_thread: Option<thread::JoinHandle<()>>,
 }
 
-impl GithubServerHandle {
+impl GargoServerHandle {
     pub fn new() -> Result<Self, String> {
         let (command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
-        let worker = GithubServerWorker {
+        let worker = GargoServerWorker {
             command_rx,
             event_tx,
             tokio_runtime: tokio::runtime::Builder::new_multi_thread()
@@ -86,9 +86,9 @@ impl GithubServerHandle {
     }
 }
 
-struct GithubServerWorker {
-    command_rx: mpsc::Receiver<GithubServerCommand>,
-    event_tx: mpsc::Sender<GithubServerEvent>,
+struct GargoServerWorker {
+    command_rx: mpsc::Receiver<GargoServerCommand>,
+    event_tx: mpsc::Sender<GargoServerEvent>,
     tokio_runtime: tokio::runtime::Runtime,
     server_shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
     preview_state: Option<Arc<Mutex<PreviewServerState>>>,
@@ -96,22 +96,22 @@ struct GithubServerWorker {
     port: Option<u16>,
 }
 
-impl GithubServerWorker {
+impl GargoServerWorker {
     fn run(mut self) {
         loop {
             match self.command_rx.recv() {
-                Ok(GithubServerCommand::Start { repo_root }) => self.handle_start(repo_root),
-                Ok(GithubServerCommand::Stop) => self.handle_stop(),
-                Ok(GithubServerCommand::OpenRoute { route }) => self.handle_open_route(route),
-                Ok(GithubServerCommand::SetActivePath { rel_path }) => {
+                Ok(GargoServerCommand::Start { repo_root }) => self.handle_start(repo_root),
+                Ok(GargoServerCommand::Stop) => self.handle_stop(),
+                Ok(GargoServerCommand::OpenRoute { route }) => self.handle_open_route(route),
+                Ok(GargoServerCommand::SetActivePath { rel_path }) => {
                     self.handle_set_active_path(rel_path)
                 }
-                Ok(GithubServerCommand::RefreshActive) => self.handle_refresh_active(),
-                Ok(GithubServerCommand::UpdateBufferContent {
+                Ok(GargoServerCommand::RefreshActive) => self.handle_refresh_active(),
+                Ok(GargoServerCommand::UpdateBufferContent {
                     content,
                     cursor_line,
                 }) => self.handle_update_buffer_content(content, cursor_line),
-                Ok(GithubServerCommand::UpdateCursorLine { line }) => {
+                Ok(GargoServerCommand::UpdateCursorLine { line }) => {
                     self.handle_update_cursor_line(line)
                 }
                 Err(_) => break,
@@ -121,7 +121,7 @@ impl GithubServerWorker {
 
     fn handle_start(&mut self, repo_root: PathBuf) {
         if self.server_shutdown_tx.is_some() {
-            let _ = self.event_tx.send(GithubServerEvent::Error(
+            let _ = self.event_tx.send(GargoServerEvent::Error(
                 "Server already running".to_string(),
             ));
             return;
@@ -133,7 +133,7 @@ impl GithubServerWorker {
         {
             Ok(listener) => listener,
             Err(err) => {
-                let _ = self.event_tx.send(GithubServerEvent::Error(format!(
+                let _ = self.event_tx.send(GargoServerEvent::Error(format!(
                     "Failed to bind Gargo server on localhost: {}",
                     err
                 )));
@@ -143,7 +143,7 @@ impl GithubServerWorker {
         let port = match listener.local_addr() {
             Ok(addr) => addr.port(),
             Err(err) => {
-                let _ = self.event_tx.send(GithubServerEvent::Error(format!(
+                let _ = self.event_tx.send(GargoServerEvent::Error(format!(
                     "Failed to read Gargo server local address: {}",
                     err
                 )));
@@ -157,11 +157,11 @@ impl GithubServerWorker {
 
         let url_ctx = self
             .tokio_runtime
-            .block_on(github_preview_server::resolve_repo_url_context(&repo_root));
+            .block_on(gargo_preview_server::resolve_repo_url_context(&repo_root));
         let root_url = format!(
             "http://127.0.0.1:{}{}",
             port,
-            github_preview_server::repo_home_url(&url_ctx)
+            gargo_preview_server::repo_home_url(&url_ctx)
         );
 
         let bridge_tx = bridge_preview_events(self.event_tx.clone());
@@ -190,7 +190,7 @@ impl GithubServerWorker {
             project_root: repo_root.clone(),
             viewed: ViewedStore::open(),
         });
-        let github_state = Arc::new(GithubServerState { repo_root, url_ctx });
+        let github_state = Arc::new(GargoServerState { repo_root, url_ctx });
 
         self.tokio_runtime.spawn(async move {
             run_server(
@@ -204,7 +204,7 @@ impl GithubServerWorker {
         });
         let _ = self
             .event_tx
-            .send(GithubServerEvent::Started { port, root_url });
+            .send(GargoServerEvent::Started { port, root_url });
     }
 
     fn handle_stop(&mut self) {
@@ -212,15 +212,15 @@ impl GithubServerWorker {
             let _ = shutdown_tx.send(());
             self.preview_state = None;
             self.port = None;
-            let _ = self.event_tx.send(GithubServerEvent::Stopped);
+            let _ = self.event_tx.send(GargoServerEvent::Stopped);
         } else {
             let _ = self
                 .event_tx
-                .send(GithubServerEvent::Error("Server not running".to_string()));
+                .send(GargoServerEvent::Error("Server not running".to_string()));
         }
     }
 
-    fn handle_open_route(&self, route: GithubServerRoute) {
+    fn handle_open_route(&self, route: GargoServerRoute) {
         let Some(port) = self.port else {
             return;
         };
@@ -231,14 +231,13 @@ impl GithubServerWorker {
             return;
         };
         let path = route.path(&state.url_ctx);
-        let _ = self.event_tx.send(GithubServerEvent::Opened {
+        let _ = self.event_tx.send(GargoServerEvent::Opened {
             url: format!("http://127.0.0.1:{}{}", port, path),
         });
     }
 
     fn handle_set_active_path(&mut self, rel_path: Option<String>) {
-        let normalized =
-            rel_path.map(|p| github_preview_server::normalize_rel_path_for_compare(&p));
+        let normalized = rel_path.map(|p| gargo_preview_server::normalize_rel_path_for_compare(&p));
         self.pending_active_rel_path = normalized.clone();
         if let Some(state) = &self.preview_state
             && let Ok(mut state) = state.lock()
@@ -252,7 +251,7 @@ impl GithubServerWorker {
             let event = PreviewBrowserEvent {
                 kind: PreviewBrowserEventKind::Navigate,
                 path: state.active_rel_path.clone(),
-                url: Some(github_preview_server::preview_url_for_rel_path(
+                url: Some(gargo_preview_server::preview_url_for_rel_path(
                     state.port,
                     &state.url_ctx,
                     state.active_rel_path.as_deref(),
@@ -261,7 +260,7 @@ impl GithubServerWorker {
                 version: state.version,
                 cursor_line: None,
             };
-            github_preview_server::broadcast_preview_event(&mut state, event);
+            gargo_preview_server::broadcast_preview_event(&mut state, event);
         }
     }
 
@@ -279,7 +278,7 @@ impl GithubServerWorker {
         let event = PreviewBrowserEvent {
             kind: PreviewBrowserEventKind::Refresh,
             path: state.active_rel_path.clone(),
-            url: Some(github_preview_server::preview_url_for_rel_path(
+            url: Some(gargo_preview_server::preview_url_for_rel_path(
                 state.port,
                 &state.url_ctx,
                 state.active_rel_path.as_deref(),
@@ -288,7 +287,7 @@ impl GithubServerWorker {
             version: state.version,
             cursor_line: state.cursor_line,
         };
-        github_preview_server::broadcast_preview_event(&mut state, event);
+        gargo_preview_server::broadcast_preview_event(&mut state, event);
     }
 
     fn handle_update_buffer_content(&mut self, content: String, cursor_line: usize) {
@@ -307,7 +306,7 @@ impl GithubServerWorker {
         let event = PreviewBrowserEvent {
             kind: PreviewBrowserEventKind::Refresh,
             path: state.active_rel_path.clone(),
-            url: Some(github_preview_server::preview_url_for_rel_path(
+            url: Some(gargo_preview_server::preview_url_for_rel_path(
                 state.port,
                 &state.url_ctx,
                 state.active_rel_path.as_deref(),
@@ -316,7 +315,7 @@ impl GithubServerWorker {
             version: state.version,
             cursor_line: Some(cursor_line),
         };
-        github_preview_server::broadcast_preview_event(&mut state, event);
+        gargo_preview_server::broadcast_preview_event(&mut state, event);
     }
 
     fn handle_update_cursor_line(&mut self, line: usize) {
@@ -339,40 +338,40 @@ impl GithubServerWorker {
             version: state.version,
             cursor_line: Some(line),
         };
-        github_preview_server::broadcast_preview_event(&mut state, event);
+        gargo_preview_server::broadcast_preview_event(&mut state, event);
     }
 }
 
-impl GithubServerRoute {
-    fn path(&self, ctx: &github_preview_server::RepoUrlContext) -> String {
+impl GargoServerRoute {
+    fn path(&self, ctx: &gargo_preview_server::RepoUrlContext) -> String {
         match self {
-            Self::Root => github_preview_server::repo_home_url(ctx),
-            Self::Tree { path } => github_preview_server::tree_url(ctx, path),
-            Self::Blob { path } => github_preview_server::blob_url(ctx, path),
+            Self::Root => gargo_preview_server::repo_home_url(ctx),
+            Self::Tree { path } => gargo_preview_server::tree_url(ctx, path),
+            Self::Blob { path } => gargo_preview_server::blob_url(ctx, path),
             Self::Changes => "/status".to_string(),
             Self::Compare => "/branches".to_string(),
-            Self::Commits => github_preview_server::commits_url(ctx),
-            Self::Commit { hash } => github_preview_server::commit_url(ctx, hash),
+            Self::Commits => gargo_preview_server::commits_url(ctx),
+            Self::Commit { hash } => gargo_preview_server::commit_url(ctx, hash),
         }
     }
 }
 
 fn bridge_preview_events(
-    event_tx: mpsc::Sender<GithubServerEvent>,
-) -> mpsc::Sender<GithubPreviewEvent> {
+    event_tx: mpsc::Sender<GargoServerEvent>,
+) -> mpsc::Sender<GargoPreviewEvent> {
     let (tx, rx) = mpsc::channel();
     let _ = thread::Builder::new()
         .name("github-server-preview-events".to_string())
         .spawn(move || {
             while let Ok(event) = rx.recv() {
                 match event {
-                    GithubPreviewEvent::Detached { requested_path } => {
-                        let _ = event_tx.send(GithubServerEvent::Detached { requested_path });
+                    GargoPreviewEvent::Detached { requested_path } => {
+                        let _ = event_tx.send(GargoServerEvent::Detached { requested_path });
                     }
-                    GithubPreviewEvent::Error(msg) => {
-                        let _ = event_tx.send(GithubServerEvent::Error(msg));
+                    GargoPreviewEvent::Error(msg) => {
+                        let _ = event_tx.send(GargoServerEvent::Error(msg));
                     }
-                    GithubPreviewEvent::Started { .. } | GithubPreviewEvent::Stopped => {}
+                    GargoPreviewEvent::Started { .. } | GargoPreviewEvent::Stopped => {}
                 }
             }
         });
@@ -380,9 +379,9 @@ fn bridge_preview_events(
 }
 
 #[derive(Debug)]
-pub(crate) struct GithubServerState {
+pub(crate) struct GargoServerState {
     pub(crate) repo_root: PathBuf,
-    pub(crate) url_ctx: github_preview_server::RepoUrlContext,
+    pub(crate) url_ctx: gargo_preview_server::RepoUrlContext,
 }
 
 async fn run_server(
@@ -390,7 +389,7 @@ async fn run_server(
     shutdown_rx: tokio::sync::oneshot::Receiver<()>,
     preview_state: Arc<Mutex<PreviewServerState>>,
     diff_state: Arc<DiffServerState>,
-    github_state: Arc<GithubServerState>,
+    github_state: Arc<GargoServerState>,
 ) {
     // URLs mirror github.com: `/{owner}/{repo}/blob/{branch}/{path}` etc., so
     // swapping `http://127.0.0.1:PORT/` for `github.com/` yields the same page.
@@ -398,32 +397,32 @@ async fn run_server(
     // (`/events`, `/assets`, `/status`, `/api`, ...) rank above it in axum's
     // router, so do not add new top-level 2-segment static routes.
     let preview_routes = Router::new()
-        .route("/", get(github_preview_server::handle_bare_root))
-        .route("/events", get(github_preview_server::handle_events))
+        .route("/", get(gargo_preview_server::handle_bare_root))
+        .route("/events", get(gargo_preview_server::handle_events))
         .route(
             "/assets/mermaid.min.js",
-            get(github_preview_server::handle_mermaid_asset),
+            get(gargo_preview_server::handle_mermaid_asset),
         )
         .route(
             "/assets/server-shared.css",
-            get(github_preview_server::handle_shared_css_asset),
+            get(gargo_preview_server::handle_shared_css_asset),
         )
         .route(
             "/assets/server-shortcuts.js",
-            get(github_preview_server::handle_shortcuts_js_asset),
+            get(gargo_preview_server::handle_shortcuts_js_asset),
         )
-        .route("/{owner}/{repo}", get(github_preview_server::handle_root))
+        .route("/{owner}/{repo}", get(gargo_preview_server::handle_root))
         .route(
             "/{owner}/{repo}/tree/{*rest}",
-            get(github_preview_server::handle_tree),
+            get(gargo_preview_server::handle_tree),
         )
         .route(
             "/{owner}/{repo}/blob/{*rest}",
-            get(github_preview_server::handle_blob),
+            get(gargo_preview_server::handle_blob),
         )
         .route(
             "/{owner}/{repo}/preview/{*rest}",
-            get(github_preview_server::handle_preview),
+            get(gargo_preview_server::handle_preview),
         )
         .with_state(preview_state);
 
@@ -532,15 +531,15 @@ async fn run_server(
         .await;
 }
 
-async fn handle_commits_html(State(state): State<Arc<GithubServerState>>) -> impl IntoResponse {
-    let repo_url = github_preview_server::github_repo_url(&state.repo_root).await;
+async fn handle_commits_html(State(state): State<Arc<GargoServerState>>) -> impl IntoResponse {
+    let repo_url = gargo_preview_server::github_repo_url(&state.repo_root).await;
     let github_href = repo_url
         .as_deref()
         .map(|base| format!("{base}/commits/{}", state.url_ctx.branch));
     let rail =
         crate::command::app_shell::app_rail_html(&state.url_ctx, github_href.as_deref(), "commits");
-    let commit_prefix = github_preview_server::commit_url(&state.url_ctx, "");
-    let default_branch = github_preview_server::default_branch_name(&state.repo_root).await;
+    let commit_prefix = gargo_preview_server::commit_url(&state.url_ctx, "");
+    let default_branch = gargo_preview_server::default_branch_name(&state.repo_root).await;
     let repo_ctx = crate::command::server_shared::repo_ctx_script(
         &state.url_ctx.owner,
         &state.url_ctx.repo,
@@ -571,18 +570,18 @@ function escapeHtml(s) {{ return String(s).replace(/[&<>"']/g, c => ({{'&':'&amp
 }
 
 async fn handle_commit_html(
-    State(state): State<Arc<GithubServerState>>,
+    State(state): State<Arc<GargoServerState>>,
     AxumPath((_owner, _repo, hash)): AxumPath<(String, String, String)>,
 ) -> impl IntoResponse {
-    let hash = github_preview_server::html_escape(&hash);
-    let repo_url = github_preview_server::github_repo_url(&state.repo_root).await;
+    let hash = gargo_preview_server::html_escape(&hash);
+    let repo_url = gargo_preview_server::github_repo_url(&state.repo_root).await;
     let github_href = repo_url
         .as_deref()
         .map(|base| format!("{base}/commit/{hash}"));
     let rail =
         crate::command::app_shell::app_rail_html(&state.url_ctx, github_href.as_deref(), "commits");
-    let commit_prefix = github_preview_server::commit_url(&state.url_ctx, "");
-    let default_branch = github_preview_server::default_branch_name(&state.repo_root).await;
+    let commit_prefix = gargo_preview_server::commit_url(&state.url_ctx, "");
+    let default_branch = gargo_preview_server::default_branch_name(&state.repo_root).await;
     let repo_ctx = crate::command::server_shared::repo_ctx_script(
         &state.url_ctx.owner,
         &state.url_ctx.repo,
@@ -749,7 +748,7 @@ updateGoTopButtonVisibility();
 }
 
 async fn handle_api_tree(
-    State(state): State<Arc<GithubServerState>>,
+    State(state): State<Arc<GargoServerState>>,
     AxumPath(path): AxumPath<String>,
 ) -> Response {
     let path = normalize_api_path(&path);
@@ -795,7 +794,7 @@ async fn handle_api_tree(
 }
 
 async fn handle_api_blob(
-    State(state): State<Arc<GithubServerState>>,
+    State(state): State<Arc<GargoServerState>>,
     AxumPath(path): AxumPath<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
@@ -816,18 +815,18 @@ async fn handle_api_blob(
     };
     let plain = params.get("plain").map(|v| v == "1").unwrap_or(false);
     let html = if path.ends_with(".md") && !plain {
-        github_preview_server::render_markdown_with_source_lines(&text)
+        gargo_preview_server::render_markdown_with_source_lines(&text)
     } else {
         format!(
             "<div class=\"code-view\">{}</div>",
-            github_preview_server::render_code_with_line_ids_for_path(&text, &path)
+            gargo_preview_server::render_code_with_line_ids_for_path(&text, &path)
         )
     };
     diff_server::ok_json(serde_json::json!({ "path": path, "content": text, "html": html }))
 }
 
 async fn handle_api_commits(
-    State(state): State<Arc<GithubServerState>>,
+    State(state): State<Arc<GargoServerState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
     let skip = params
@@ -874,7 +873,7 @@ async fn handle_api_commits(
 }
 
 async fn handle_api_commit(
-    State(state): State<Arc<GithubServerState>>,
+    State(state): State<Arc<GargoServerState>>,
     AxumPath(hash): AxumPath<String>,
 ) -> Response {
     let Some(hash) = parse_commit_hash(&hash) else {
@@ -940,7 +939,7 @@ async fn handle_api_commit(
 }
 
 async fn handle_api_commit_file(
-    State(state): State<Arc<GithubServerState>>,
+    State(state): State<Arc<GargoServerState>>,
     AxumPath(hash): AxumPath<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
@@ -994,7 +993,7 @@ fn parse_commit_hash(hash: &str) -> Option<String> {
 }
 
 fn normalize_api_path(path: &str) -> String {
-    let normalized = github_preview_server::normalize_rel_path_for_compare(path);
+    let normalized = gargo_preview_server::normalize_rel_path_for_compare(path);
     if normalized.is_empty() {
         ".".to_string()
     } else {

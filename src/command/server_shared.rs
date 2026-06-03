@@ -32,7 +32,7 @@ pub fn repo_ctx_script(
     github_base: Option<&str>,
     default_branch: Option<&str>,
 ) -> String {
-    use crate::command::github_preview_server::html_escape;
+    use crate::command::gargo_preview_server::html_escape;
     let js_str = |v: Option<&str>| match v {
         Some(s) => format!(r#""{}""#, html_escape(s)),
         None => "null".to_string(),

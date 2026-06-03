@@ -31,8 +31,8 @@ run_test paste_multiline_e2e
 run_test visual_yank_paste_e2e
 run_test save_as_e2e
 run_test diff_server_e2e 3
-run_test github_preview_server_e2e 3
-run_test github_server_e2e 3
+run_test gargo_preview_server_e2e 3
+run_test gargo_server_e2e 3
 run_test verify_history_e2e
 run_test overlay_preview_scroll_e2e
 run_test render_snapshot_e2e

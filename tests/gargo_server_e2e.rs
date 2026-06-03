@@ -4,7 +4,7 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use gargo::command::github_server::{GithubServerCommand, GithubServerEvent, GithubServerHandle};
+use gargo::command::gargo_server::{GargoServerCommand, GargoServerEvent, GargoServerHandle};
 use gargo::config::Config;
 use gargo::core::editor::Editor;
 use gargo::plugin::registry::build_plugin_host;
@@ -62,16 +62,16 @@ fn get_json_with_retry(url: &str) -> serde_json::Value {
     }
 }
 
-fn start_server(repo: &Path, handle: &GithubServerHandle) -> Option<u16> {
+fn start_server(repo: &Path, handle: &GargoServerHandle) -> Option<u16> {
     handle
         .command_tx
-        .send(GithubServerCommand::Start {
+        .send(GargoServerCommand::Start {
             repo_root: repo.to_path_buf(),
         })
         .expect("send start");
     match handle.event_rx.recv_timeout(Duration::from_secs(5)) {
-        Ok(GithubServerEvent::Started { port, .. }) => Some(port),
-        Ok(GithubServerEvent::Error(msg)) if msg.starts_with("Failed to bind Gargo server") => {
+        Ok(GargoServerEvent::Started { port, .. }) => Some(port),
+        Ok(GargoServerEvent::Error(msg)) if msg.starts_with("Failed to bind Gargo server") => {
             eprintln!("skip github server test: {}", msg);
             None
         }
@@ -115,10 +115,10 @@ fn setup_repo() -> tempfile::TempDir {
 }
 
 #[test]
-fn unified_github_server_serves_code_diffs_compare_commits_and_events() {
+fn unified_gargo_server_serves_code_diffs_compare_commits_and_events() {
     let repo_dir = setup_repo();
     let repo = repo_dir.path();
-    let handle = GithubServerHandle::new().expect("server handle");
+    let handle = GargoServerHandle::new().expect("server handle");
     let Some(port) = start_server(repo, &handle) else {
         return;
     };
@@ -282,7 +282,7 @@ fn unified_github_server_serves_code_diffs_compare_commits_and_events() {
 
     handle
         .command_tx
-        .send(GithubServerCommand::SetActivePath {
+        .send(GargoServerCommand::SetActivePath {
             rel_path: Some("README.md".to_string()),
         })
         .expect("set active path");
@@ -290,14 +290,14 @@ fn unified_github_server_serves_code_diffs_compare_commits_and_events() {
     assert_eq!(event["event"]["kind"], "navigate");
     assert_eq!(event["event"]["path"], "README.md");
 
-    let _ = handle.command_tx.send(GithubServerCommand::Stop);
+    let _ = handle.command_tx.send(GargoServerCommand::Stop);
 }
 
 #[test]
 fn split_view_serves_status_compare_and_commit_sources() {
     let repo_dir = setup_repo();
     let repo = repo_dir.path();
-    let handle = GithubServerHandle::new().expect("server handle");
+    let handle = GargoServerHandle::new().expect("server handle");
     let Some(port) = start_server(repo, &handle) else {
         return;
     };
@@ -360,11 +360,11 @@ fn split_view_serves_status_compare_and_commit_sources() {
         Err(other) => panic!("unexpected error: {other}"),
     }
 
-    let _ = handle.command_tx.send(GithubServerCommand::Stop);
+    let _ = handle.command_tx.send(GargoServerCommand::Stop);
 }
 
 #[test]
-fn github_server_plugin_commands_replace_old_visible_server_commands() {
+fn gargo_server_plugin_commands_replace_old_visible_server_commands() {
     let repo_dir = tempdir().expect("temp repo");
     let config = Config::default();
     let host = build_plugin_host(&config, repo_dir.path()).expect("plugin host");
@@ -373,32 +373,32 @@ fn github_server_plugin_commands_replace_old_visible_server_commands() {
         .iter()
         .map(|command| command.id.as_str())
         .collect();
-    assert!(commands.contains(&"server.start_github"));
-    assert!(commands.contains(&"server.stop_github"));
+    assert!(commands.contains(&"server.start_gargo"));
+    assert!(commands.contains(&"server.stop_gargo"));
     assert!(!commands.contains(&"server.start_diff"));
     assert!(!commands.contains(&"server.stop_diff"));
     assert!(!commands.contains(&"server.open_compare"));
-    assert!(!commands.contains(&"server.start_github_preview"));
-    assert!(!commands.contains(&"server.stop_github_preview"));
+    assert!(!commands.contains(&"server.start_gargo_preview"));
+    assert!(!commands.contains(&"server.stop_gargo_preview"));
     assert_eq!(
         Config::default().plugins.enabled,
-        vec!["lsp".to_string(), "github_server".to_string()]
+        vec!["lsp".to_string(), "gargo_server".to_string()]
     );
 }
 
 #[test]
-fn github_server_plugin_start_opens_repository_root_not_active_file() {
+fn gargo_server_plugin_start_opens_repository_root_not_active_file() {
     let repo_dir = setup_repo();
     let repo = repo_dir.path();
     let active_file = repo.join("README.md");
     let mut config = Config::default();
-    config.plugins.enabled = vec!["github_server".to_string()];
-    config.plugin.github_server.auto_open_browser = true;
+    config.plugins.enabled = vec!["gargo_server".to_string()];
+    config.plugin.gargo_server.auto_open_browser = true;
     let editor = Editor::open(&active_file.to_string_lossy());
     let ctx = PluginContext::new(&editor, repo, &config);
     let mut host = build_plugin_host(&config, repo).expect("plugin host");
 
-    let outputs = host.run_command("server.start_github", &ctx);
+    let outputs = host.run_command("server.start_gargo", &ctx);
     assert!(outputs.is_empty());
 
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -426,15 +426,15 @@ fn github_server_plugin_start_opens_repository_root_not_active_file() {
         !url.contains("/blob/README.md"),
         "expected server start not to open active file route"
     );
-    let _ = host.run_command("server.stop_github", &ctx);
+    let _ = host.run_command("server.stop_gargo", &ctx);
 }
 
 #[test]
-fn github_server_concurrent_instances_use_distinct_ports() {
+fn gargo_server_concurrent_instances_use_distinct_ports() {
     let repo_dir = setup_repo();
     let repo = repo_dir.path();
-    let first = GithubServerHandle::new().expect("first handle");
-    let second = GithubServerHandle::new().expect("second handle");
+    let first = GargoServerHandle::new().expect("first handle");
+    let second = GargoServerHandle::new().expect("second handle");
     let Some(port_a) = start_server(repo, &first) else {
         return;
     };
@@ -442,22 +442,22 @@ fn github_server_concurrent_instances_use_distinct_ports() {
         return;
     };
     assert_ne!(port_a, port_b);
-    let _ = first.command_tx.send(GithubServerCommand::Stop);
-    let _ = second.command_tx.send(GithubServerCommand::Stop);
+    let _ = first.command_tx.send(GargoServerCommand::Stop);
+    let _ = second.command_tx.send(GargoServerCommand::Stop);
 }
 
 #[test]
-fn old_plugin_ids_normalize_to_single_github_server_plugin() {
+fn old_plugin_ids_normalize_to_single_gargo_server_plugin() {
     let config: Config = toml::from_str(
         r#"
 [plugins]
-enabled = ["diff_ui", "github_preview", "github_server"]
+enabled = ["diff_ui", "gargo_preview", "gargo_server"]
 "#,
     )
     .unwrap();
     assert_eq!(
         config.plugins.normalized_enabled(),
-        vec!["github_server".to_string()]
+        vec!["gargo_server".to_string()]
     );
 
     let repo_dir = tempdir().expect("temp repo");
@@ -470,7 +470,7 @@ enabled = ["diff_ui", "github_preview", "github_server"]
     assert_eq!(
         commands
             .iter()
-            .filter(|command| **command == "server.start_github")
+            .filter(|command| **command == "server.start_gargo")
             .count(),
         1
     );

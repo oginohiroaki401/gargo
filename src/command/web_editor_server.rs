@@ -24,7 +24,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::command::github_server::GithubServerState;
+use crate::command::gargo_server::GargoServerState;
 
 /// The browser editor: an emacs/VSCode-style always-insert editor whose modal
 /// core runs in-tab as wasm. The page template carries `{{APP_CSS}}` and
@@ -48,9 +48,7 @@ const EDITOR_JS: &str = include_str!("../../assets/web_editor/editor.js");
 const WASM_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/gargo_wasm.js"));
 const WASM_BG: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/gargo_wasm_bg.wasm"));
 
-pub(crate) async fn handle_editor_page(
-    State(state): State<Arc<GithubServerState>>,
-) -> Html<String> {
+pub(crate) async fn handle_editor_page(State(state): State<Arc<GargoServerState>>) -> Html<String> {
     let rail = crate::command::app_shell::app_rail_html(&state.url_ctx, None, "editor");
     let css = format!(
         "<style>\n{}</style>",
@@ -111,7 +109,7 @@ struct FileResponse {
 }
 
 pub(crate) async fn handle_api_file(
-    State(state): State<Arc<GithubServerState>>,
+    State(state): State<Arc<GargoServerState>>,
     Query(q): Query<FileQuery>,
 ) -> Response {
     let Some(full) = resolve_in_repo(&state.repo_root, &q.path) else {
@@ -139,7 +137,7 @@ struct FilesResponse {
 /// List the repository's files for the editor's Cmd+P picker — the same set the
 /// terminal file picker uses (`git ls-files` when in a repo, else a filtered
 /// directory walk; see [`crate::project::collect_files`]).
-pub(crate) async fn handle_api_files(State(state): State<Arc<GithubServerState>>) -> Response {
+pub(crate) async fn handle_api_files(State(state): State<Arc<GargoServerState>>) -> Response {
     let files = crate::project::collect_files(&state.repo_root);
     ok_json(&FilesResponse { files })
 }
@@ -177,7 +175,7 @@ struct SearchResponse {
 /// (shorter queries return no hits). Results arrive sorted by path so the
 /// client can group them by file.
 pub(crate) async fn handle_api_search(
-    State(state): State<Arc<GithubServerState>>,
+    State(state): State<Arc<GargoServerState>>,
     Query(q): Query<SearchQuery>,
 ) -> Response {
     const DEFAULT_MAX: usize = 500;
@@ -310,7 +308,7 @@ pub(crate) async fn handle_api_preview(Json(req): Json<PreviewRequest>) -> Respo
     let (kind, html) = match ext.as_str() {
         "md" | "markdown" => (
             "markdown",
-            crate::command::github_preview_server::render_markdown(&req.content),
+            crate::command::gargo_preview_server::render_markdown(&req.content),
         ),
         "html" | "htm" => ("html", req.content),
         _ => ("none", String::new()),
@@ -424,7 +422,7 @@ struct GitGutterResponse {
 /// browser's wasm core can't compute it — so it must run here on the server.
 /// Returns an empty map outside a repo or when nothing changed.
 pub(crate) async fn handle_api_git_gutter(
-    State(state): State<Arc<GithubServerState>>,
+    State(state): State<Arc<GargoServerState>>,
     Json(req): Json<GitGutterRequest>,
 ) -> Response {
     let Some(full) = resolve_in_repo(&state.repo_root, &req.path) else {
@@ -468,7 +466,7 @@ struct ConflictResponse {
 }
 
 pub(crate) async fn handle_api_save(
-    State(state): State<Arc<GithubServerState>>,
+    State(state): State<Arc<GargoServerState>>,
     Json(req): Json<SaveRequest>,
 ) -> Response {
     let Some(full) = resolve_in_repo(&state.repo_root, &req.path) else {
@@ -519,7 +517,7 @@ pub(crate) struct CreateRequest {
 /// repo-relative path, for the sidebar's "New File" / "New Folder" actions.
 /// Refuses to clobber an existing entry.
 pub(crate) async fn handle_api_fs_create(
-    State(state): State<Arc<GithubServerState>>,
+    State(state): State<Arc<GargoServerState>>,
     Json(req): Json<CreateRequest>,
 ) -> Response {
     let Some(full) = resolve_in_repo(&state.repo_root, &req.path) else {
@@ -555,7 +553,7 @@ pub(crate) struct RenameRequest {
 /// Rename/move a file or directory within the repo (the sidebar's "Rename"
 /// action). Refuses if the source is missing or the destination exists.
 pub(crate) async fn handle_api_fs_rename(
-    State(state): State<Arc<GithubServerState>>,
+    State(state): State<Arc<GargoServerState>>,
     Json(req): Json<RenameRequest>,
 ) -> Response {
     let (Some(from), Some(to)) = (
@@ -589,7 +587,7 @@ pub(crate) struct DeleteRequest {
 /// Delete a file or directory (recursively) within the repo, for the sidebar's
 /// "Delete" action. Refuses to delete the repo root itself.
 pub(crate) async fn handle_api_fs_delete(
-    State(state): State<Arc<GithubServerState>>,
+    State(state): State<Arc<GargoServerState>>,
     Json(req): Json<DeleteRequest>,
 ) -> Response {
     let Some(full) = resolve_in_repo(&state.repo_root, &req.path) else {
@@ -618,7 +616,7 @@ pub(crate) struct RevealRequest {
 /// Explorer, or the containing dir via `xdg-open` elsewhere). Runs on the
 /// machine hosting the server, which for the editor is the user's own box.
 pub(crate) async fn handle_api_fs_reveal(
-    State(state): State<Arc<GithubServerState>>,
+    State(state): State<Arc<GargoServerState>>,
     Json(req): Json<RevealRequest>,
 ) -> Response {
     let Some(full) = resolve_in_repo(&state.repo_root, &req.path) else {

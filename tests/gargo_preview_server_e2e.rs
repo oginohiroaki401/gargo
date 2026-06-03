@@ -5,12 +5,12 @@ use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use gargo::command::github_preview_server::{
-    GithubPreviewCommand, GithubPreviewEvent, GithubPreviewHandle,
+use gargo::command::gargo_preview_server::{
+    GargoPreviewCommand, GargoPreviewEvent, GargoPreviewHandle,
 };
 use gargo::config::Config;
 use gargo::core::editor::Editor;
-use gargo::plugin::github_preview::GithubPreviewPlugin;
+use gargo::plugin::gargo_preview::GargoPreviewPlugin;
 use gargo::plugin::types::{Plugin, PluginContext, PluginOutput};
 use tempfile::tempdir;
 
@@ -124,7 +124,7 @@ fn github_repo_path(repo: &Path) -> String {
     format!("/{owner}/{name}")
 }
 
-fn read_event(rx: &std::sync::mpsc::Receiver<GithubPreviewEvent>) -> GithubPreviewEvent {
+fn read_event(rx: &std::sync::mpsc::Receiver<GargoPreviewEvent>) -> GargoPreviewEvent {
     rx.recv_timeout(Duration::from_secs(5))
         .expect("timed out waiting for github preview server event")
 }
@@ -136,19 +136,17 @@ fn cwd_test_lock() -> std::sync::MutexGuard<'static, ()> {
     }
 }
 
-fn start_preview_server(handle: &GithubPreviewHandle, repo_root: &Path) -> Option<u16> {
+fn start_preview_server(handle: &GargoPreviewHandle, repo_root: &Path) -> Option<u16> {
     handle
         .command_tx
-        .send(GithubPreviewCommand::Start {
+        .send(GargoPreviewCommand::Start {
             repo_root: repo_root.to_path_buf(),
         })
         .expect("send start command");
 
     match read_event(&handle.event_rx) {
-        GithubPreviewEvent::Started { port } => Some(port),
-        GithubPreviewEvent::Error(msg)
-            if msg.starts_with("Failed to bind GitHub preview server") =>
-        {
+        GargoPreviewEvent::Started { port } => Some(port),
+        GargoPreviewEvent::Error(msg) if msg.starts_with("Failed to bind Gargo preview server") => {
             eprintln!("skip github preview test: {}", msg);
             None
         }
@@ -158,12 +156,12 @@ fn start_preview_server(handle: &GithubPreviewHandle, repo_root: &Path) -> Optio
     }
 }
 
-fn stop_preview_server(handle: &GithubPreviewHandle) {
-    let _ = handle.command_tx.send(GithubPreviewCommand::Stop);
+fn stop_preview_server(handle: &GargoPreviewHandle) {
+    let _ = handle.command_tx.send(GargoPreviewCommand::Stop);
 }
 
 fn wait_for_plugin_start_url(
-    plugin: &mut GithubPreviewPlugin,
+    plugin: &mut GargoPreviewPlugin,
     ctx: &PluginContext,
 ) -> Option<String> {
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -179,7 +177,7 @@ fn wait_for_plugin_start_url(
             matches!(
                 output,
                 PluginOutput::Message(message)
-                    if message.starts_with("Server error: Failed to bind GitHub preview server on localhost:")
+                    if message.starts_with("Server error: Failed to bind Gargo preview server on localhost:")
             )
         }) {
             if let Some(message) = outputs.iter().find_map(|output| {
@@ -197,11 +195,11 @@ fn wait_for_plugin_start_url(
     }
 }
 
-fn expect_stopped_event(rx: &std::sync::mpsc::Receiver<GithubPreviewEvent>) {
+fn expect_stopped_event(rx: &std::sync::mpsc::Receiver<GargoPreviewEvent>) {
     loop {
         match read_event(rx) {
-            GithubPreviewEvent::Stopped => break,
-            GithubPreviewEvent::Detached { .. } => continue,
+            GargoPreviewEvent::Stopped => break,
+            GargoPreviewEvent::Detached { .. } => continue,
             event => panic!("expected Stopped event, got: {:?}", event),
         }
     }
@@ -281,7 +279,7 @@ fn extract_started_url(outputs: &[PluginOutput]) -> Option<String> {
     for output in outputs {
         match output {
             PluginOutput::Message(message) => {
-                if let Some(url) = message.strip_prefix("GitHub preview: ") {
+                if let Some(url) = message.strip_prefix("Gargo preview: ") {
                     return Some(url.to_string());
                 }
             }
@@ -293,7 +291,7 @@ fn extract_started_url(outputs: &[PluginOutput]) -> Option<String> {
 }
 
 #[test]
-fn test_github_preview_server_start_stop_and_mermaid_rendering() {
+fn test_gargo_preview_server_start_stop_and_mermaid_rendering() {
     let _lock = cwd_test_lock();
 
     let repo_dir = tempdir().expect("create temp repo");
@@ -341,7 +339,7 @@ Regular text after diagram.
     let repo_root = run_git_output(repo, &["rev-parse", "--show-toplevel"]);
 
     let _cwd_guard = WorkingDirGuard::set(repo);
-    let handle = GithubPreviewHandle::new().expect("create github preview handle");
+    let handle = GargoPreviewHandle::new().expect("create github preview handle");
 
     // Test: Start server
     let Some(port) = start_preview_server(&handle, repo) else {
@@ -431,13 +429,13 @@ Regular text after diagram.
     // Test: Duplicate start should error
     handle
         .command_tx
-        .send(GithubPreviewCommand::Start {
+        .send(GargoPreviewCommand::Start {
             repo_root: repo.to_path_buf(),
         })
         .expect("send duplicate start");
 
     match read_event(&handle.event_rx) {
-        GithubPreviewEvent::Error(msg) => {
+        GargoPreviewEvent::Error(msg) => {
             assert!(msg.contains("already running"), "unexpected error: {}", msg)
         }
         event => panic!("expected already-running error, got: {:?}", event),
@@ -447,7 +445,7 @@ Regular text after diagram.
     stop_preview_server(&handle);
 
     match read_event(&handle.event_rx) {
-        GithubPreviewEvent::Stopped => {}
+        GargoPreviewEvent::Stopped => {}
         event => panic!("expected Stopped event, got: {:?}", event),
     }
 
@@ -455,7 +453,7 @@ Regular text after diagram.
     stop_preview_server(&handle);
 
     match read_event(&handle.event_rx) {
-        GithubPreviewEvent::Error(msg) => {
+        GargoPreviewEvent::Error(msg) => {
             assert!(msg.contains("not running"), "unexpected error: {}", msg)
         }
         event => panic!("expected not-running error, got: {:?}", event),
@@ -463,11 +461,11 @@ Regular text after diagram.
 }
 
 #[test]
-fn test_github_preview_server_serves_tree_view() {
+fn test_gargo_preview_server_serves_tree_view() {
     let _lock = cwd_test_lock();
 
     let repo_dir = tempdir().expect("create temp repo");
-    // Canonicalize — see comment in test_github_preview_server_start_stop_and_mermaid_rendering.
+    // Canonicalize — see comment in test_gargo_preview_server_start_stop_and_mermaid_rendering.
     let canonical_repo = std::fs::canonicalize(repo_dir.path()).expect("canonicalize repo");
     let repo = canonical_repo.as_path();
 
@@ -491,7 +489,7 @@ fn test_github_preview_server_serves_tree_view() {
     let repo_root = run_git_output(repo, &["rev-parse", "--show-toplevel"]);
 
     let _cwd_guard = WorkingDirGuard::set(repo);
-    let handle = GithubPreviewHandle::new().expect("create github preview handle");
+    let handle = GargoPreviewHandle::new().expect("create github preview handle");
 
     let Some(port) = start_preview_server(&handle, repo) else {
         return;
@@ -534,7 +532,7 @@ fn test_github_preview_server_serves_tree_view() {
 }
 
 #[test]
-fn test_github_preview_server_concurrent_instances_use_distinct_ports() {
+fn test_gargo_preview_server_concurrent_instances_use_distinct_ports() {
     let _lock = cwd_test_lock();
 
     let repo_dir = tempdir().expect("create temp repo");
@@ -554,8 +552,8 @@ fn test_github_preview_server_concurrent_instances_use_distinct_ports() {
 
     let _cwd_guard = WorkingDirGuard::set(repo);
 
-    let handle_a = GithubPreviewHandle::new().expect("create first github preview handle");
-    let handle_b = GithubPreviewHandle::new().expect("create second github preview handle");
+    let handle_a = GargoPreviewHandle::new().expect("create first github preview handle");
+    let handle_b = GargoPreviewHandle::new().expect("create second github preview handle");
 
     let Some(port_a) = start_preview_server(&handle_a, repo) else {
         return;
@@ -585,17 +583,17 @@ fn test_github_preview_server_concurrent_instances_use_distinct_ports() {
     stop_preview_server(&handle_b);
 
     match read_event(&handle_a.event_rx) {
-        GithubPreviewEvent::Stopped => {}
+        GargoPreviewEvent::Stopped => {}
         event => panic!("expected first Stopped event, got: {:?}", event),
     }
     match read_event(&handle_b.event_rx) {
-        GithubPreviewEvent::Stopped => {}
+        GargoPreviewEvent::Stopped => {}
         event => panic!("expected second Stopped event, got: {:?}", event),
     }
 }
 
 #[test]
-fn test_github_preview_server_detaches_when_browser_leaves_active_path() {
+fn test_gargo_preview_server_detaches_when_browser_leaves_active_path() {
     let _lock = cwd_test_lock();
 
     let repo_dir = tempdir().expect("create temp repo");
@@ -611,7 +609,7 @@ fn test_github_preview_server_detaches_when_browser_leaves_active_path() {
     run_git(repo, &["commit", "-m", "add files"]);
 
     let _cwd_guard = WorkingDirGuard::set(repo);
-    let handle = GithubPreviewHandle::new().expect("create github preview handle");
+    let handle = GargoPreviewHandle::new().expect("create github preview handle");
 
     let Some(port) = start_preview_server(&handle, repo) else {
         return;
@@ -619,7 +617,7 @@ fn test_github_preview_server_detaches_when_browser_leaves_active_path() {
 
     handle
         .command_tx
-        .send(GithubPreviewCommand::SetActivePath {
+        .send(GargoPreviewCommand::SetActivePath {
             rel_path: Some("README.md".to_string()),
         })
         .expect("set active path");
@@ -637,7 +635,7 @@ fn test_github_preview_server_detaches_when_browser_leaves_active_path() {
     let off_path_url = github_blob_url(port, repo, "docs.md");
     let _ = get_html_with_retry(&off_path_url);
     match read_event(&handle.event_rx) {
-        GithubPreviewEvent::Detached { requested_path } => {
+        GargoPreviewEvent::Detached { requested_path } => {
             assert_eq!(requested_path, "docs.md");
         }
         event => panic!("expected Detached event, got: {:?}", event),
@@ -645,7 +643,7 @@ fn test_github_preview_server_detaches_when_browser_leaves_active_path() {
 
     handle
         .command_tx
-        .send(GithubPreviewCommand::SetActivePath {
+        .send(GargoPreviewCommand::SetActivePath {
             rel_path: Some("docs.md".to_string()),
         })
         .expect("set second active path");
@@ -663,7 +661,7 @@ fn test_github_preview_server_detaches_when_browser_leaves_active_path() {
 }
 
 #[test]
-fn test_github_preview_server_events_endpoint_emits_navigate_refresh_and_detached_events() {
+fn test_gargo_preview_server_events_endpoint_emits_navigate_refresh_and_detached_events() {
     let _lock = cwd_test_lock();
 
     let repo_dir = tempdir().expect("create temp repo");
@@ -679,7 +677,7 @@ fn test_github_preview_server_events_endpoint_emits_navigate_refresh_and_detache
     run_git(repo, &["commit", "-m", "add files"]);
 
     let _cwd_guard = WorkingDirGuard::set(repo);
-    let handle = GithubPreviewHandle::new().expect("create github preview handle");
+    let handle = GargoPreviewHandle::new().expect("create github preview handle");
 
     let Some(port) = start_preview_server(&handle, repo) else {
         return;
@@ -689,7 +687,7 @@ fn test_github_preview_server_events_endpoint_emits_navigate_refresh_and_detache
 
     handle
         .command_tx
-        .send(GithubPreviewCommand::SetActivePath {
+        .send(GargoPreviewCommand::SetActivePath {
             rel_path: Some("README.md".to_string()),
         })
         .expect("set active path");
@@ -702,7 +700,7 @@ fn test_github_preview_server_events_endpoint_emits_navigate_refresh_and_detache
 
     handle
         .command_tx
-        .send(GithubPreviewCommand::RefreshActive)
+        .send(GargoPreviewCommand::RefreshActive)
         .expect("refresh active path");
     let refresh = wait_for_event_kind(&base_url, navigate_version, "refresh", Some("README.md"));
     assert_eq!(refresh["url"].as_str(), Some(expected_readme_url.as_str()));
@@ -719,7 +717,7 @@ fn test_github_preview_server_events_endpoint_emits_navigate_refresh_and_detache
 }
 
 #[test]
-fn test_github_preview_plugin_external_file_change_emits_refresh_event() {
+fn test_gargo_preview_plugin_external_file_change_emits_refresh_event() {
     let _lock = cwd_test_lock();
 
     let repo_dir = tempdir().expect("create temp repo");
@@ -737,12 +735,12 @@ fn test_github_preview_plugin_external_file_change_emits_refresh_event() {
     let _cwd_guard = WorkingDirGuard::set(repo);
 
     let mut config = Config::default();
-    config.plugin.github_preview.auto_open_browser = false;
+    config.plugin.gargo_preview.auto_open_browser = false;
     let editor = Editor::open(&readme_path.to_string_lossy());
     let ctx = PluginContext::new(&editor, repo, &config);
-    let mut plugin = GithubPreviewPlugin::new(&config, repo);
+    let mut plugin = GargoPreviewPlugin::new(&config, repo);
 
-    let _ = plugin.on_command("server.start_github_preview", &ctx);
+    let _ = plugin.on_command("server.start_gargo_preview", &ctx);
 
     let Some(started_url) = wait_for_plugin_start_url(&mut plugin, &ctx) else {
         return;
@@ -767,7 +765,7 @@ fn test_github_preview_plugin_external_file_change_emits_refresh_event() {
     let refresh = wait_for_event_kind(&base_url, navigate_version, "refresh", Some("README.md"));
     assert_eq!(refresh["url"].as_str(), Some(expected_readme_url.as_str()));
 
-    let _ = plugin.on_command("server.stop_github_preview", &ctx);
+    let _ = plugin.on_command("server.stop_gargo_preview", &ctx);
     let stop_deadline = Instant::now() + Duration::from_secs(3);
     loop {
         if Instant::now() >= stop_deadline {
@@ -777,7 +775,7 @@ fn test_github_preview_plugin_external_file_change_emits_refresh_event() {
         if outputs.iter().any(|output| {
             matches!(
                 output,
-                PluginOutput::Message(msg) if msg == "GitHub preview server stopped"
+                PluginOutput::Message(msg) if msg == "Gargo preview server stopped"
             )
         }) {
             break;

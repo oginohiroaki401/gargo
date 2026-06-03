@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use gargo::command::github_server::{GithubServerCommand, GithubServerEvent, GithubServerHandle};
+use gargo::command::gargo_server::{GargoServerCommand, GargoServerEvent, GargoServerHandle};
 use gargo::config::Config;
 use gargo::core::editor::Editor;
 
@@ -72,24 +72,24 @@ fn main() {
 }
 
 fn run_server(repo_root: PathBuf, open_browser: bool) -> Result<(), String> {
-    let handle = GithubServerHandle::new()?;
+    let handle = GargoServerHandle::new()?;
     handle
         .command_tx
-        .send(GithubServerCommand::Start { repo_root })
+        .send(GargoServerCommand::Start { repo_root })
         .map_err(|e| format!("Failed to send start command: {e}"))?;
 
     loop {
         match handle.event_rx.recv() {
-            Ok(GithubServerEvent::Started { root_url, .. }) => {
+            Ok(GargoServerEvent::Started { root_url, .. }) => {
                 println!("{root_url}");
                 if open_browser && let Err(e) = gargo::app::spawn_open_url(&root_url) {
                     eprintln!("Warning: failed to open browser: {e}");
                 }
             }
-            Ok(GithubServerEvent::Error(msg)) => {
+            Ok(GargoServerEvent::Error(msg)) => {
                 return Err(msg);
             }
-            Ok(GithubServerEvent::Stopped) => return Ok(()),
+            Ok(GargoServerEvent::Stopped) => return Ok(()),
             Ok(_) => {}
             Err(_) => return Ok(()),
         }

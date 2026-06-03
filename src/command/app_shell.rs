@@ -5,7 +5,7 @@
 //! Callers render it into a `{{APP_RAIL}}` template slot that sits inside
 //! `<div class="app-shell"> … <main class="app-main"> …`.
 
-use crate::command::github_preview_server::{
+use crate::command::gargo_preview_server::{
     RepoUrlContext, blob_url, commits_url, html_escape, repo_home_url,
 };
 
@@ -168,7 +168,7 @@ fn rail_link(id: &str, label: &str, href: &str, shortcut: &str, active: &str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::github_preview_server::RepoUrlContext;
+    use crate::command::gargo_preview_server::RepoUrlContext;
 
     fn ctx() -> RepoUrlContext {
         RepoUrlContext {

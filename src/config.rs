@@ -48,14 +48,17 @@ pub struct LspServerConfig {
 #[derive(Debug, Deserialize, Serialize, Default)]
 #[serde(default)]
 pub struct PluginConfig {
-    pub github_server: PluginGithubServerConfig,
+    // `github_*` aliases keep configs written before the gargo_* rename working.
+    #[serde(alias = "github_server")]
+    pub gargo_server: PluginGargoServerConfig,
     pub diff_ui: PluginDiffUiConfig,
-    pub github_preview: PluginGithubPreviewConfig,
+    #[serde(alias = "github_preview")]
+    pub gargo_preview: PluginGargoPreviewConfig,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(default)]
-pub struct PluginGithubServerConfig {
+pub struct PluginGargoServerConfig {
     pub auto_open_browser: bool,
 }
 
@@ -67,7 +70,7 @@ pub struct PluginDiffUiConfig {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(default)]
-pub struct PluginGithubPreviewConfig {
+pub struct PluginGargoPreviewConfig {
     pub auto_open_browser: bool,
 }
 
@@ -192,7 +195,7 @@ impl Default for PluginDiffUiConfig {
     }
 }
 
-impl Default for PluginGithubServerConfig {
+impl Default for PluginGargoServerConfig {
     fn default() -> Self {
         Self {
             auto_open_browser: true,
@@ -200,7 +203,7 @@ impl Default for PluginGithubServerConfig {
     }
 }
 
-impl Default for PluginGithubPreviewConfig {
+impl Default for PluginGargoPreviewConfig {
     fn default() -> Self {
         Self {
             auto_open_browser: true,
@@ -242,7 +245,7 @@ impl Default for ThemeConfig {
 impl Default for PluginsConfig {
     fn default() -> Self {
         Self {
-            enabled: vec!["lsp".to_string(), "github_server".to_string()],
+            enabled: vec!["lsp".to_string(), "gargo_server".to_string()],
         }
     }
 }
@@ -362,7 +365,9 @@ impl PluginsConfig {
         let mut out = Vec::new();
         for id in &self.enabled {
             let normalized = match id.as_str() {
-                "diff_ui" | "github_preview" => "github_server",
+                // Legacy ids (pre gargo_* rename, plus the old split plugins)
+                // all collapse onto the unified gargo server.
+                "diff_ui" | "gargo_preview" | "github_preview" | "github_server" => "gargo_server",
                 other => other,
             };
             if !out.iter().any(|existing| existing == normalized) {
@@ -512,8 +517,8 @@ markdown_link_hover_selected_bg = "grey"
         assert_eq!(parsed.horizontal_scroll_margin, 5);
         assert!(parsed.show_line_number);
         assert_eq!(
-            parsed.plugin.github_server.auto_open_browser,
-            cfg.plugin.github_server.auto_open_browser
+            parsed.plugin.gargo_server.auto_open_browser,
+            cfg.plugin.gargo_server.auto_open_browser
         );
         assert_eq!(parsed.git.gutter_debounce_high_priority_ms, 1);
         assert_eq!(parsed.performance.file_index.mode, FileIndexMode::Lazy);
@@ -666,16 +671,32 @@ popup_width_percent = 92
 
     #[test]
     fn test_plugin_normalization_maps_old_server_plugins_to_unified_server() {
+        // Mix legacy (github_*) and current (gargo_*) ids; all server-ish
+        // plugins collapse onto the unified gargo_server.
         let cfg: Config = toml::from_str(
             r#"
 [plugins]
-enabled = ["lsp", "diff_ui", "github_preview", "github_server"]
+enabled = ["lsp", "diff_ui", "github_preview", "github_server", "gargo_preview", "gargo_server"]
 "#,
         )
         .unwrap();
         assert_eq!(
             cfg.plugins.normalized_enabled(),
-            vec!["lsp".to_string(), "github_server".to_string()]
+            vec!["lsp".to_string(), "gargo_server".to_string()]
         );
+    }
+
+    #[test]
+    fn test_legacy_github_plugin_section_still_parses_via_alias() {
+        // A config file written before the gargo_* rename uses [plugin.github_server];
+        // the serde alias must still bind it (default auto_open_browser is true).
+        let cfg: Config = toml::from_str(
+            r#"
+[plugin.github_server]
+auto_open_browser = false
+"#,
+        )
+        .unwrap();
+        assert!(!cfg.plugin.gargo_server.auto_open_browser);
     }
 }

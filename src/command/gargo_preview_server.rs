@@ -33,9 +33,9 @@ use crate::input::action::{Action, AppAction, IntegrationAction};
 use crate::syntax::highlight::{HighlightSpan, highlight_text};
 use crate::syntax::language::LanguageRegistry;
 
-/// Commands that can be sent to the GitHub preview server
+/// Commands that can be sent to the Gargo preview server
 #[derive(Debug, Clone)]
-pub enum GithubPreviewCommand {
+pub enum GargoPreviewCommand {
     Start { repo_root: PathBuf },
     Stop,
     SetActivePath { rel_path: Option<String> },
@@ -44,28 +44,28 @@ pub enum GithubPreviewCommand {
     UpdateCursorLine { line: usize },
 }
 
-/// Events emitted by the GitHub preview server
+/// Events emitted by the Gargo preview server
 #[derive(Debug, Clone)]
-pub enum GithubPreviewEvent {
+pub enum GargoPreviewEvent {
     Started { port: u16 },
     Stopped,
     Detached { requested_path: String },
     Error(String),
 }
 
-/// Handle for communicating with the GitHub preview server worker thread
-pub struct GithubPreviewHandle {
-    pub command_tx: mpsc::Sender<GithubPreviewCommand>,
-    pub event_rx: mpsc::Receiver<GithubPreviewEvent>,
+/// Handle for communicating with the Gargo preview server worker thread
+pub struct GargoPreviewHandle {
+    pub command_tx: mpsc::Sender<GargoPreviewCommand>,
+    pub event_rx: mpsc::Receiver<GargoPreviewEvent>,
     _worker_thread: Option<thread::JoinHandle<()>>,
 }
 
-impl GithubPreviewHandle {
+impl GargoPreviewHandle {
     pub fn new() -> Result<Self, String> {
         let (command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
 
-        let worker = GithubPreviewWorker {
+        let worker = GargoPreviewWorker {
             command_rx,
             event_tx,
             tokio_runtime: tokio::runtime::Builder::new_multi_thread()
@@ -91,8 +91,8 @@ impl GithubPreviewHandle {
 
     #[cfg(test)]
     pub(crate) fn from_channels_for_test(
-        command_tx: mpsc::Sender<GithubPreviewCommand>,
-        event_rx: mpsc::Receiver<GithubPreviewEvent>,
+        command_tx: mpsc::Sender<GargoPreviewCommand>,
+        event_rx: mpsc::Receiver<GargoPreviewEvent>,
     ) -> Self {
         Self {
             command_tx,
@@ -103,32 +103,30 @@ impl GithubPreviewHandle {
 }
 
 /// Worker thread that manages the Tokio runtime and HTTP server
-struct GithubPreviewWorker {
-    command_rx: mpsc::Receiver<GithubPreviewCommand>,
-    event_tx: mpsc::Sender<GithubPreviewEvent>,
+struct GargoPreviewWorker {
+    command_rx: mpsc::Receiver<GargoPreviewCommand>,
+    event_tx: mpsc::Sender<GargoPreviewEvent>,
     tokio_runtime: tokio::runtime::Runtime,
     server_shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
     server_state: Option<Arc<Mutex<PreviewServerState>>>,
     pending_active_rel_path: Option<String>,
 }
 
-impl GithubPreviewWorker {
+impl GargoPreviewWorker {
     fn run(mut self) {
         loop {
             match self.command_rx.recv() {
-                Ok(GithubPreviewCommand::Start { repo_root }) => {
-                    self.handle_start_server(repo_root)
-                }
-                Ok(GithubPreviewCommand::Stop) => self.handle_stop_server(),
-                Ok(GithubPreviewCommand::SetActivePath { rel_path }) => {
+                Ok(GargoPreviewCommand::Start { repo_root }) => self.handle_start_server(repo_root),
+                Ok(GargoPreviewCommand::Stop) => self.handle_stop_server(),
+                Ok(GargoPreviewCommand::SetActivePath { rel_path }) => {
                     self.handle_set_active_path(rel_path);
                 }
-                Ok(GithubPreviewCommand::RefreshActive) => self.handle_refresh_active(),
-                Ok(GithubPreviewCommand::UpdateBufferContent {
+                Ok(GargoPreviewCommand::RefreshActive) => self.handle_refresh_active(),
+                Ok(GargoPreviewCommand::UpdateBufferContent {
                     content,
                     cursor_line,
                 }) => self.handle_update_buffer_content(content, cursor_line),
-                Ok(GithubPreviewCommand::UpdateCursorLine { line }) => {
+                Ok(GargoPreviewCommand::UpdateCursorLine { line }) => {
                     self.handle_update_cursor_line(line)
                 }
                 Err(_) => break, // Main thread exited
@@ -138,7 +136,7 @@ impl GithubPreviewWorker {
 
     fn handle_start_server(&mut self, repo_root: PathBuf) {
         if self.server_shutdown_tx.is_some() {
-            let _ = self.event_tx.send(GithubPreviewEvent::Error(
+            let _ = self.event_tx.send(GargoPreviewEvent::Error(
                 "Server already running".to_string(),
             ));
             return;
@@ -150,8 +148,8 @@ impl GithubPreviewWorker {
         {
             Ok(listener) => listener,
             Err(err) => {
-                let _ = self.event_tx.send(GithubPreviewEvent::Error(format!(
-                    "Failed to bind GitHub preview server on localhost: {}",
+                let _ = self.event_tx.send(GargoPreviewEvent::Error(format!(
+                    "Failed to bind Gargo preview server on localhost: {}",
                     err
                 )));
                 return;
@@ -160,8 +158,8 @@ impl GithubPreviewWorker {
         let port = match listener.local_addr() {
             Ok(addr) => addr.port(),
             Err(err) => {
-                let _ = self.event_tx.send(GithubPreviewEvent::Error(format!(
-                    "Failed to read GitHub preview server local address: {}",
+                let _ = self.event_tx.send(GargoPreviewEvent::Error(format!(
+                    "Failed to read Gargo preview server local address: {}",
                     err
                 )));
                 return;
@@ -205,18 +203,18 @@ impl GithubPreviewWorker {
             run_server(listener, shutdown_rx, server_state).await;
         });
 
-        let _ = event_tx.send(GithubPreviewEvent::Started { port });
+        let _ = event_tx.send(GargoPreviewEvent::Started { port });
     }
 
     fn handle_stop_server(&mut self) {
         if let Some(shutdown_tx) = self.server_shutdown_tx.take() {
             let _ = shutdown_tx.send(());
             self.server_state = None;
-            let _ = self.event_tx.send(GithubPreviewEvent::Stopped);
+            let _ = self.event_tx.send(GargoPreviewEvent::Stopped);
         } else {
             let _ = self
                 .event_tx
-                .send(GithubPreviewEvent::Error("Server not running".to_string()));
+                .send(GargoPreviewEvent::Error("Server not running".to_string()));
         }
     }
 
@@ -335,7 +333,7 @@ pub(crate) struct PreviewServerState {
     pub(crate) last_detach_path: Option<String>,
     pub(crate) version: u64,
     pub(crate) last_browser_event: Option<PreviewBrowserEvent>,
-    pub(crate) event_tx: mpsc::Sender<GithubPreviewEvent>,
+    pub(crate) event_tx: mpsc::Sender<GargoPreviewEvent>,
     pub(crate) buffer_content: Option<String>,
     pub(crate) cursor_line: Option<usize>,
 }
@@ -1176,7 +1174,7 @@ async fn run_server(
     shutdown_rx: tokio::sync::oneshot::Receiver<()>,
     state: Arc<Mutex<PreviewServerState>>,
 ) {
-    // URLs mirror github.com — see the route comment in `github_server::run_server`.
+    // URLs mirror github.com — see the route comment in `gargo_server::run_server`.
     let app = Router::new()
         .route("/", get(handle_bare_root))
         .route("/events", get(handle_events))
@@ -1392,7 +1390,7 @@ pub(crate) fn normalize_rel_path_for_compare(path: &str) -> String {
 
 fn maybe_emit_detached_event(state: &Arc<Mutex<PreviewServerState>>, requested_rel_path: &str) {
     let requested = normalize_rel_path_for_compare(requested_rel_path);
-    let mut to_emit: Option<mpsc::Sender<GithubPreviewEvent>> = None;
+    let mut to_emit: Option<mpsc::Sender<GargoPreviewEvent>> = None;
 
     if let Ok(mut state) = state.lock() {
         let matches_active = match state.active_rel_path.as_deref() {
@@ -1422,7 +1420,7 @@ fn maybe_emit_detached_event(state: &Arc<Mutex<PreviewServerState>>, requested_r
     }
 
     if let Some(event_tx) = to_emit {
-        let _ = event_tx.send(GithubPreviewEvent::Detached {
+        let _ = event_tx.send(GargoPreviewEvent::Detached {
             requested_path: requested,
         });
     }
@@ -2030,29 +2028,29 @@ pub(crate) fn html_escape(text: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-/// Register GitHub preview server commands in the command palette
+/// Register Gargo preview server commands in the command palette
 pub fn register(registry: &mut CommandRegistry) {
     registry.register(CommandEntry {
-        id: "server.start_github_preview".into(),
-        label: "Start GitHub Preview Server".into(),
+        id: "server.start_gargo_preview".into(),
+        label: "Start Gargo Preview Server".into(),
         category: Some("Server".into()),
         action: Box::new(|_ctx: &CommandContext| {
             CommandEffect::Action(Action::App(AppAction::Integration(
                 IntegrationAction::RunPluginCommand {
-                    id: "server.start_github_preview".to_string(),
+                    id: "server.start_gargo_preview".to_string(),
                 },
             )))
         }),
     });
 
     registry.register(CommandEntry {
-        id: "server.stop_github_preview".into(),
-        label: "Stop GitHub Preview Server".into(),
+        id: "server.stop_gargo_preview".into(),
+        label: "Stop Gargo Preview Server".into(),
         category: Some("Server".into()),
         action: Box::new(|_ctx: &CommandContext| {
             CommandEffect::Action(Action::App(AppAction::Integration(
                 IntegrationAction::RunPluginCommand {
-                    id: "server.stop_github_preview".to_string(),
+                    id: "server.stop_gargo_preview".to_string(),
                 },
             )))
         }),

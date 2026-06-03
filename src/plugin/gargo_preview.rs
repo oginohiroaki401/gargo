@@ -3,16 +3,16 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use crate::command::github_preview_server::{
-    GithubPreviewCommand, GithubPreviewEvent, GithubPreviewHandle,
+use crate::command::gargo_preview_server::{
+    GargoPreviewCommand, GargoPreviewEvent, GargoPreviewHandle,
 };
 use crate::config::Config;
 use crate::core::document::DocumentId;
 use crate::plugin::types::{Plugin, PluginCommandSpec, PluginContext, PluginEvent, PluginOutput};
 
-pub struct GithubPreviewPlugin {
+pub struct GargoPreviewPlugin {
     commands: Vec<PluginCommandSpec>,
-    handle: Option<GithubPreviewHandle>,
+    handle: Option<GargoPreviewHandle>,
     project_root: PathBuf,
     auto_open_browser: bool,
     server_port: Option<u16>,
@@ -36,25 +36,25 @@ struct ActiveFileSignature {
 const EXTERNAL_CHANGE_POLL_INTERVAL: Duration = Duration::from_millis(600);
 const BUFFER_PUSH_INTERVAL: Duration = Duration::from_millis(300);
 
-impl GithubPreviewPlugin {
+impl GargoPreviewPlugin {
     pub fn new(config: &Config, project_root: &Path) -> Self {
-        let handle = GithubPreviewHandle::new().ok();
+        let handle = GargoPreviewHandle::new().ok();
         Self {
             commands: vec![
                 PluginCommandSpec {
-                    id: "server.start_github_preview".to_string(),
-                    label: "Start GitHub Preview Server".to_string(),
+                    id: "server.start_gargo_preview".to_string(),
+                    label: "Start Gargo Preview Server".to_string(),
                     category: Some("Server".to_string()),
                 },
                 PluginCommandSpec {
-                    id: "server.stop_github_preview".to_string(),
-                    label: "Stop GitHub Preview Server".to_string(),
+                    id: "server.stop_gargo_preview".to_string(),
+                    label: "Stop Gargo Preview Server".to_string(),
                     category: Some("Server".to_string()),
                 },
             ],
             handle,
             project_root: project_root.to_path_buf(),
-            auto_open_browser: config.plugin.github_preview.auto_open_browser,
+            auto_open_browser: config.plugin.gargo_preview.auto_open_browser,
             server_port: None,
             is_running: false,
             is_detached: false,
@@ -85,13 +85,13 @@ impl GithubPreviewPlugin {
         if let Some(handle) = &self.handle {
             let _ = handle
                 .command_tx
-                .send(GithubPreviewCommand::SetActivePath { rel_path });
+                .send(GargoPreviewCommand::SetActivePath { rel_path });
         }
     }
 
     fn refresh_active_preview(&self) {
         if let Some(handle) = &self.handle {
-            let _ = handle.command_tx.send(GithubPreviewCommand::RefreshActive);
+            let _ = handle.command_tx.send(GargoPreviewCommand::RefreshActive);
         }
     }
 
@@ -156,7 +156,7 @@ impl GithubPreviewPlugin {
             if let Some(handle) = &self.handle {
                 let _ = handle
                     .command_tx
-                    .send(GithubPreviewCommand::UpdateBufferContent {
+                    .send(GargoPreviewCommand::UpdateBufferContent {
                         content,
                         cursor_line,
                     });
@@ -168,7 +168,7 @@ impl GithubPreviewPlugin {
             if let Some(handle) = &self.handle {
                 let _ = handle
                     .command_tx
-                    .send(GithubPreviewCommand::UpdateCursorLine { line: cursor_line });
+                    .send(GargoPreviewCommand::UpdateCursorLine { line: cursor_line });
             }
         }
     }
@@ -254,9 +254,9 @@ impl GithubPreviewPlugin {
     }
 }
 
-impl Plugin for GithubPreviewPlugin {
+impl Plugin for GargoPreviewPlugin {
     fn id(&self) -> &str {
-        "github_preview"
+        "gargo_preview"
     }
 
     fn commands(&self) -> &[PluginCommandSpec] {
@@ -266,19 +266,24 @@ impl Plugin for GithubPreviewPlugin {
     fn on_command(&mut self, command_id: &str, _ctx: &PluginContext) -> Vec<PluginOutput> {
         let Some(handle) = &self.handle else {
             return vec![PluginOutput::Message(
-                "GitHub preview plugin unavailable".to_string(),
+                "Gargo preview plugin unavailable".to_string(),
             )];
         };
+        // `server.*_github_preview` are pre-rename aliases for old keybindings.
         let result = match command_id {
-            "server.start_github_preview" => handle.command_tx.send(GithubPreviewCommand::Start {
-                repo_root: self.project_root.clone(),
-            }),
-            "server.stop_github_preview" => handle.command_tx.send(GithubPreviewCommand::Stop),
+            "server.start_gargo_preview" | "server.start_github_preview" => {
+                handle.command_tx.send(GargoPreviewCommand::Start {
+                    repo_root: self.project_root.clone(),
+                })
+            }
+            "server.stop_gargo_preview" | "server.stop_github_preview" => {
+                handle.command_tx.send(GargoPreviewCommand::Stop)
+            }
             _ => return Vec::new(),
         };
         if result.is_err() {
             vec![PluginOutput::Message(
-                "Failed to send GitHub preview command".to_string(),
+                "Failed to send Gargo preview command".to_string(),
             )]
         } else {
             Vec::new()
@@ -310,7 +315,7 @@ impl Plugin for GithubPreviewPlugin {
         let mut out = Vec::new();
         for event in drained_events {
             match event {
-                GithubPreviewEvent::Started { port } => {
+                GargoPreviewEvent::Started { port } => {
                     self.server_port = Some(port);
                     self.is_running = true;
                     self.is_detached = false;
@@ -321,31 +326,31 @@ impl Plugin for GithubPreviewPlugin {
                     self.clear_buffer_push_state();
                     self.refresh_file_signature_baseline(ctx);
                     let url = Self::preview_url(port, rel_path.as_deref());
-                    out.push(PluginOutput::Message(format!("GitHub preview: {}", url)));
+                    out.push(PluginOutput::Message(format!("Gargo preview: {}", url)));
                     if self.auto_open_browser {
                         out.push(PluginOutput::OpenUrl(url));
                     }
                 }
-                GithubPreviewEvent::Stopped => {
+                GargoPreviewEvent::Stopped => {
                     self.server_port = None;
                     self.is_running = false;
                     self.is_detached = false;
                     self.clear_external_change_probe_state();
                     self.clear_buffer_push_state();
                     out.push(PluginOutput::Message(
-                        "GitHub preview server stopped".to_string(),
+                        "Gargo preview server stopped".to_string(),
                     ));
                 }
-                GithubPreviewEvent::Detached { requested_path } => {
+                GargoPreviewEvent::Detached { requested_path } => {
                     self.is_detached = true;
                     self.clear_external_change_probe_state();
                     self.clear_buffer_push_state();
                     out.push(PluginOutput::Message(format!(
-                        "GitHub preview detached: {}",
+                        "Gargo preview detached: {}",
                         requested_path
                     )));
                 }
-                GithubPreviewEvent::Error(msg) => {
+                GargoPreviewEvent::Error(msg) => {
                     out.push(PluginOutput::Message(format!("Server error: {}", msg)));
                 }
             }
@@ -368,15 +373,15 @@ mod tests {
     fn create_plugin_with_channels(
         project_root: &Path,
     ) -> (
-        GithubPreviewPlugin,
-        mpsc::Receiver<GithubPreviewCommand>,
-        mpsc::Sender<GithubPreviewEvent>,
+        GargoPreviewPlugin,
+        mpsc::Receiver<GargoPreviewCommand>,
+        mpsc::Sender<GargoPreviewEvent>,
     ) {
         let (command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
-        let plugin = GithubPreviewPlugin {
+        let plugin = GargoPreviewPlugin {
             commands: vec![],
-            handle: Some(GithubPreviewHandle::from_channels_for_test(
+            handle: Some(GargoPreviewHandle::from_channels_for_test(
                 command_tx, event_rx,
             )),
             project_root: project_root.to_path_buf(),
@@ -407,7 +412,7 @@ mod tests {
         let (mut plugin, command_rx, event_tx) = create_plugin_with_channels(root);
 
         event_tx
-            .send(GithubPreviewEvent::Started { port: 3101 })
+            .send(GargoPreviewEvent::Started { port: 3101 })
             .expect("send started event");
         let outputs = plugin.poll(&ctx);
 
@@ -417,7 +422,7 @@ mod tests {
         assert!(
             matches!(
                 command_rx.recv().expect("expected command"),
-                GithubPreviewCommand::SetActivePath { rel_path } if rel_path == Some("note.md".to_string())
+                GargoPreviewCommand::SetActivePath { rel_path } if rel_path == Some("note.md".to_string())
             ),
             "expected SetActivePath command for active file"
         );
@@ -439,13 +444,13 @@ mod tests {
 
         let (mut plugin, command_rx, event_tx) = create_plugin_with_channels(root);
         event_tx
-            .send(GithubPreviewEvent::Started { port: 3102 })
+            .send(GargoPreviewEvent::Started { port: 3102 })
             .expect("send started event");
         let _ = plugin.poll(&ctx_first);
         let _ = command_rx.recv();
 
         event_tx
-            .send(GithubPreviewEvent::Detached {
+            .send(GargoPreviewEvent::Detached {
                 requested_path: "other.md".to_string(),
             })
             .expect("send detached event");
@@ -473,7 +478,7 @@ mod tests {
         assert!(activate_outputs.is_empty());
         assert!(matches!(
             command_rx.recv().expect("expected SetActivePath command"),
-            GithubPreviewCommand::SetActivePath { rel_path }
+            GargoPreviewCommand::SetActivePath { rel_path }
                 if rel_path == Some("second.md".to_string())
         ));
     }
@@ -491,7 +496,7 @@ mod tests {
         let (mut plugin, command_rx, event_tx) = create_plugin_with_channels(root);
 
         event_tx
-            .send(GithubPreviewEvent::Started { port: 3103 })
+            .send(GargoPreviewEvent::Started { port: 3103 })
             .expect("send started event");
         let _ = plugin.poll(&ctx);
         let _ = command_rx.recv();
@@ -505,7 +510,7 @@ mod tests {
         assert!(outputs.is_empty());
         assert!(matches!(
             command_rx.recv().expect("expected refresh command"),
-            GithubPreviewCommand::RefreshActive
+            GargoPreviewCommand::RefreshActive
         ));
     }
 
@@ -522,7 +527,7 @@ mod tests {
         let (mut plugin, command_rx, event_tx) = create_plugin_with_channels(root);
 
         event_tx
-            .send(GithubPreviewEvent::Started { port: 3104 })
+            .send(GargoPreviewEvent::Started { port: 3104 })
             .expect("send started event");
         let _ = plugin.poll(&ctx);
         let _ = command_rx.recv().expect("expected initial SetActivePath");
@@ -536,7 +541,7 @@ mod tests {
             command_rx
                 .recv_timeout(Duration::from_millis(200))
                 .expect("expected refresh command"),
-            GithubPreviewCommand::RefreshActive
+            GargoPreviewCommand::RefreshActive
         ));
     }
 
@@ -553,13 +558,13 @@ mod tests {
         let (mut plugin, command_rx, event_tx) = create_plugin_with_channels(root);
 
         event_tx
-            .send(GithubPreviewEvent::Started { port: 3105 })
+            .send(GargoPreviewEvent::Started { port: 3105 })
             .expect("send started event");
         let _ = plugin.poll(&ctx);
         let _ = command_rx.recv().expect("expected initial SetActivePath");
 
         event_tx
-            .send(GithubPreviewEvent::Detached {
+            .send(GargoPreviewEvent::Detached {
                 requested_path: "other.md".to_string(),
             })
             .expect("send detached event");
@@ -591,7 +596,7 @@ mod tests {
         let (mut plugin, command_rx, event_tx) = create_plugin_with_channels(root);
 
         event_tx
-            .send(GithubPreviewEvent::Started { port: 3106 })
+            .send(GargoPreviewEvent::Started { port: 3106 })
             .expect("send started event");
         let _ = plugin.poll(&ctx);
         let _ = command_rx.recv().expect("expected initial SetActivePath");

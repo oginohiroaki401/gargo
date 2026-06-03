@@ -3,14 +3,14 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use crate::command::github_server::{GithubServerCommand, GithubServerEvent, GithubServerHandle};
+use crate::command::gargo_server::{GargoServerCommand, GargoServerEvent, GargoServerHandle};
 use crate::config::Config;
 use crate::core::document::DocumentId;
 use crate::plugin::types::{Plugin, PluginCommandSpec, PluginContext, PluginEvent, PluginOutput};
 
-pub struct GithubServerPlugin {
+pub struct GargoServerPlugin {
     commands: Vec<PluginCommandSpec>,
-    handle: Option<GithubServerHandle>,
+    handle: Option<GargoServerHandle>,
     project_root: PathBuf,
     auto_open_browser: bool,
     server_port: Option<u16>,
@@ -34,25 +34,25 @@ struct ActiveFileSignature {
 const EXTERNAL_CHANGE_POLL_INTERVAL: Duration = Duration::from_millis(600);
 const BUFFER_PUSH_INTERVAL: Duration = Duration::from_millis(300);
 
-impl GithubServerPlugin {
+impl GargoServerPlugin {
     pub fn new(config: &Config, project_root: &Path) -> Self {
-        let handle = GithubServerHandle::new().ok();
+        let handle = GargoServerHandle::new().ok();
         Self {
             commands: vec![
                 PluginCommandSpec {
-                    id: "server.start_github".to_string(),
+                    id: "server.start_gargo".to_string(),
                     label: "Start gargo server".to_string(),
                     category: Some("Server".to_string()),
                 },
                 PluginCommandSpec {
-                    id: "server.stop_github".to_string(),
+                    id: "server.stop_gargo".to_string(),
                     label: "Stop gargo server".to_string(),
                     category: Some("Server".to_string()),
                 },
             ],
             handle,
             project_root: project_root.to_path_buf(),
-            auto_open_browser: config.plugin.github_server.auto_open_browser,
+            auto_open_browser: config.plugin.gargo_server.auto_open_browser,
             server_port: None,
             root_url: None,
             is_running: false,
@@ -72,7 +72,7 @@ impl GithubServerPlugin {
         Some(rel_path.to_string_lossy().replace('\\', "/"))
     }
 
-    fn send(&self, command: GithubServerCommand) {
+    fn send(&self, command: GargoServerCommand) {
         if let Some(handle) = &self.handle {
             let _ = handle.command_tx.send(command);
         }
@@ -129,14 +129,14 @@ impl GithubServerPlugin {
             self.last_pushed_content_hash = content_hash;
             self.last_pushed_cursor_line = cursor_line;
             self.last_content_push_at = Some(Instant::now());
-            self.send(GithubServerCommand::UpdateBufferContent {
+            self.send(GargoServerCommand::UpdateBufferContent {
                 content,
                 cursor_line,
             });
         } else if cursor_line != self.last_pushed_cursor_line {
             self.last_pushed_cursor_line = cursor_line;
             self.last_content_push_at = Some(Instant::now());
-            self.send(GithubServerCommand::UpdateCursorLine { line: cursor_line });
+            self.send(GargoServerCommand::UpdateCursorLine { line: cursor_line });
         }
     }
 
@@ -163,7 +163,7 @@ impl GithubServerPlugin {
         self.last_file_probe_at = Some(Instant::now());
         match (&self.last_observed_file_sig, &current_sig) {
             (Some(previous), Some(current)) if previous != current => {
-                self.send(GithubServerCommand::RefreshActive);
+                self.send(GargoServerCommand::RefreshActive);
                 self.last_observed_file_sig = current_sig;
             }
             (None, sig) => self.last_observed_file_sig = sig.clone(),
@@ -187,7 +187,7 @@ impl GithubServerPlugin {
         self.is_detached = false;
         self.clear_external_change_probe_state();
         self.clear_buffer_push_state();
-        self.send(GithubServerCommand::SetActivePath { rel_path });
+        self.send(GargoServerCommand::SetActivePath { rel_path });
         Vec::new()
     }
 
@@ -202,17 +202,17 @@ impl GithubServerPlugin {
         let rel_path = self.active_rel_path(ctx);
         if rel_path != self.last_active_rel_path {
             self.last_active_rel_path = rel_path.clone();
-            self.send(GithubServerCommand::SetActivePath { rel_path });
+            self.send(GargoServerCommand::SetActivePath { rel_path });
         }
-        self.send(GithubServerCommand::RefreshActive);
+        self.send(GargoServerCommand::RefreshActive);
         self.refresh_file_signature_baseline(ctx);
         Vec::new()
     }
 }
 
-impl Plugin for GithubServerPlugin {
+impl Plugin for GargoServerPlugin {
     fn id(&self) -> &str {
-        "github_server"
+        "gargo_server"
     }
 
     fn commands(&self) -> &[PluginCommandSpec] {
@@ -228,7 +228,10 @@ impl Plugin for GithubServerPlugin {
         // When the server is already running, re-open its URL rather than
         // trying to start a second instance — handy if the user accidentally
         // closed the browser tab.
-        if command_id == "server.start_github" && self.is_running {
+        // `server.*_github` are pre-rename aliases kept so old keybindings work.
+        if (command_id == "server.start_gargo" || command_id == "server.start_github")
+            && self.is_running
+        {
             return match self.root_url.clone() {
                 Some(url) => vec![
                     PluginOutput::Message(format!("Gargo server already running: {}", url)),
@@ -240,10 +243,14 @@ impl Plugin for GithubServerPlugin {
             };
         }
         let result = match command_id {
-            "server.start_github" => handle.command_tx.send(GithubServerCommand::Start {
-                repo_root: self.project_root.clone(),
-            }),
-            "server.stop_github" => handle.command_tx.send(GithubServerCommand::Stop),
+            "server.start_gargo" | "server.start_github" => {
+                handle.command_tx.send(GargoServerCommand::Start {
+                    repo_root: self.project_root.clone(),
+                })
+            }
+            "server.stop_gargo" | "server.stop_github" => {
+                handle.command_tx.send(GargoServerCommand::Stop)
+            }
             _ => return Vec::new(),
         };
         if result.is_err() {
@@ -279,7 +286,7 @@ impl Plugin for GithubServerPlugin {
         let mut out = Vec::new();
         for event in drained {
             match event {
-                GithubServerEvent::Started { port, root_url } => {
+                GargoServerEvent::Started { port, root_url } => {
                     self.server_port = Some(port);
                     self.root_url = Some(root_url.clone());
                     self.is_running = true;
@@ -293,7 +300,7 @@ impl Plugin for GithubServerPlugin {
                         out.push(PluginOutput::OpenUrl(root_url));
                     }
                 }
-                GithubServerEvent::Stopped => {
+                GargoServerEvent::Stopped => {
                     self.server_port = None;
                     self.root_url = None;
                     self.is_running = false;
@@ -302,7 +309,7 @@ impl Plugin for GithubServerPlugin {
                     self.clear_buffer_push_state();
                     out.push(PluginOutput::Message("Gargo server stopped".to_string()));
                 }
-                GithubServerEvent::Detached { requested_path } => {
+                GargoServerEvent::Detached { requested_path } => {
                     self.is_detached = true;
                     self.clear_external_change_probe_state();
                     self.clear_buffer_push_state();
@@ -311,13 +318,13 @@ impl Plugin for GithubServerPlugin {
                         requested_path
                     )));
                 }
-                GithubServerEvent::Opened { url } => {
+                GargoServerEvent::Opened { url } => {
                     out.push(PluginOutput::Message(format!("Gargo server: {}", url)));
                     if self.auto_open_browser {
                         out.push(PluginOutput::OpenUrl(url));
                     }
                 }
-                GithubServerEvent::Error(msg) => {
+                GargoServerEvent::Error(msg) => {
                     out.push(PluginOutput::Message(format!("Server error: {}", msg)));
                 }
             }

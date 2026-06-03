@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use gargo::command::github_server::{GithubServerCommand, GithubServerEvent, GithubServerHandle};
+use gargo::command::gargo_server::{GargoServerCommand, GargoServerEvent, GargoServerHandle};
 use tempfile::tempdir;
 
 fn run_git(repo: &Path, args: &[&str]) {
@@ -18,16 +18,16 @@ fn run_git(repo: &Path, args: &[&str]) {
     assert!(output.status.success(), "git {} failed", args.join(" "));
 }
 
-fn start_server(repo: &Path, handle: &GithubServerHandle) -> Option<u16> {
+fn start_server(repo: &Path, handle: &GargoServerHandle) -> Option<u16> {
     handle
         .command_tx
-        .send(GithubServerCommand::Start {
+        .send(GargoServerCommand::Start {
             repo_root: repo.to_path_buf(),
         })
         .expect("send start");
     match handle.event_rx.recv_timeout(Duration::from_secs(5)) {
-        Ok(GithubServerEvent::Started { port, .. }) => Some(port),
-        Ok(GithubServerEvent::Error(msg)) if msg.starts_with("Failed to bind Gargo server") => {
+        Ok(GargoServerEvent::Started { port, .. }) => Some(port),
+        Ok(GargoServerEvent::Error(msg)) if msg.starts_with("Failed to bind Gargo server") => {
             eprintln!("skip web editor fs test: {msg}");
             None
         }
@@ -53,7 +53,7 @@ fn setup_repo() -> tempfile::TempDir {
 fn fs_endpoints_create_rename_delete_and_validate_paths() {
     let repo_dir = setup_repo();
     let repo = repo_dir.path();
-    let handle = GithubServerHandle::new().expect("server handle");
+    let handle = GargoServerHandle::new().expect("server handle");
     let Some(port) = start_server(repo, &handle) else {
         return;
     };
