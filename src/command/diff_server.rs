@@ -636,6 +636,10 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         const shouldCollapseByDefault = (fileId, meta, isViewed) =>
             isViewed
             || collapsedFileIds.has(fileId)
+            // Staged files start collapsed (treated as "done") regardless of
+            // their viewed state, unless the user has explicitly expanded them.
+            // fileId is `${section}:${path}`, so a staged row is `staged:…`.
+            || (fileId.startsWith("staged:") && !expandedFileIds.has(fileId))
             || (isHugeDiff(meta) && !expandedFileIds.has(fileId));
 
         const fileObserver = (typeof IntersectionObserver !== "undefined")
@@ -881,6 +885,7 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                 // Default-expand on un-viewed, unless explicitly collapsed or
                 // a huge diff the user has not chosen to expand.
                 const keepCollapsed = collapsedFileIds.has(fileId)
+                    || (wrapper.dataset.section === "staged" && !expandedFileIds.has(fileId))
                     || (wrapper.classList.contains("gr-file-large") && !expandedFileIds.has(fileId));
                 if (!keepCollapsed) {
                     wrapper.classList.remove("diff-file-collapsed");
@@ -2012,6 +2017,10 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
         const shouldCollapseByDefault = (fileId, meta, isViewed) =>
             isViewed
             || collapsedFileIds.has(fileId)
+            // Staged files start collapsed (treated as "done") regardless of
+            // their viewed state, unless the user has explicitly expanded them.
+            // fileId is `${section}:${path}`, so a staged row is `staged:…`.
+            || (fileId.startsWith("staged:") && !expandedFileIds.has(fileId))
             || (isHugeDiff(meta) && !expandedFileIds.has(fileId));
 
         const fileObserver = (typeof IntersectionObserver !== "undefined")
@@ -2221,6 +2230,7 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                 // Default-expand on un-viewed, unless explicitly collapsed or
                 // a huge diff the user has not chosen to expand.
                 const keepCollapsed = collapsedFileIds.has(fileId)
+                    || (wrapper.dataset.section === "staged" && !expandedFileIds.has(fileId))
                     || (wrapper.classList.contains("gr-file-large") && !expandedFileIds.has(fileId));
                 if (!keepCollapsed) {
                     wrapper.classList.remove("diff-file-collapsed");
@@ -3634,6 +3644,85 @@ pub(crate) struct StagePathRequest {
     path: String,
 }
 
+/// Content hash anchoring a "Viewed" record for `path` as rendered in
+/// `section`, or `None` when the file has no content in that section right now
+/// (e.g. a fully-staged file no longer appears under `unstaged`).
+async fn viewed_hash_for_section(
+    state: &Arc<DiffServerState>,
+    section: &str,
+    path: &str,
+) -> Option<String> {
+    if section == "untracked" {
+        let (_, _, h) = scan_untracked_file(&state.project_root, path).await;
+        return (!h.is_empty()).then_some(h);
+    }
+    match load_status_diff_file(&state.project_root, section, path).await {
+        Ok(Some(file)) => Some(content_hash_of(&file)),
+        _ => None,
+    }
+}
+
+/// The first of `from_sections` in which `path` is genuinely viewed *right now*
+/// — a stored record whose hash still matches the file's content. Call this
+/// before a stage/unstage so the checkbox carries over, while a record left
+/// stale by an edit (content no longer matches) is not silently revived.
+async fn viewed_source_section(
+    state: &Arc<DiffServerState>,
+    path: &str,
+    from_sections: &[&'static str],
+) -> Option<&'static str> {
+    let viewed = load_viewed_map(state, PAGE_STATUS, String::new(), String::new()).await;
+    for &section in from_sections {
+        if let Some(stored) = viewed.get(&(section.to_string(), path.to_string()))
+            && viewed_hash_for_section(state, section, path)
+                .await
+                .as_deref()
+                == Some(stored.as_str())
+        {
+            return Some(section);
+        }
+    }
+    None
+}
+
+/// Move a file's "Viewed" record from `from` to the first of `to_sections`
+/// whose representation now has content, re-pinning it to a freshly computed
+/// hash. The staged (`index..HEAD`) and unstaged (`worktree..index`) diffs hash
+/// differently, so the record must be re-anchored rather than copied verbatim.
+/// Call this after the stage/unstage git op has run.
+async fn move_viewed_record(
+    state: &Arc<DiffServerState>,
+    path: &str,
+    from: &str,
+    to_sections: &[&'static str],
+) {
+    store_viewed(
+        state,
+        PAGE_STATUS,
+        String::new(),
+        String::new(),
+        from.to_string(),
+        path.to_string(),
+        None,
+    )
+    .await;
+    for &to in to_sections {
+        if let Some(hash) = viewed_hash_for_section(state, to, path).await {
+            store_viewed(
+                state,
+                PAGE_STATUS,
+                String::new(),
+                String::new(),
+                to.to_string(),
+                path.to_string(),
+                Some(hash),
+            )
+            .await;
+            return;
+        }
+    }
+}
+
 /// POST endpoint: stage one file (`git add -- <path>`). Works for modified,
 /// deleted, and untracked paths alike — `git add` records each appropriately.
 pub(crate) async fn handle_api_status_stage_request(
@@ -3644,8 +3733,16 @@ pub(crate) async fn handle_api_status_stage_request(
         Some(p) => p,
         None => return bad_request(format!("invalid path: {}", req.path)),
     };
+    // Capture whether the file is viewed before it hops sections, then carry the
+    // checkbox over to the staged section once the move has happened.
+    let viewed_from = viewed_source_section(&state, &path, &["unstaged", "untracked"]).await;
     match git_output_in_repo(&state.project_root, &["add", "--", &path]).await {
-        Ok(_) => ok_json(serde_json::json!({ "ok": true })),
+        Ok(_) => {
+            if let Some(from) = viewed_from {
+                move_viewed_record(&state, &path, from, &["staged"]).await;
+            }
+            ok_json(serde_json::json!({ "ok": true }))
+        }
         Err(e) => bad_request(e),
     }
 }
@@ -3661,8 +3758,17 @@ pub(crate) async fn handle_api_status_unstage_request(
         Some(p) => p,
         None => return bad_request(format!("invalid path: {}", req.path)),
     };
+    // Carry the "Viewed" checkbox back to wherever the file lands after the
+    // reset: a tracked file returns to `unstaged`, a freshly-added one to
+    // `untracked`.
+    let viewed_from = viewed_source_section(&state, &path, &["staged"]).await;
     match git_output_in_repo(&state.project_root, &["reset", "--quiet", "--", &path]).await {
-        Ok(_) => ok_json(serde_json::json!({ "ok": true })),
+        Ok(_) => {
+            if let Some(from) = viewed_from {
+                move_viewed_record(&state, &path, from, &["unstaged", "untracked"]).await;
+            }
+            ok_json(serde_json::json!({ "ok": true }))
+        }
         Err(e) => bad_request(e),
     }
 }

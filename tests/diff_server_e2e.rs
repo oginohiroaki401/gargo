@@ -1090,6 +1090,62 @@ fn test_diff_server_status_viewed_persists_and_invalidates() {
 }
 
 #[test]
+fn test_diff_server_status_viewed_carries_across_stage_unstage() {
+    let _cwd_lock = cwd_test_lock();
+    let repo_dir = tempdir().expect("create temp repo");
+    let repo = repo_dir.path();
+    make_status_repo(repo);
+    let data_dir = tempdir().expect("create temp data dir");
+
+    let _cwd_guard = WorkingDirGuard::set(repo);
+    let handle = DiffServerHandle::new().expect("create diff server handle");
+    let Some(port) = start_diff_server_with_data_dir(repo, Some(data_dir.path()), &handle) else {
+        return;
+    };
+
+    let status_url = format!("http://127.0.0.1:{}/api/status", port);
+    let viewed_url = format!("http://127.0.0.1:{}/api/status/viewed", port);
+    let stage_url = format!("http://127.0.0.1:{}/api/status/stage", port);
+    let unstage_url = format!("http://127.0.0.1:{}/api/status/unstage", port);
+
+    // Mark the unstaged modification viewed.
+    post_json(
+        &viewed_url,
+        serde_json::json!({ "section": "unstaged", "path": "sample.txt", "viewed": true }),
+    );
+    assert_eq!(
+        viewed_flag(&get_json_with_retry(&status_url)["unstaged"], "sample.txt"),
+        Some(true)
+    );
+
+    // Staging it moves the file to the staged section; the checkbox follows.
+    post_json(&stage_url, serde_json::json!({ "path": "sample.txt" }));
+    let body = get_json_with_retry(&status_url);
+    assert!(body["unstaged"].as_array().unwrap().is_empty());
+    assert_eq!(
+        viewed_flag(&body["staged"], "sample.txt"),
+        Some(true),
+        "viewed state must be kept when a file is staged"
+    );
+
+    // Unstaging it moves the file back; the checkbox follows again.
+    post_json(&unstage_url, serde_json::json!({ "path": "sample.txt" }));
+    let body = get_json_with_retry(&status_url);
+    assert!(body["staged"].as_array().unwrap().is_empty());
+    assert_eq!(
+        viewed_flag(&body["unstaged"], "sample.txt"),
+        Some(true),
+        "viewed state must be kept when a file is unstaged"
+    );
+
+    stop_diff_server(&handle);
+    match read_event(&handle.event_rx) {
+        DiffServerEvent::Stopped => {}
+        event => panic!("expected Stopped event, got: {:?}", event),
+    }
+}
+
+#[test]
 fn test_diff_server_untracked_viewed_invalidates_on_change() {
     let _cwd_lock = cwd_test_lock();
     let repo_dir = tempdir().expect("create temp repo");
