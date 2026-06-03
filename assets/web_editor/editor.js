@@ -549,10 +549,29 @@
           return;
         }
         previewOpen = !previewOpen;
+        // Persist per browser tab so the choice survives full-page navigation
+        // to another file within the same tab (sessionStorage, not localStorage:
+        // each tab/window keeps its own setting).
+        try { sessionStorage.setItem("gargo_preview", String(previewOpen)); } catch (_) {}
         els.previewPane.hidden = !previewOpen;
         els.previewResizer.hidden = !previewOpen;
         render();
         if (previewOpen) refreshPreview();
+      }
+
+      // On boot, re-open the preview pane if it was left on in this tab and the
+      // current file supports preview. A persisted "on" for a non-previewable
+      // file is kept (not cleared), so navigating back to a Markdown/HTML file
+      // in the same tab re-opens it.
+      function restorePreviewState() {
+        let want = false;
+        try { want = sessionStorage.getItem("gargo_preview") === "true"; } catch (_) {}
+        if (!want || !previewableKind(filePath)) return;
+        previewOpen = true;
+        els.previewPane.hidden = false;
+        els.previewResizer.hidden = false;
+        render();
+        refreshPreview();
       }
 
       function syncStatus(model) {
@@ -990,6 +1009,27 @@
           editor.select_word_or_add_next_match();
           els.ime.value = "";
           afterEdit();
+          return;
+        }
+
+        // Cmd+A: select the whole buffer. Cmd only — Ctrl+A stays the emacs
+        // move-to-line-start in the core keymap. set_selection takes display
+        // columns and clamps to the line end internally, so a huge head column
+        // lands at true EOF regardless of tabs/CJK on the last line.
+        if (e.metaKey && !e.shiftKey && (e.key === "a" || e.key === "A")) {
+          e.preventDefault();
+          const last = Math.max(0, editor.line_count() - 1);
+          editor.set_selection(0, 0, last, Number.MAX_SAFE_INTEGER);
+          els.ime.value = "";
+          afterEdit();
+          return;
+        }
+
+        // Cmd+Shift+E: move keyboard focus into the file explorer (VSCode
+        // "Focus on Explorer"). The explorer then handles arrows/Enter/e/Esc.
+        if (e.metaKey && e.shiftKey && (e.key === "e" || e.key === "E")) {
+          e.preventDefault();
+          focusExplorer();
           return;
         }
 
@@ -1971,6 +2011,9 @@
       // from `git ls-files`, which never lists empty directories, so a freshly
       // created folder would vanish on the next rebuild unless we track it here.
       let extraDirs = new Set();
+      // Repo-relative path of the keyboard-focused explorer row, or null. Drives
+      // the `.focused` ring (distinct from `.active`, the currently-open file).
+      let focusedPath = null;
 
       // Build a nested tree from the flat file list (same set as the picker),
       // plus any session-created empty directories.
@@ -2035,9 +2078,19 @@
       function renderTreeNodes(node, depth, parent) {
         for (const child of sortedChildren(node)) {
           const open = expandedDirs.has(child.path);
-          const row = document.createElement("div");
+          // File rows are real anchors so native Cmd/middle-click opens a new
+          // browser tab pointing at the file (a scripted window.open from a
+          // mousedown gets popup-blocked and lands on root). Dirs stay <div>.
+          const row = document.createElement(child.isDir ? "div" : "a");
           row.className = "tnode " + (child.isDir ? "dir" : "file");
+          if (!child.isDir) {
+            row.href = editorUrl(child.path);
+            row.draggable = false;
+          }
           if (!child.isDir && child.path === filePath) row.classList.add("active");
+          if (child.path === focusedPath) row.classList.add("focused");
+          row.dataset.path = child.path;
+          row.dataset.dir = child.isDir ? "1" : "";
           row.style.paddingLeft = depth * 12 + 6 + "px";
 
           const twist = document.createElement("span");
@@ -2051,17 +2104,22 @@
 
           row.addEventListener("mousedown", (e) => {
             if (e.button !== 0) return; // let right-click open the context menu
-            e.preventDefault();
             if (child.isDir) {
+              e.preventDefault();
               if (open) expandedDirs.delete(child.path);
               else expandedDirs.add(child.path);
+              focusedPath = child.path;
               renderTree();
-            } else if (e.metaKey || e.altKey) {
-              // Cmd/Alt+click: open in a separate window.
-              openFileInNewWindow(child.path);
-            } else {
-              openFile(child.path);
+              els.sidebar.focus(); // enter keyboard nav (preventDefault blocks the implicit focus)
+              return;
             }
+            // File: Cmd/Ctrl/Alt or middle click → let the anchor's href open a
+            // new tab natively (don't preventDefault). Plain left click → keep
+            // single-page navigation and move keyboard focus into the explorer.
+            if (e.metaKey || e.ctrlKey || e.altKey || e.button === 1) return;
+            e.preventDefault();
+            focusedPath = child.path;
+            openFile(child.path);
           });
 
           row.addEventListener("contextmenu", (e) => {
@@ -2080,6 +2138,113 @@
         treeRoot = buildTree(files);
         expandToFile(filePath);
         renderTree();
+      }
+
+      // ---- explorer keyboard navigation ------------------------------------
+
+      // Currently-rendered rows, in visual order. Collapsed dirs' children are
+      // not in the DOM, so this is exactly the navigable set.
+      function explorerRows() {
+        return [...els.tree.querySelectorAll(".tnode")];
+      }
+
+      // Move the keyboard focus to `path`, repaint the ring, scroll into view.
+      function setExplorerFocus(path) {
+        if (!path) return;
+        focusedPath = path;
+        renderTree();
+        const row = els.tree.querySelector('.tnode[data-path="' + cssEscape(path) + '"]');
+        if (row) row.scrollIntoView({ block: "nearest" });
+      }
+
+      // Minimal CSS attribute-selector escaping for repo paths (quotes/backslash).
+      function cssEscape(s) {
+        return s.replace(/["\\]/g, "\\$&");
+      }
+
+      // Move keyboard focus into the explorer (Cmd+Shift+E, or click). Seeds the
+      // focus on the open file, else the first row.
+      function focusExplorer() {
+        const rows = explorerRows();
+        if (!focusedPath || !rows.some((r) => r.dataset.path === focusedPath)) {
+          focusedPath = filePath && rows.some((r) => r.dataset.path === filePath)
+            ? filePath
+            : rows[0] && rows[0].dataset.path;
+        }
+        renderTree();
+        els.sidebar.focus();
+        const row = els.tree.querySelector(".tnode.focused");
+        if (row) row.scrollIntoView({ block: "nearest" });
+      }
+
+      // Enter on a row: render-preview-and-open for Markdown/HTML, else open.
+      function explorerActivate(path) {
+        if (!path) return;
+        // Previewable → pre-arm the per-tab preview flag so the destination page
+        // boots with the rendered split pane already open (reuses fix-3 restore).
+        if (previewableKind(path)) {
+          try { sessionStorage.setItem("gargo_preview", "true"); } catch (_) {}
+        }
+        openFile(path);
+      }
+
+      function onExplorerKeyDown(e) {
+        if (e.metaKey || e.ctrlKey || e.altKey) return; // leave combos to global
+        const rows = explorerRows();
+        if (!rows.length) return;
+        let idx = rows.findIndex((r) => r.dataset.path === focusedPath);
+        if (idx < 0) idx = 0;
+        const row = rows[idx];
+        const path = row.dataset.path;
+        const isDir = row.dataset.dir === "1";
+        switch (e.key) {
+          case "ArrowDown":
+            e.preventDefault();
+            setExplorerFocus(rows[Math.min(rows.length - 1, idx + 1)].dataset.path);
+            break;
+          case "ArrowUp":
+            e.preventDefault();
+            setExplorerFocus(rows[Math.max(0, idx - 1)].dataset.path);
+            break;
+          case "ArrowRight":
+            e.preventDefault();
+            if (isDir && !expandedDirs.has(path)) {
+              expandedDirs.add(path);
+              renderTree();
+            } else if (rows[idx + 1]) {
+              setExplorerFocus(rows[idx + 1].dataset.path);
+            }
+            break;
+          case "ArrowLeft":
+            e.preventDefault();
+            if (isDir && expandedDirs.has(path)) {
+              expandedDirs.delete(path);
+              renderTree();
+            } else {
+              const parent = parentDir(path);
+              if (parent) setExplorerFocus(parent);
+            }
+            break;
+          case "Enter":
+            e.preventDefault();
+            if (isDir) {
+              if (expandedDirs.has(path)) expandedDirs.delete(path);
+              else expandedDirs.add(path);
+              renderTree();
+            } else {
+              explorerActivate(path);
+            }
+            break;
+          case "e":
+          case "E":
+            e.preventDefault();
+            if (!isDir) openFile(path); // open in the editor (edit mode)
+            break;
+          case "Escape":
+            e.preventDefault();
+            els.ime.focus();
+            break;
+        }
       }
 
       // Draggable sidebar width.
@@ -2687,6 +2852,8 @@
           window.location.pathname.replace(/^\/editor\/?/, "")
         );
         els.path.textContent = filePath || "(no file — Cmd+P to open)";
+        document.title =
+          (filePath ? filePath.split("/").pop() : "(no file)") + " — gargo";
 
         let content = "";
         if (filePath) {
@@ -2823,6 +2990,16 @@
         // Jump to a location passed in the URL hash (#L<line>:<col>, 1-based),
         // e.g. when opened from a global-search result. Clamp defensively.
         if (filePath) jumpToHash();
+
+        // Re-open the split preview if it was left on in this browser tab and
+        // the current file supports it (per-tab persistence via sessionStorage).
+        restorePreviewState();
+
+        // Keyboard navigation in the file explorer. Bound to the sidebar so it
+        // only fires when the sidebar (not the editor textarea) holds focus —
+        // the two never collide because DOM focus is mutually exclusive.
+        els.sidebar.setAttribute("tabindex", "0");
+        els.sidebar.addEventListener("keydown", onExplorerKeyDown);
 
         // Populate the sidebar file tree and the initial syntax highlight.
         initSidebar();

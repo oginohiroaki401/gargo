@@ -493,9 +493,15 @@
         white-space: nowrap;
         cursor: pointer;
         padding-right: 8px;
+        /* File rows are <a> anchors (native Cmd/middle-click open); strip the
+           default link styling so they look identical to the dir <div> rows. */
+        text-decoration: none;
+        color: inherit;
       }
       .tnode:hover { background: var(--hover-bg); }
       .tnode.active { background: var(--sel); }
+      .tnode.focused { outline: 1px solid var(--accent); outline-offset: -1px; }
+      #sidebar:focus { outline: none; }
       .tnode .twist {
         width: 14px;
         text-align: center;
