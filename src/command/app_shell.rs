@@ -6,7 +6,7 @@
 //! `<div class="app-shell"> … <main class="app-main"> …`.
 
 use crate::command::github_preview_server::{
-    RepoUrlContext, commits_url, html_escape, repo_home_url,
+    RepoUrlContext, blob_url, commits_url, html_escape, repo_home_url,
 };
 
 /// Render the sticky top navigation rail.
@@ -81,15 +81,71 @@ pub(crate) fn app_rail_html(
     out
 }
 
-/// An "Open in editor" pill that opens `rel_path` in the browser editor
-/// (`/editor/<path>`) in a new tab. Shared across every server file view
-/// (code explorer, status, compare, split, commit) so the affordance is
-/// consistent. `rel_path` is a repo-relative path; it is HTML-escaped for the
-/// attribute (matching the un-percent-encoded convention of `blob_url`/`tree_url`).
-pub(crate) fn open_in_editor_button(rel_path: &str) -> String {
+/// The inline "open actions" pill cluster for a file row / toolbar: open the
+/// file in the current tab, a new tab, on GitHub (current branch), on GitHub at
+/// the default branch, and in the browser editor. Shared across every
+/// server-rendered file view (code explorer, blob, split). The JS-rendered diff
+/// rows (status / compare / commit) build the same markup via
+/// `window.gargoOpenActions` so classes, keybindings and CSS stay in one place.
+///
+/// `rel_path` is a repo-relative path; paths are HTML-escaped for attributes
+/// (matching the un-percent-encoded convention of `blob_url` / `tree_url`).
+/// GitHub pills are emitted only when `github_base` (and, for the default-branch
+/// pill, `default_branch`) are known.
+pub(crate) fn open_actions_html(
+    ctx: &RepoUrlContext,
+    rel_path: &str,
+    github_base: Option<&str>,
+    default_branch: Option<&str>,
+) -> String {
+    let blob = blob_url(ctx, rel_path);
+    let editor = format!("/editor/{}", html_escape(rel_path));
+    let mut out = String::with_capacity(512);
+    out.push_str(r#"<span class="open-actions">"#);
+    out.push_str(&pill("oa-tab", &blob, false, "Open in current tab", "Tab"));
+    out.push_str(&pill("oa-new", &blob, true, "Open in new tab", "New"));
+    if let Some(base) = github_base {
+        let gh = format!(
+            "{base}/blob/{branch}/{path}",
+            branch = ctx.branch,
+            path = rel_path
+        );
+        out.push_str(&pill("oa-gh", &gh, true, "Open on GitHub", "GH"));
+        if let Some(def) = default_branch {
+            let gh_main = format!("{base}/blob/{def}/{path}", path = rel_path);
+            out.push_str(&pill(
+                "oa-ghmain",
+                &gh_main,
+                true,
+                &format!("Open on GitHub ({def})"),
+                &format!("GH {def}"),
+            ));
+        }
+    }
+    out.push_str(&pill(
+        "oa-editor open-in-editor",
+        &editor,
+        true,
+        "Open in editor",
+        "✎",
+    ));
+    out.push_str("</span>");
+    out
+}
+
+fn pill(cls: &str, href: &str, new_tab: bool, title: &str, label: &str) -> String {
+    let target = if new_tab {
+        r#" target="_blank" rel="noopener""#
+    } else {
+        ""
+    };
     format!(
-        r#"<a class="open-in-editor" href="/editor/{path}" target="_blank" rel="noopener" title="Open in editor">✎ Edit</a>"#,
-        path = html_escape(rel_path),
+        r#"<a class="oa {cls}" href="{href}"{target} title="{title}">{label}</a>"#,
+        cls = cls,
+        href = html_escape(href),
+        target = target,
+        title = html_escape(title),
+        label = html_escape(label),
     )
 }
 
@@ -149,11 +205,30 @@ mod tests {
     }
 
     #[test]
-    fn open_in_editor_button_targets_editor_in_new_tab() {
-        let html = open_in_editor_button("src/main.rs");
-        assert!(html.contains(r#"href="/editor/src/main.rs""#));
-        assert!(html.contains(r#"target="_blank""#));
-        assert!(html.contains(r#"class="open-in-editor""#));
+    fn open_actions_emit_all_targets_when_remote_known() {
+        let html = open_actions_html(
+            &ctx(),
+            "src/main.rs",
+            Some("https://github.com/aplio/gargo"),
+            Some("main"),
+        );
+        // Current / new tab both point at the gargo blob view.
+        assert!(html.contains(r#"class="oa oa-tab" href="/aplio/gargo/blob/master/src/main.rs""#));
+        assert!(html.contains(r#"class="oa oa-new" href="/aplio/gargo/blob/master/src/main.rs""#));
+        // GitHub at current branch and at the default branch.
+        assert!(html.contains(r#"href="https://github.com/aplio/gargo/blob/master/src/main.rs""#));
+        assert!(html.contains(r#"href="https://github.com/aplio/gargo/blob/main/src/main.rs""#));
+        // Editor pill keeps the legacy class so the shortcut + hover CSS still match.
+        assert!(html.contains(r#"oa-editor open-in-editor" href="/editor/src/main.rs""#));
+    }
+
+    #[test]
+    fn open_actions_hide_github_pills_without_remote() {
+        let html = open_actions_html(&ctx(), "src/main.rs", None, None);
+        assert!(html.contains("oa-tab"));
+        assert!(html.contains("oa-editor"));
+        assert!(!html.contains("oa-gh"));
+        assert!(!html.contains("Open on GitHub"));
     }
 
     #[test]

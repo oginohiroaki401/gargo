@@ -13,6 +13,84 @@
     const PAGE = (document.body && document.body.dataset && document.body.dataset.page) || "";
     const LEADER_TIMEOUT_MS = 1200;
 
+    // --- open-actions pills (shared markup) -----------------------------
+    //
+    // One source of truth for the inline "open this file" pill cluster so the
+    // JS-rendered diff rows (status / compare / commit) and the commits list
+    // emit exactly the markup, classes and link targets that the server-rendered
+    // toolbars (app_shell::open_actions_html) produce. Repo context — owner,
+    // repo, branch, the GitHub remote base and the default branch — is published
+    // by the page via window.__GARGO_REPO_CTX__.
+
+    function encodePath(p) {
+        return String(p).split("/").map(encodeURIComponent).join("/");
+    }
+
+    function pill(cls, href, newTab, title, label) {
+        const tgt = newTab ? ' target="_blank" rel="noopener"' : "";
+        return '<a class="oa ' + cls + '" href="' + escapeHtml(href) + '"' + tgt
+            + ' title="' + escapeHtml(title) + '">' + escapeHtml(label) + "</a>";
+    }
+
+    // Pills to open a file: current tab + new tab (gargo file view), GitHub at a
+    // ref (commit sha on the commit page, else the current branch), GitHub at the
+    // default branch, and the gargo editor. `opts.path` is repo-relative;
+    // `opts.ghRef` overrides the GitHub ref (the commit page passes its sha).
+    window.gargoOpenActionsHtml = function (opts) {
+        opts = opts || {};
+        const ctx = window.__GARGO_REPO_CTX__ || {};
+        const enc = encodePath(opts.path || "");
+        const blob = "/" + encodeURIComponent(ctx.owner || "") + "/"
+            + encodeURIComponent(ctx.repo || "") + "/blob/"
+            + encodeURIComponent(ctx.branch || "") + "/" + enc;
+        const editor = "/editor/" + enc;
+        const ghBase = ctx.githubBase;
+        const ghRef = encodePath(opts.ghRef || ctx.branch || "");
+        let out = '<span class="open-actions">';
+        out += pill("oa-tab", blob, false, "Open in current tab", "Tab");
+        out += pill("oa-new", blob, true, "Open in new tab", "New");
+        if (ghBase) {
+            out += pill("oa-gh", ghBase + "/blob/" + ghRef + "/" + enc, true, "Open on GitHub", "GH");
+            if (ctx.defaultBranch) {
+                out += pill("oa-ghmain", ghBase + "/blob/" + encodePath(ctx.defaultBranch) + "/" + enc,
+                    true, "Open on GitHub (" + ctx.defaultBranch + ")", "GH " + ctx.defaultBranch);
+            }
+        }
+        out += pill("oa-editor open-in-editor", editor, true, "Open in editor", "✎");
+        out += "</span>";
+        return out;
+    };
+
+    // Same cluster as an element, with click-stop so a pill never toggles the
+    // row's collapse state. Used by the DOM-built status / compare rows.
+    window.gargoOpenActions = function (opts) {
+        const tmp = document.createElement("span");
+        tmp.innerHTML = window.gargoOpenActionsHtml(opts);
+        const el = tmp.firstElementChild || document.createElement("span");
+        el.addEventListener("click", (e) => e.stopPropagation());
+        return el;
+    };
+
+    // Pills to open a commit (not a file): current/new tab → commit detail page,
+    // GitHub → the commit on the remote. No editor / default-branch targets,
+    // since a commit isn't a file. `.oa-*` classes match so j/k + t/r reuse them.
+    window.gargoOpenCommitActionsHtml = function (opts) {
+        opts = opts || {};
+        const ctx = window.__GARGO_REPO_CTX__ || {};
+        const detail = opts.detailHref || "#";
+        const ghBase = ctx.githubBase;
+        const full = opts.fullHash || "";
+        let out = '<span class="open-actions">';
+        out += pill("oa-tab", detail, false, "Open commit", "Tab");
+        out += pill("oa-new", detail, true, "Open commit in new tab", "New");
+        if (ghBase && full) {
+            out += pill("oa-gh", ghBase + "/commit/" + encodeURIComponent(full),
+                true, "Open commit on GitHub", "GH");
+        }
+        out += "</span>";
+        return out;
+    };
+
     // --- helpers --------------------------------------------------------
 
     function isEditable(el) {
@@ -169,6 +247,18 @@
         if (link) link.click();
     }
 
+    // Click an open-actions pill (.oa-tab / .oa-new / .oa-gh / .oa-ghmain) inside
+    // the focused item, so keybindings reuse the exact link the pill already
+    // carries. Returns false when the focused item has no such pill (e.g. a
+    // directory row, or .oa-ghmain when the repo has no GitHub remote).
+    function clickPill(sel) {
+        const el = focusedItem();
+        if (!el) return false;
+        const a = el.querySelector(sel);
+        if (a) { a.click(); return true; }
+        return false;
+    }
+
     // --- split view actions --------------------------------------------
 
     // Open the focused diff in the side-by-side split view (new tab).
@@ -255,31 +345,38 @@
         ]},
     ];
 
+    // Shared "open the focused file" rows, appended to every file-diff page so
+    // the pill keybindings are documented in one place.
+    const OPEN_FILE_ROWS = [
+        ["Enter", "Open focused file in current tab"],
+        ["t", "Open focused file in a new tab"],
+        ["r", "Open focused file on GitHub"],
+        ["Shift+R", "Open focused file on GitHub (default branch)"],
+        ["e", "Open focused file in editor (new tab)"],
+    ];
+
     const HELP_SECTIONS_PAGE = {
         "status": [{ heading: "Diff (Status)", rows: [
             ["j / k", "Focus next / previous file"],
             ["o", "Expand / collapse focused file"],
             ["Shift+O", "Open focused file in split view (new tab)"],
-            ["e", "Open focused file in editor (new tab)"],
             ["u", "Stage / unstage focused file"],
             ["v", "Toggle Viewed"],
             ["g g / G", "Jump to first / last file"],
-        ]}],
+        ].concat(OPEN_FILE_ROWS) }],
         "compare": [{ heading: "Diff (Compare)", rows: [
             ["j / k", "Focus next / previous file"],
             ["o", "Expand / collapse focused file"],
             ["Shift+O", "Open focused file in split view (new tab)"],
-            ["e", "Open focused file in editor (new tab)"],
             ["v", "Toggle Viewed"],
             ["g g / G", "Jump to first / last file"],
-        ]}],
+        ].concat(OPEN_FILE_ROWS) }],
         "commit-detail": [{ heading: "Diff (Commit)", rows: [
             ["j / k", "Focus next / previous file"],
             ["o", "Expand / collapse focused file"],
             ["Shift+O", "Open focused file in split view (new tab)"],
-            ["e", "Open focused file in editor (new tab)"],
             ["g g / G", "Jump to first / last file"],
-        ]}],
+        ].concat(OPEN_FILE_ROWS) }],
         "split": [{ heading: "Split view", rows: [
             ["j / k", "Scroll down / up one row"],
             ["n / p", "Jump to next / previous changed row"],
@@ -288,12 +385,18 @@
         ]}],
         "code-tree": [{ heading: "Files", rows: [
             ["j / k", "Focus next / previous entry"],
-            ["Enter", "Open focused entry"],
+            ["Enter", "Open focused entry (current tab)"],
+            ["t", "Open focused file in a new tab"],
+            ["r", "Open focused file on GitHub"],
+            ["Shift+R", "Open focused file on GitHub (default branch)"],
+            ["e", "Open focused file in editor (new tab)"],
             ["g g / G", "Jump to first / last entry"],
         ]}],
         "commits": [{ heading: "Commits", rows: [
             ["j / k", "Focus next / previous commit"],
-            ["Enter", "Open focused commit"],
+            ["Enter", "Open focused commit (current tab)"],
+            ["t", "Open focused commit in a new tab"],
+            ["r", "Open focused commit on GitHub"],
             ["g g / G", "Jump to first / last commit"],
         ]}],
     };
@@ -470,14 +573,40 @@
                 toggleViewed();
                 return;
             }
-            if (key === "e") {
-                ev.preventDefault();
-                openInEditor();
-                return;
-            }
             if (key === "u" && PAGE === "status") {
                 ev.preventDefault();
                 toggleStage();
+                return;
+            }
+        }
+
+        // Open-target pills on the focused item. Works on every item-based page
+        // (status / compare / commit / code tree / commits); each key clicks the
+        // matching .oa-* pill, no-op when that pill isn't present.
+        if (ITEM_SELECTORS[PAGE]) {
+            if (key === "Enter") {
+                ev.preventDefault();
+                if (!clickPill(".oa-tab")) activateFocused();
+                return;
+            }
+            if (key === "t") {
+                ev.preventDefault();
+                clickPill(".oa-new");
+                return;
+            }
+            if (key === "r") {
+                ev.preventDefault();
+                clickPill(".oa-gh");
+                return;
+            }
+            if (key === "R") {
+                ev.preventDefault();
+                clickPill(".oa-ghmain");
+                return;
+            }
+            if (key === "e") {
+                ev.preventDefault();
+                openInEditor();
                 return;
             }
         }
@@ -500,14 +629,6 @@
             }
         }
 
-        if (PAGE === "code-tree" || PAGE === "commits") {
-            if (key === "Enter") {
-                if (!focusedItem()) return;
-                ev.preventDefault();
-                activateFocused();
-                return;
-            }
-        }
     }
 
     window.addEventListener("keydown", onKey);

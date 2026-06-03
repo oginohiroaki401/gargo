@@ -540,15 +540,24 @@ async fn handle_commits_html(State(state): State<Arc<GithubServerState>>) -> imp
     let rail =
         crate::command::app_shell::app_rail_html(&state.url_ctx, github_href.as_deref(), "commits");
     let commit_prefix = github_preview_server::commit_url(&state.url_ctx, "");
+    let default_branch = github_preview_server::default_branch_name(&state.repo_root).await;
+    let repo_ctx = crate::command::server_shared::repo_ctx_script(
+        &state.url_ctx.owner,
+        &state.url_ctx.repo,
+        &state.url_ctx.branch,
+        repo_url.as_deref(),
+        default_branch.as_deref(),
+    );
     Html(format!(
-        r#"<!doctype html><html><head><meta charset="utf-8"><title>Commits</title>{css}</head><body data-page="commits">{shortcuts}<div class="app-shell">{rail}<main class="app-main"><main class="commits-main"><section class="commits-section"><h1 class="commits-title">Commits</h1><div id="commits"><div class="loading">Loading commits...</div></div></section></main><script>
+        r#"<!doctype html><html><head><meta charset="utf-8"><title>Commits</title>{css}</head><body data-page="commits">{repo_ctx}{shortcuts}<div class="app-shell">{rail}<main class="app-main"><main class="commits-main"><section class="commits-section"><h1 class="commits-title">Commits</h1><div id="commits"><div class="loading">Loading commits...</div></div></section></main><script>
 fetch('/api/commits', {{cache:'no-store'}}).then(r=>r.json()).then(data=>{{
  const list = data.commits || [];
  const root = document.getElementById('commits');
  if (!list.length) {{ root.innerHTML = '<div class="empty">No commits</div>'; return; }}
  root.innerHTML = '<ul class="commit-list">' + list.map(c => {{
    const subject = String(c.message || '').split('\n')[0];
-   return `<li class="commit-item"><div class="commit-main"><a class="commit-subject" href="{commit_prefix}${{c.full_hash}}">${{escapeHtml(subject)}}</a><div class="commit-meta"><span class="commit-author">${{escapeHtml(c.author)}}</span><span class="commit-dot">·</span><span class="commit-date">${{escapeHtml(c.date)}}</span></div></div><a class="commit-hash" href="{commit_prefix}${{c.full_hash}}" title="${{escapeHtml(c.full_hash)}}"><code>${{escapeHtml(c.hash)}}</code></a></li>`;
+   const detailHref = '{commit_prefix}' + c.full_hash;
+   return `<li class="commit-item"><div class="commit-main"><a class="commit-subject" href="${{detailHref}}">${{escapeHtml(subject)}}</a><div class="commit-meta"><span class="commit-author">${{escapeHtml(c.author)}}</span><span class="commit-dot">·</span><span class="commit-date">${{escapeHtml(c.date)}}</span></div></div>${{window.gargoOpenCommitActionsHtml({{ fullHash: c.full_hash, detailHref: detailHref }})}}<a class="commit-hash" href="${{detailHref}}" title="${{escapeHtml(c.full_hash)}}"><code>${{escapeHtml(c.hash)}}</code></a></li>`;
  }}).join('') + '</ul>';
 }});
 function escapeHtml(s) {{ return String(s).replace(/[&<>"']/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c])); }}
@@ -556,6 +565,7 @@ function escapeHtml(s) {{ return String(s).replace(/[&<>"']/g, c => ({{'&':'&amp
         css = app_css(),
         rail = rail,
         commit_prefix = commit_prefix,
+        repo_ctx = repo_ctx,
         shortcuts = shortcuts_script(),
     ))
 }
@@ -572,9 +582,17 @@ async fn handle_commit_html(
     let rail =
         crate::command::app_shell::app_rail_html(&state.url_ctx, github_href.as_deref(), "commits");
     let commit_prefix = github_preview_server::commit_url(&state.url_ctx, "");
+    let default_branch = github_preview_server::default_branch_name(&state.repo_root).await;
+    let repo_ctx = crate::command::server_shared::repo_ctx_script(
+        &state.url_ctx.owner,
+        &state.url_ctx.repo,
+        &state.url_ctx.branch,
+        repo_url.as_deref(),
+        default_branch.as_deref(),
+    );
     let diff_styles = render_diff_styles();
     Html(format!(
-        r##"<!doctype html><html><head><meta charset="utf-8"><title>Commit {hash}</title>{css}<style>{diff_styles}</style></head><body data-page="commit-detail">{shortcuts}<div class="app-shell">{rail}<main class="app-main">
+        r##"<!doctype html><html><head><meta charset="utf-8"><title>Commit {hash}</title>{css}<style>{diff_styles}</style></head><body data-page="commit-detail">{repo_ctx}{shortcuts}<div class="app-shell">{rail}<main class="app-main">
 <section class="commit-summary section"><div id="commit-summary"><div class="loading">Loading commit...</div></div></section>
 <div class="layout">
  <aside class="sidebar">
@@ -666,7 +684,7 @@ function renderMain(files, statsByPath) {{
       + `<button type="button" class="diff-toggle-btn" aria-label="Toggle diff" aria-expanded="${{huge ? 'false' : 'true'}}">${{toggleChar}}</button>`
       + `<div class="gr-file-name-wrapper"><span class="gr-status-tag gr-status-${{status}}">${{status}}</span><span class="gr-file-name" title="${{escapeHtml(f.path)}}">${{escapeHtml(f.path)}}</span>${{largeTag}}</div>`
       + `<span class="gr-file-stats"><span class="gr-additions">+${{adds}}</span><span class="gr-deletions">-${{dels}}</span></span>`
-      + `<a class="open-in-editor" href="/editor/${{f.path.split('/').map(encodeURIComponent).join('/')}}" target="_blank" rel="noopener" title="Open in editor">✎ Edit</a>`
+      + window.gargoOpenActionsHtml({{ path: f.path, ghRef: hash }})
       + `</div>`
       + `<div class="gr-file-body" data-path="${{escapeHtml(f.path)}}">${{bodyInner}}</div>`
       + `</section>`;
@@ -725,6 +743,7 @@ updateGoTopButtonVisibility();
         rail = rail,
         hash = hash,
         commit_prefix = commit_prefix,
+        repo_ctx = repo_ctx,
         shortcuts = shortcuts_script(),
     ))
 }

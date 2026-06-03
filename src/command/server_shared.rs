@@ -19,3 +19,30 @@ pub fn shared_css_link() -> String {
 pub fn shortcuts_js_tag() -> String {
     format!(r#"<script src="/assets/server-shortcuts.js?v={ASSET_VERSION}" defer></script>"#)
 }
+
+/// `<script>` that publishes `window.__GARGO_REPO_CTX__` for the page's inline
+/// JS and the shared shortcuts module. Beyond owner/repo/branch it now carries
+/// `githubBase` (the remote https URL, or null) and `defaultBranch` (main /
+/// master, or null) so the open-actions pills can build "open on GitHub" and
+/// "open on GitHub (default branch)" links entirely client-side.
+pub fn repo_ctx_script(
+    owner: &str,
+    repo: &str,
+    branch: &str,
+    github_base: Option<&str>,
+    default_branch: Option<&str>,
+) -> String {
+    use crate::command::github_preview_server::html_escape;
+    let js_str = |v: Option<&str>| match v {
+        Some(s) => format!(r#""{}""#, html_escape(s)),
+        None => "null".to_string(),
+    };
+    format!(
+        r#"<script>window.__GARGO_REPO_CTX__ = {{ owner: "{owner}", repo: "{repo}", branch: "{branch}", githubBase: {gh}, defaultBranch: {def} }};</script>"#,
+        owner = html_escape(owner),
+        repo = html_escape(repo),
+        branch = html_escape(branch),
+        gh = js_str(github_base),
+        def = js_str(default_branch),
+    )
+}

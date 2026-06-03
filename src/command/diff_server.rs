@@ -732,21 +732,6 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             button.setAttribute("title", collapsed ? "Show diff" : "Hide diff");
         };
 
-        // A small "Open in editor" link that opens the file in the browser editor
-        // (/editor/<path>) in a new tab. stopPropagation so it never toggles the
-        // file's collapse state.
-        function openInEditorLink(path) {
-            const a = document.createElement("a");
-            a.className = "open-in-editor";
-            a.href = "/editor/" + path.split("/").map(encodeURIComponent).join("/");
-            a.target = "_blank";
-            a.rel = "noopener";
-            a.title = "Open in editor";
-            a.textContent = "✎ Edit";
-            a.addEventListener("click", (e) => e.stopPropagation());
-            return a;
-        }
-
         function createFileRow(section, meta) {
             const fileId = fileIdOf(section, meta.path);
             const wrapper = document.createElement("div");
@@ -805,7 +790,7 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             stats.appendChild(dels);
             header.appendChild(stats);
 
-            header.appendChild(openInEditorLink(meta.path));
+            header.appendChild(window.gargoOpenActions({ path: meta.path }));
 
             const isStaged = section === "staged";
             const stageBtn = document.createElement("button");
@@ -2118,18 +2103,6 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             button.setAttribute("title", collapsed ? "Show diff" : "Hide diff");
         };
 
-        function openInEditorLink(path) {
-            const a = document.createElement("a");
-            a.className = "open-in-editor";
-            a.href = "/editor/" + path.split("/").map(encodeURIComponent).join("/");
-            a.target = "_blank";
-            a.rel = "noopener";
-            a.title = "Open in editor";
-            a.textContent = "✎ Edit";
-            a.addEventListener("click", (e) => e.stopPropagation());
-            return a;
-        }
-
         function createFileRow(meta) {
             const fileId = fileIdOf(meta.path);
             const wrapper = document.createElement("div");
@@ -2180,7 +2153,7 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             stats.appendChild(dels);
             header.appendChild(stats);
 
-            header.appendChild(openInEditorLink(meta.path));
+            header.appendChild(window.gargoOpenActions({ path: meta.path }));
 
             const label = document.createElement("label");
             label.className = "diff-viewed-label";
@@ -3047,13 +3020,15 @@ pub(crate) async fn handle_split_request(
 
     let ctx = crate::command::github_preview_server::resolve_repo_url_context(repo_root).await;
     let repo_url = crate::command::github_preview_server::github_repo_url(repo_root).await;
+    let default_branch =
+        crate::command::github_preview_server::default_branch_name(repo_root).await;
     let active_tab = match &source {
         SplitSource::Status { .. } => "status",
         SplitSource::Compare { .. } => "branches",
         SplitSource::Commit { .. } => "commits",
     };
     let rail = crate::command::app_shell::app_rail_html(&ctx, repo_url.as_deref(), active_tab);
-    let ctx_script = repo_ctx_script(&ctx);
+    let ctx_script = repo_ctx_script(&ctx, repo_url.as_deref(), default_branch.as_deref());
     let back_url = split_back_url(&source, &ctx);
 
     let path_label = match &diff_file.old_path {
@@ -3065,7 +3040,12 @@ pub(crate) async fn handle_split_request(
     let path_label = format!(
         "{} {}",
         path_label,
-        crate::command::app_shell::open_in_editor_button(&path)
+        crate::command::app_shell::open_actions_html(
+            &ctx,
+            &path,
+            repo_url.as_deref(),
+            default_branch.as_deref(),
+        )
     );
     let refs_label = format!(
         "{} → {}",
@@ -3202,8 +3182,9 @@ pub(crate) async fn handle_html_request(
     let root_path = state.project_root.display().to_string();
     let ctx = gh::resolve_repo_url_context(&state.project_root).await;
     let repo_url = gh::github_repo_url(&state.project_root).await;
+    let default_branch = gh::default_branch_name(&state.project_root).await;
     let rail = crate::command::app_shell::app_rail_html(&ctx, repo_url.as_deref(), "status");
-    let ctx_script = repo_ctx_script(&ctx);
+    let ctx_script = repo_ctx_script(&ctx, repo_url.as_deref(), default_branch.as_deref());
     Html(
         DIFF_HTML_TEMPLATE
             .replace("{{ROOT_PATH}}", &html_escape(&root_path))
@@ -3231,7 +3212,8 @@ pub(crate) async fn handle_commit_html_request(
     let repo_url = gh::github_repo_url(&state.project_root).await;
     // Keep "Status" highlighted in the rail — the commit page is part of that flow.
     let rail = crate::command::app_shell::app_rail_html(&ctx, repo_url.as_deref(), "status");
-    let ctx_script = repo_ctx_script(&ctx);
+    let default_branch = gh::default_branch_name(&state.project_root).await;
+    let ctx_script = repo_ctx_script(&ctx, repo_url.as_deref(), default_branch.as_deref());
     Html(
         COMMIT_HTML_TEMPLATE
             .replace("{{APP_RAIL}}", &rail)
@@ -4101,14 +4083,17 @@ pub(crate) fn ok_json(payload: serde_json::Value) -> Response {
     response
 }
 
-fn repo_ctx_script(ctx: &crate::command::github_preview_server::RepoUrlContext) -> String {
-    // JSON-encode minimally — owner/repo/branch are simple strings whose escaping
-    // we control with html_escape (they originate from git config and refs).
-    format!(
-        r#"<script>window.__GARGO_REPO_CTX__ = {{ owner: "{}", repo: "{}", branch: "{}" }};</script>"#,
-        html_escape(&ctx.owner),
-        html_escape(&ctx.repo),
-        html_escape(&ctx.branch),
+fn repo_ctx_script(
+    ctx: &crate::command::github_preview_server::RepoUrlContext,
+    github_base: Option<&str>,
+    default_branch: Option<&str>,
+) -> String {
+    crate::command::server_shared::repo_ctx_script(
+        &ctx.owner,
+        &ctx.repo,
+        &ctx.branch,
+        github_base,
+        default_branch,
     )
 }
 
@@ -4120,8 +4105,9 @@ pub(crate) async fn handle_compare_html_request(
     let root_path = state.project_root.display().to_string();
     let ctx = gh::resolve_repo_url_context(&state.project_root).await;
     let repo_url = gh::github_repo_url(&state.project_root).await;
+    let default_branch = gh::default_branch_name(&state.project_root).await;
     let rail = crate::command::app_shell::app_rail_html(&ctx, repo_url.as_deref(), "branches");
-    let ctx_script = repo_ctx_script(&ctx);
+    let ctx_script = repo_ctx_script(&ctx, repo_url.as_deref(), default_branch.as_deref());
     Html(
         COMPARE_HTML_TEMPLATE
             .replace("{{ROOT_PATH}}", &html_escape(&root_path))

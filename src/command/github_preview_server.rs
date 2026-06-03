@@ -968,9 +968,11 @@ const DIRECTORY_TEMPLATE: &str = r#"<!DOCTYPE html>
         .file-item:hover {
             background: #f6f8fa;
         }
-        /* Reveal the per-file "Open in editor" button only on row hover. */
-        .file-item .open-in-editor { visibility: hidden; }
-        .file-item:hover .open-in-editor { visibility: visible; }
+        /* Reveal the per-file open-actions pills only on row hover (and when a
+           row is keyboard-focused, so j/k navigation shows the targets). */
+        .file-item .open-actions { visibility: hidden; }
+        .file-item:hover .open-actions,
+        .file-item.is-focused .open-actions { visibility: visible; }
         .file-icon {
             font-size: 16px;
             text-align: center;
@@ -1466,6 +1468,11 @@ pub(crate) async fn handle_directory_listing(
     dirs.sort();
     files.sort();
 
+    // Remote + default branch power the per-file "open on GitHub" pills below;
+    // resolved once here and reused for the rail's "View on GitHub" link.
+    let repo_url = github_repo_url(repo_root).await;
+    let default_branch = default_branch_name(repo_root).await;
+
     let mut file_list = String::from("<div class=\"file-list\">");
 
     // Add parent directory link if not at root
@@ -1510,7 +1517,12 @@ pub(crate) async fn handle_directory_listing(
             r#"<div class="file-item"><div class="file-icon">📄</div><div class="file-name"><a href="{}">{}</a></div>{}</div>"#,
             html_escape(&blob_url(ctx, &link_path)),
             html_escape(&file),
-            crate::command::app_shell::open_in_editor_button(&link_path),
+            crate::command::app_shell::open_actions_html(
+                ctx,
+                &link_path,
+                repo_url.as_deref(),
+                default_branch.as_deref(),
+            ),
         ));
     }
 
@@ -1541,7 +1553,6 @@ pub(crate) async fn handle_directory_listing(
         display_path.to_string()
     };
     let root_path = repo_root.display().to_string();
-    let repo_url = github_repo_url(repo_root).await;
 
     let commit_info = path_commit_strip_html(repo_root, display_path, ctx).await;
     let branch_chip = path_branch_chip_html(ctx);
@@ -1612,10 +1623,17 @@ pub(crate) async fn handle_file_display(
 
     let root_path = repo_root.display().to_string();
     let repo_url = github_repo_url(repo_root).await;
+    let default_branch = default_branch_name(repo_root).await;
 
     // Preview/Code toggle goes into the breadcrumb row. View on GitHub now
-    // lives in the rail, so the in-body toolbar only carries view-mode chips.
-    let editor_btn = crate::command::app_shell::open_in_editor_button(display_path);
+    // lives in the rail, so the in-body toolbar carries view-mode chips plus the
+    // open-actions pills (current/new tab, GitHub, GitHub default branch, editor).
+    let editor_btn = crate::command::app_shell::open_actions_html(
+        ctx,
+        display_path,
+        repo_url.as_deref(),
+        default_branch.as_deref(),
+    );
     let toolbar = if is_markdown {
         let blob = blob_url(ctx, display_path);
         format!(
@@ -1916,6 +1934,42 @@ pub(crate) async fn github_repo_url(repo_root: &Path) -> Option<String> {
         .await
         .ok()?;
     remote_to_github_url(&remote)
+}
+
+/// The repository's default branch (`main` / `master` / whatever `origin/HEAD`
+/// points at). Tries `origin/HEAD` first (set by clone / `git remote set-head`),
+/// then falls back to a local `main` or `master`. Returns `None` when neither
+/// the remote head nor a conventional branch exists — callers then hide the
+/// "open on default branch" affordance.
+pub(crate) async fn default_branch_name(repo_root: &Path) -> Option<String> {
+    if let Ok(out) = git_output_in_repo(
+        repo_root,
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+    )
+    .await
+        && let Some(rest) = out.trim().strip_prefix("origin/")
+        && !rest.is_empty()
+    {
+        return Some(rest.to_string());
+    }
+    for candidate in ["main", "master"] {
+        if git_output_in_repo(
+            repo_root,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{candidate}"),
+            ],
+        )
+        .await
+        .map(|s| !s.is_empty())
+        .unwrap_or(false)
+        {
+            return Some(candidate.to_string());
+        }
+    }
+    None
 }
 
 pub(crate) fn remote_to_github_url(remote: &str) -> Option<String> {

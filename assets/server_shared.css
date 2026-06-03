@@ -81,10 +81,17 @@ body {
 }
 .view-on-github-btn:hover { background: #eaeef2; }
 
-/* "Open in editor" pill shown next to files across the server's views; opens
-   the browser editor for that file in a new tab. Compact so it fits in file
-   rows / diff headers without crowding. */
-.open-in-editor {
+/* Inline "open actions" pill cluster shown next to files across the server's
+   views: current tab, new tab, GitHub (current branch), GitHub (default
+   branch) and the browser editor. Compact so the row of pills fits in file
+   rows / diff headers / toolbars without crowding. */
+.open-actions {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    gap: 4px;
+}
+.open-actions .oa {
     display: inline-flex;
     align-items: center;
     flex: 0 0 auto;
@@ -98,8 +105,8 @@ body {
     text-decoration: none;
     white-space: nowrap;
 }
-.open-in-editor:hover { background: #eaeef2; border-color: #0969da; }
-.file-toolbar .open-in-editor { margin-left: auto; }
+.open-actions .oa:hover { background: #eaeef2; border-color: #0969da; color: #0969da; }
+.file-toolbar .open-actions { margin-left: auto; }
 
 /* Toolbar row above a file's body, hosting toggles and external links */
 .file-toolbar {
