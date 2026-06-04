@@ -388,7 +388,12 @@
             ["r", "Open focused file on GitHub"],
             ["Shift+R", "Open focused file on GitHub (default branch)"],
             ["e", "Open focused file in editor (new tab)"],
+            ["⌘P", "Fuzzy file finder"],
             ["g g / G", "Jump to first / last entry"],
+        ]}],
+        "code-blob": [{ heading: "File", rows: [
+            ["⌘P", "Fuzzy file finder"],
+            ["y", "Copy file contents"],
         ]}],
         "commits": [{ heading: "Commits", rows: [
             ["j / k", "Focus next / previous commit"],
@@ -448,6 +453,167 @@
         }[c]));
     }
 
+    // --- fuzzy file finder (Cmd+P on code pages) ------------------------
+    //
+    // A client-side fuzzy file picker that mirrors the editor's Cmd+P. It fetches
+    // the repo file list from /api/files once, scores it against the query, and
+    // navigates the current tab to the chosen file's blob view. Repo identity for
+    // the blob URL comes from window.__GARGO_REPO_CTX__.
+
+    const FINDER_LIMIT = 50;
+    let finderEl = null;
+    let finderInput = null;
+    let finderList = null;
+    let finderFiles = null;   // cached /api/files list
+    let finderResults = [];   // [{ path, positions }]
+    let finderSel = 0;
+
+    // Subsequence match + score: bonuses for matching at a word start (after a
+    // separator), for consecutive matches, and a small case-sensitive bonus;
+    // penalties for gaps and overall length. Returns null when `needle` isn't a
+    // subsequence of `hay`. Empty needle matches everything with score 0.
+    function finderScore(hay, needle) {
+        if (!needle) return { score: 0, positions: [] };
+        const h = hay.toLowerCase();
+        const n = needle.toLowerCase();
+        let hi = 0;
+        let prev = -2;
+        let score = 0;
+        const positions = [];
+        for (let ni = 0; ni < n.length; ni++) {
+            let found = -1;
+            for (let k = hi; k < h.length; k++) {
+                if (h[k] === n[ni]) { found = k; break; }
+            }
+            if (found < 0) return null;
+            positions.push(found);
+            if (found === 0 || /[/_\-. ]/.test(hay[found - 1])) score += 8;
+            if (found === prev + 1) score += 12;
+            if (hay[found] === needle[ni]) score += 2;
+            score -= (found - hi);
+            prev = found;
+            hi = found + 1;
+        }
+        score -= Math.floor(hay.length / 4);
+        return { score, positions };
+    }
+
+    function finderFilter(query) {
+        const q = query.trim();
+        const scored = [];
+        for (const path of (finderFiles || [])) {
+            const m = finderScore(path, q);
+            if (m) scored.push({ path, positions: m.positions, score: m.score });
+        }
+        scored.sort((a, b) => b.score - a.score || a.path.length - b.path.length);
+        finderResults = scored.slice(0, FINDER_LIMIT);
+        finderSel = 0;
+        renderFinder();
+    }
+
+    function highlightPath(path, positions) {
+        const set = new Set(positions);
+        let out = "";
+        const chars = Array.from(path);
+        for (let i = 0; i < chars.length; i++) {
+            const c = escapeHtml(chars[i]);
+            out += set.has(i) ? "<b>" + c + "</b>" : c;
+        }
+        return out;
+    }
+
+    function renderFinder() {
+        if (!finderList) return;
+        finderList.innerHTML = finderResults.map((r, i) =>
+            `<li class="${i === finderSel ? "sel" : ""}" data-i="${i}">${highlightPath(r.path, r.positions)}</li>`
+        ).join("");
+        const sel = finderList.querySelector("li.sel");
+        if (sel) sel.scrollIntoView({ block: "nearest" });
+    }
+
+    function blobUrlFor(path) {
+        const ctx = window.__GARGO_REPO_CTX__ || {};
+        return "/" + encodeURIComponent(ctx.owner || "") + "/"
+            + encodeURIComponent(ctx.repo || "") + "/blob/"
+            + encodeURIComponent(ctx.branch || "") + "/" + encodePath(path);
+    }
+
+    function openFinderResult(newTab) {
+        const r = finderResults[finderSel];
+        if (!r) return;
+        const url = blobUrlFor(r.path);
+        closeFinder();
+        if (newTab) window.open(url, "_blank");
+        else window.location.assign(url);
+    }
+
+    function buildFinder() {
+        const wrap = document.createElement("div");
+        wrap.className = "gargo-finder-overlay";
+        wrap.hidden = true;
+        wrap.innerHTML = '<div class="gargo-finder-panel" role="dialog" aria-label="Go to file">'
+            + '<input class="gargo-finder-input" type="text" placeholder="Go to file…"'
+            + ' autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />'
+            + '<ul class="gargo-finder-list"></ul></div>';
+        wrap.addEventListener("click", (ev) => { if (ev.target === wrap) closeFinder(); });
+        finderInput = wrap.querySelector(".gargo-finder-input");
+        finderList = wrap.querySelector(".gargo-finder-list");
+        finderInput.addEventListener("input", () => finderFilter(finderInput.value));
+        finderInput.addEventListener("keydown", onFinderKey);
+        finderList.addEventListener("click", (ev) => {
+            const li = ev.target.closest ? ev.target.closest("li[data-i]") : null;
+            if (!li) return;
+            finderSel = Number(li.dataset.i);
+            openFinderResult(ev.metaKey || ev.ctrlKey);
+        });
+        document.body.appendChild(wrap);
+        return wrap;
+    }
+
+    function onFinderKey(ev) {
+        if (ev.key === "Escape") {
+            ev.preventDefault();
+            closeFinder();
+        } else if (ev.key === "ArrowDown" || (ev.ctrlKey && ev.key === "n")) {
+            ev.preventDefault();
+            finderSel = Math.min(finderResults.length - 1, finderSel + 1);
+            renderFinder();
+        } else if (ev.key === "ArrowUp" || (ev.ctrlKey && ev.key === "p")) {
+            ev.preventDefault();
+            finderSel = Math.max(0, finderSel - 1);
+            renderFinder();
+        } else if (ev.key === "Enter") {
+            ev.preventDefault();
+            openFinderResult(ev.metaKey || ev.ctrlKey || ev.altKey);
+        }
+    }
+
+    function finderOpen() {
+        return finderEl && !finderEl.hidden;
+    }
+
+    async function openFinder() {
+        if (!finderEl) finderEl = buildFinder();
+        finderEl.hidden = false;
+        finderInput.value = "";
+        finderInput.focus();
+        if (finderFiles === null) {
+            finderList.innerHTML = "<li>Loading…</li>";
+            try {
+                const resp = await fetch("/api/files");
+                const data = await resp.json();
+                finderFiles = data.files || [];
+            } catch (_) {
+                finderFiles = [];
+            }
+        }
+        finderFilter("");
+    }
+
+    function closeFinder() {
+        if (finderEl) finderEl.hidden = true;
+    }
+
     // --- chord state ----------------------------------------------------
 
     let leader = null;          // 'g' if pending
@@ -469,6 +635,17 @@
 
     function onKey(ev) {
         if (ev.defaultPrevented) return;
+
+        // Cmd/Ctrl+P opens the fuzzy file finder on the code pages. Handled before
+        // the modifier guard below, and preventDefault'd to suppress the browser's
+        // print dialog. A second press keeps the (already open) finder up.
+        if ((ev.metaKey || ev.ctrlKey) && !ev.altKey && (ev.key === "p" || ev.key === "P")
+            && (PAGE === "code-tree" || PAGE === "code-blob")) {
+            ev.preventDefault();
+            if (!finderOpen()) openFinder();
+            return;
+        }
+
         if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
         if (isEditable(ev.target)) return;
 
@@ -634,19 +811,50 @@
             }
         }
 
+        // Blob (file) page: copy the whole file (mirrors the toolbar button).
+        if (PAGE === "code-blob" && key === "y") {
+            const btn = document.querySelector(".copy-file-btn");
+            if (btn) {
+                ev.preventDefault();
+                btn.click();
+            }
+            return;
+        }
+
     }
 
     window.addEventListener("keydown", onKey);
 
-    // The top-right "?" rail button opens the same overlay as the `?` key.
-    function wireHelpButton() {
-        const btn = document.querySelector(".app-rail-help");
-        if (btn) btn.addEventListener("click", openOverlay);
+    // Copy the whole file to the clipboard. The button carries the repo-relative
+    // path; the raw text comes from /api/file (same merged server as this page).
+    async function copyFileContents(btn) {
+        const path = btn.dataset.path;
+        if (!path) return;
+        try {
+            const resp = await fetch("/api/file?path=" + encodeURIComponent(path));
+            const data = await resp.json();
+            await navigator.clipboard.writeText(data.content || "");
+            const prev = btn.textContent;
+            btn.textContent = "Copied ✓";
+            setTimeout(() => { btn.textContent = prev; }, 1200);
+        } catch (_) {
+            btn.textContent = "Copy failed";
+            setTimeout(() => { btn.textContent = "⧉ Copy"; }, 1200);
+        }
+    }
+
+    // The top-right "?" rail button opens the same overlay as the `?` key; the
+    // blob page's "⧉ Copy" button copies the file.
+    function wireButtons() {
+        const help = document.querySelector(".app-rail-help");
+        if (help) help.addEventListener("click", openOverlay);
+        const copy = document.querySelector(".copy-file-btn");
+        if (copy) copy.addEventListener("click", () => copyFileContents(copy));
     }
     if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", wireHelpButton);
+        document.addEventListener("DOMContentLoaded", wireButtons);
     } else {
-        wireHelpButton();
+        wireButtons();
     }
 
     // Publish the sticky header's height as a CSS variable so sticky sidebars

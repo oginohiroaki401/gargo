@@ -1038,6 +1038,7 @@ const DIRECTORY_TEMPLATE: &str = r#"<!DOCTYPE html>
     </style>
 </head>
 <body data-page="code-tree">
+    {{REPO_CTX_SCRIPT}}
     {{SHORTCUTS_JS}}
     <div class="app-shell">
         {{APP_RAIL}}
@@ -1154,6 +1155,7 @@ const FILE_TEMPLATE: &str = r#"<!DOCTYPE html>
     </style>
 </head>
 <body data-page="code-blob">
+    {{REPO_CTX_SCRIPT}}
     {{SHORTCUTS_JS}}
     <div class="app-shell">
         {{APP_RAIL}}
@@ -1577,6 +1579,16 @@ pub(crate) async fn handle_directory_listing(
         .replace("{{COMMIT_INFO}}", &commit_info)
         .replace("{{CONTENT}}", &content)
         .replace(
+            "{{REPO_CTX_SCRIPT}}",
+            &crate::command::server_shared::repo_ctx_script(
+                &ctx.owner,
+                &ctx.repo,
+                &ctx.branch,
+                repo_url.as_deref(),
+                default_branch.as_deref(),
+            ),
+        )
+        .replace(
             "{{SHARED_CSS}}",
             &crate::command::server_shared::shared_css_link(),
         )
@@ -1632,16 +1644,22 @@ pub(crate) async fn handle_file_display(
         repo_url.as_deref(),
         default_branch.as_deref(),
     );
+    // Copy-the-whole-file button. The click/`y` handler in server_shortcuts.js
+    // fetches /api/file?path=… and writes it to the clipboard.
+    let copy_btn = format!(
+        r#"<button type="button" class="copy-file-btn" title="Copy file contents (y)" data-path="{path}">⧉ Copy</button>"#,
+        path = html_escape(display_path),
+    );
     let toolbar = if is_markdown {
         let blob = blob_url(ctx, display_path);
         format!(
-            r#"<div class="file-toolbar"><div class="md-view-toggle"><a class="md-toggle-btn{preview}" href="{blob}">Preview</a><a class="md-toggle-btn{code}" href="{blob}?plain=1">Code</a></div>{editor_btn}</div>"#,
+            r#"<div class="file-toolbar"><div class="md-view-toggle"><a class="md-toggle-btn{preview}" href="{blob}">Preview</a><a class="md-toggle-btn{code}" href="{blob}?plain=1">Code</a></div>{copy_btn}{editor_btn}</div>"#,
             preview = if plain { "" } else { " active" },
             code = if plain { " active" } else { "" },
             blob = html_escape(&blob),
         )
     } else {
-        format!(r#"<div class="file-toolbar">{editor_btn}</div>"#)
+        format!(r#"<div class="file-toolbar">{copy_btn}{editor_btn}</div>"#)
     };
 
     let rendered_content = match text {
@@ -1690,6 +1708,16 @@ pub(crate) async fn handle_file_display(
         .replace("{{BREADCRUMB}}", &breadcrumb)
         .replace("{{COMMIT_INFO}}", &commit_info)
         .replace("{{CONTENT}}", &rendered_content)
+        .replace(
+            "{{REPO_CTX_SCRIPT}}",
+            &crate::command::server_shared::repo_ctx_script(
+                &ctx.owner,
+                &ctx.repo,
+                &ctx.branch,
+                repo_url.as_deref(),
+                default_branch.as_deref(),
+            ),
+        )
         .replace(
             "{{SHARED_CSS}}",
             &crate::command::server_shared::shared_css_link(),

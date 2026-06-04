@@ -117,6 +117,23 @@ body {
 }
 .file-toolbar .view-on-github-btn { margin-left: auto; }
 
+/* "Copy file contents" button on the blob view (styled like the .oa pills). */
+.copy-file-btn {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    padding: 1px 8px;
+    font-size: 11px;
+    line-height: 18px;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    background: #f6f8fa;
+    color: #24292f;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.copy-file-btn:hover { background: #eaeef2; border-color: #0969da; color: #0969da; }
+
 /* Path breadcrumb above the code/dir content; each segment links to its
  * tree/blob view so reviewers can hop up the hierarchy with one click. */
 .breadcrumb {
@@ -365,6 +382,57 @@ body {
     font-size: 12px;
     color: #1f2328;
 }
+
+/* Cmd+P fuzzy file finder (code pages). Centered panel with a pinned input and
+ * a scrolling result list, modeled on the editor's own picker. */
+.gargo-finder-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 20, 25, 0.4);
+    z-index: 120;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 64px 16px;
+}
+.gargo-finder-overlay[hidden] { display: none; }
+.gargo-finder-panel {
+    display: flex;
+    flex-direction: column;
+    width: min(640px, 100%);
+    max-height: calc(100vh - 128px);
+    background: #ffffff;
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+    box-shadow: 0 12px 32px rgba(15, 20, 25, 0.2);
+    overflow: hidden;
+}
+.gargo-finder-input {
+    border: 0;
+    border-bottom: 1px solid #d8dee4;
+    padding: 12px 16px;
+    font-size: 14px;
+    color: #1f2328;
+    outline: none;
+}
+.gargo-finder-list {
+    list-style: none;
+    margin: 0;
+    padding: 4px 0;
+    overflow-y: auto;
+}
+.gargo-finder-list li {
+    padding: 4px 16px;
+    font-size: 13px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    color: #1f2328;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.gargo-finder-list li.sel { background: #ddf4ff; }
+.gargo-finder-list li b { color: #0969da; font-weight: 600; }
 
 /* Row holding the breadcrumb on the left and the file-toolbar (Preview/Code)
  * on the right so they share a single vertical band above the file body. */

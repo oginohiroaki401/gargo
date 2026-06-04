@@ -1677,6 +1677,22 @@
         return "/editor/" + path.split("/").map(encodeURIComponent).join("/");
       }
 
+      // Remember the last file opened in this repo so a bare /editor reopens it.
+      // Keyed by repo root because localStorage is per-origin and one host may
+      // serve several repos across sessions. Same try/catch shape as gargo_wrap.
+      function lastFileKey() {
+        return "gargo_last_file:" + (window.__GARGO_REPO_ROOT__ || "");
+      }
+      function recordLastFile(path) {
+        try { localStorage.setItem(lastFileKey(), path); } catch (_) {}
+      }
+      function readLastFile() {
+        try { return localStorage.getItem(lastFileKey()); } catch (_) { return null; }
+      }
+      function clearLastFile() {
+        try { localStorage.removeItem(lastFileKey()); } catch (_) {}
+      }
+
       function openFile(path) {
         // Full navigation; boot() loads the file.
         window.location.assign(editorUrl(path));
@@ -3104,19 +3120,32 @@
         document.title =
           (filePath ? filePath.split("/").pop() : "(no file)") + " — gargo";
 
+        // One-shot flag set just before the bare-/editor auto-redirect below, so
+        // we can tell an auto-reopened file apart from one the user navigated to
+        // directly and fall back to the picker (instead of looping) if it's gone.
+        let autoOpened = false;
+        try {
+          autoOpened = sessionStorage.getItem("gargo_autoopen") === "1";
+          sessionStorage.removeItem("gargo_autoopen");
+        } catch (_) {}
+
         let content = "";
+        let loadFailed = false;
         if (filePath) {
           try {
             const resp = await fetch("/api/file?path=" + encodeURIComponent(filePath));
             if (!resp.ok) {
+              loadFailed = true;
               const data = await resp.json().catch(() => ({}));
               showError("Open failed: " + (data.error || resp.status));
             } else {
               const data = await resp.json();
               content = data.content;
               baseHash = data.hash;
+              recordLastFile(filePath); // remember for the next bare /editor visit
             }
           } catch (err) {
+            loadFailed = true;
             showError("Open failed: " + err);
           }
         }
@@ -3275,9 +3304,23 @@
         if (filePath) fetchHighlight();
         if (filePath) fetchGitGutter();
 
-        // Opened without a file (the rail's "Editor" link) → jump straight to
-        // the file picker.
-        if (!filePath) openPicker();
+        // Opened without a file (the rail's "Editor" link): reopen the last file
+        // for this repo if we have one, else jump straight to the file picker.
+        if (!filePath) {
+          const last = readLastFile();
+          if (last) {
+            try { sessionStorage.setItem("gargo_autoopen", "1"); } catch (_) {}
+            // replace() so the bare /editor entry doesn't pollute history.
+            window.location.replace(editorUrl(last));
+            return;
+          }
+          openPicker();
+        } else if (loadFailed && autoOpened) {
+          // The auto-reopened file is gone (deleted/renamed) → forget it and let
+          // the user pick, rather than sitting on a broken buffer.
+          clearLastFile();
+          openPicker();
+        }
       }
 
       boot();
