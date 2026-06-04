@@ -14,7 +14,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::UNIX_EPOCH;
 
 use axum::{
@@ -81,18 +81,23 @@ pub(crate) async fn handle_editor_page(State(state): State<Arc<GargoServerState>
     Html(page)
 }
 
-pub(crate) async fn handle_wasm_js() -> Response {
+pub(crate) async fn handle_wasm_js(headers: axum::http::HeaderMap) -> Response {
     if WASM_BG.is_empty() {
         return wasm_not_built();
     }
-    js_response(WASM_JS.to_string())
+    cached_asset_response(
+        &headers,
+        wasm_js_etag(),
+        "text/javascript; charset=utf-8",
+        WASM_JS.as_bytes(),
+    )
 }
 
-pub(crate) async fn handle_wasm_binary() -> Response {
+pub(crate) async fn handle_wasm_binary(headers: axum::http::HeaderMap) -> Response {
     if WASM_BG.is_empty() {
         return wasm_not_built();
     }
-    ([(header::CONTENT_TYPE, "application/wasm")], WASM_BG).into_response()
+    cached_asset_response(&headers, wasm_bg_etag(), "application/wasm", WASM_BG)
 }
 
 #[derive(Deserialize)]
@@ -134,11 +139,53 @@ struct FilesResponse {
     files: Vec<String>,
 }
 
+/// How long a cached `/api/files` listing stays fresh. The editor fires this on
+/// every Cmd+P open, so a short TTL collapses navigation bursts into one
+/// `git ls-files` while still picking up out-of-editor changes quickly;
+/// in-editor mutations invalidate immediately via `fs_generation`.
+const FILES_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Invalidate the `/api/files` cache after an in-editor change that adds or
+/// removes paths, so the next Cmd+P reflects it without waiting for the TTL.
+fn bump_fs_generation(state: &GargoServerState) {
+    state
+        .fs_generation
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// List the repository's files for the editor's Cmd+P picker — the same set the
 /// terminal file picker uses (`git ls-files` when in a repo, else a filtered
 /// directory walk; see [`crate::project::collect_files`]).
+///
+/// Backed by a short-lived cache ([`FILES_CACHE_TTL`]) keyed on a generation
+/// counter so repeated opens don't each spawn `git`.
 pub(crate) async fn handle_api_files(State(state): State<Arc<GargoServerState>>) -> Response {
-    let files = crate::project::collect_files(&state.repo_root);
+    let generation = state
+        .fs_generation
+        .load(std::sync::atomic::Ordering::Relaxed);
+
+    // Fast path: return the cached listing if it's the current generation and
+    // still within the TTL.
+    if let Ok(guard) = state.files_cache.lock()
+        && let Some((cached_gen, cached_at, files)) = guard.as_ref()
+        && *cached_gen == generation
+        && cached_at.elapsed() < FILES_CACHE_TTL
+    {
+        return ok_json(&FilesResponse {
+            files: files.clone(),
+        });
+    }
+
+    // Miss: `collect_files` shells out to git synchronously, so run it off the
+    // async runtime to avoid blocking other requests.
+    let repo_root = state.repo_root.clone();
+    let files = tokio::task::spawn_blocking(move || crate::project::collect_files(&repo_root))
+        .await
+        .unwrap_or_default();
+
+    if let Ok(mut guard) = state.files_cache.lock() {
+        *guard = Some((generation, std::time::Instant::now(), files.clone()));
+    }
     ok_json(&FilesResponse { files })
 }
 
@@ -524,12 +571,21 @@ pub(crate) async fn handle_api_save(
         return bad_request(format!("cannot create parent dir: {e}"));
     }
 
+    // Saving a brand-new file adds it to the listing; an overwrite of an existing
+    // file doesn't, so only invalidate the cache in the former case to avoid
+    // thrashing it on ordinary saves.
+    let is_new = !full.exists();
     match std::fs::write(&full, req.content.as_bytes()) {
-        Ok(_) => ok_json(&SaveResponse {
-            saved: true,
-            mtime: mtime_ms(&full),
-            hash: hash_bytes(req.content.as_bytes()),
-        }),
+        Ok(_) => {
+            if is_new {
+                bump_fs_generation(&state);
+            }
+            ok_json(&SaveResponse {
+                saved: true,
+                mtime: mtime_ms(&full),
+                hash: hash_bytes(req.content.as_bytes()),
+            })
+        }
         Err(e) => bad_request(format!("cannot write file: {e}")),
     }
 }
@@ -614,7 +670,10 @@ pub(crate) async fn handle_api_fs_create(
         _ => return bad_request("invalid kind"),
     };
     match result {
-        Ok(_) => ok_json(&serde_json::json!({ "ok": true })),
+        Ok(_) => {
+            bump_fs_generation(&state);
+            ok_json(&serde_json::json!({ "ok": true }))
+        }
         Err(e) => bad_request(format!("cannot create: {e}")),
     }
 }
@@ -649,7 +708,10 @@ pub(crate) async fn handle_api_fs_rename(
         return bad_request(format!("cannot create parent dir: {e}"));
     }
     match std::fs::rename(&from, &to) {
-        Ok(_) => ok_json(&serde_json::json!({ "ok": true })),
+        Ok(_) => {
+            bump_fs_generation(&state);
+            ok_json(&serde_json::json!({ "ok": true }))
+        }
         Err(e) => bad_request(format!("cannot rename: {e}")),
     }
 }
@@ -677,7 +739,10 @@ pub(crate) async fn handle_api_fs_delete(
         std::fs::remove_file(&full)
     };
     match result {
-        Ok(_) => ok_json(&serde_json::json!({ "ok": true })),
+        Ok(_) => {
+            bump_fs_generation(&state);
+            ok_json(&serde_json::json!({ "ok": true }))
+        }
         Err(e) => bad_request(format!("cannot delete: {e}")),
     }
 }
@@ -812,12 +877,54 @@ fn write_last_file_record(repo_root: &Path, rel_path: Option<&str>) {
     }
 }
 
-fn js_response(body: String) -> Response {
-    (
-        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
-        body,
-    )
-        .into_response()
+/// ETag for the wasm-bindgen JS glue, derived from its bytes (stable per build,
+/// changes when the bundle is rebuilt). Computed once.
+fn wasm_js_etag() -> &'static str {
+    static ETAG: OnceLock<String> = OnceLock::new();
+    ETAG.get_or_init(|| format!("\"{}\"", hash_bytes(WASM_JS.as_bytes())))
+}
+
+/// ETag for the wasm binary, derived from its bytes. Computed once.
+fn wasm_bg_etag() -> &'static str {
+    static ETAG: OnceLock<String> = OnceLock::new();
+    ETAG.get_or_init(|| format!("\"{}\"", hash_bytes(WASM_BG)))
+}
+
+/// Serve an immutable, embedded asset with an `ETag` so the browser can cache it
+/// across editor opens. The bundle is fingerprinted by content, so a long-lived
+/// `immutable` `Cache-Control` is safe — a rebuild changes the ETag and busts
+/// the cache. Returns `304 Not Modified` when the client's `If-None-Match`
+/// already carries this build's ETag, skipping the body entirely.
+fn cached_asset_response(
+    headers: &axum::http::HeaderMap,
+    etag: &'static str,
+    content_type: &'static str,
+    body: &'static [u8],
+) -> Response {
+    if let Some(if_none_match) = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        && if_none_match.split(',').any(|tag| tag.trim() == etag)
+    {
+        let mut resp = StatusCode::NOT_MODIFIED.into_response();
+        set_immutable_cache(&mut resp, etag);
+        return resp;
+    }
+
+    let mut resp = ([(header::CONTENT_TYPE, content_type)], body).into_response();
+    set_immutable_cache(&mut resp, etag);
+    resp
+}
+
+fn set_immutable_cache(resp: &mut Response, etag: &str) {
+    let headers = resp.headers_mut();
+    headers.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("public, max-age=31536000, immutable"),
+    );
+    if let Ok(value) = header::HeaderValue::from_str(etag) {
+        headers.insert(header::ETAG, value);
+    }
 }
 
 fn wasm_not_built() -> Response {

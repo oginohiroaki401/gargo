@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
 
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Parser, Query, QueryCursor};
+use tree_sitter::{Parser, QueryCursor};
 
+use crate::syntax::highlight::compiled_query;
 use crate::syntax::language::{LanguageDef, LanguageRegistry};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,7 +35,7 @@ pub fn extract_definition_sections(text: &str, lang_def: &LanguageDef) -> Vec<De
     if parser.set_language(&language).is_err() {
         return Vec::new();
     }
-    let Ok(query) = Query::new(&language, tags_query_src) else {
+    let Some(query) = compiled_query(&language, tags_query_src) else {
         return Vec::new();
     };
     let Some(tree) = parser.parse(text, None) else {

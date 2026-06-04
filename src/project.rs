@@ -98,14 +98,27 @@ fn has_git_marker(dir: &Path) -> bool {
 }
 
 fn collect_files_git(root: &Path) -> Option<Vec<String>> {
+    // One `git ls-files` instead of two: `-t` prefixes each path with a status
+    // tag, so a single invocation yields both the tracked+untracked listing and
+    // the deleted set that used to require a separate `--deleted` call. The tags
+    // we read (each line is `<tag><space><path>`):
+    //   `H` cached/tracked-and-present, `?` other/untracked  -> candidate
+    //   `R` removed (tracked but missing from the working tree) -> exclude
+    // `--cached` lists index entries even when their working-tree copy is gone
+    // (e.g. a tracked file deleted with a plain `rm`, which is what the web
+    // editor's Delete does), so such a path shows up under BOTH `H` and `R`;
+    // dropping the `R` paths keeps it (and any directory that only held it) from
+    // lingering in the sidebar as a phantom after a restart.
     let output = Command::new("git")
         .args([
             "-c",
             "core.quotepath=off",
             "ls-files",
+            "-t",
             "--cached",
             "--others",
             "--exclude-standard",
+            "--deleted",
         ])
         .current_dir(root)
         .output()
@@ -117,38 +130,22 @@ fn collect_files_git(root: &Path) -> Option<Vec<String>> {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // `--cached` lists index entries even when their working-tree copy is gone
-    // (e.g. a tracked file deleted with a plain `rm` instead of `git rm`, which
-    // is what the web editor's Delete does). Without this, such a file — and any
-    // directory that only held it — lingers in the sidebar as a phantom after a
-    // restart. Drop anything git reports as deleted from the working tree.
-    let deleted = git_deleted_set(root);
+    // Collect the deleted paths first (they may be tagged `R` after their `H`
+    // line), then emit the present files that aren't among them.
+    let deleted: std::collections::HashSet<&str> = stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("R "))
+        .collect();
+
     let files: Vec<String> = stdout
         .lines()
-        .filter(|l| !l.is_empty())
-        .filter(|l| !deleted.contains(*l))
-        .map(|l| l.to_string())
+        .filter_map(|line| {
+            let (tag, path) = line.split_once(' ')?;
+            (matches!(tag, "H" | "?") && !path.is_empty() && !deleted.contains(path))
+                .then(|| path.to_string())
+        })
         .collect();
     Some(files)
-}
-
-/// Paths that git tracks but whose working-tree copy is missing (`git ls-files
-/// --deleted`). Empty on any error so the caller simply keeps the full list.
-fn git_deleted_set(root: &Path) -> std::collections::HashSet<String> {
-    Command::new("git")
-        .args(["-c", "core.quotepath=off", "ls-files", "--deleted"])
-        .current_dir(root)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .filter(|l| !l.is_empty())
-                .map(|l| l.to_string())
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn collect_files_walk(dir: &Path, root: &Path) -> Vec<String> {

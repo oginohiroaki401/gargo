@@ -190,7 +190,12 @@ impl GargoServerWorker {
             project_root: repo_root.clone(),
             viewed: ViewedStore::open(),
         });
-        let github_state = Arc::new(GargoServerState { repo_root, url_ctx });
+        let github_state = Arc::new(GargoServerState {
+            repo_root,
+            url_ctx,
+            files_cache: std::sync::Mutex::new(None),
+            fs_generation: std::sync::atomic::AtomicU64::new(0),
+        });
 
         self.tokio_runtime.spawn(async move {
             run_server(
@@ -382,6 +387,13 @@ fn bridge_preview_events(
 pub(crate) struct GargoServerState {
     pub(crate) repo_root: PathBuf,
     pub(crate) url_ctx: gargo_preview_server::RepoUrlContext,
+    /// Short-lived cache for the `/api/files` listing (`git ls-files`), which the
+    /// editor hits on every Cmd+P open. Holds `(generation, cached_at, files)`;
+    /// reused while the generation matches and the entry is within the TTL.
+    pub(crate) files_cache: std::sync::Mutex<Option<(u64, std::time::Instant, Vec<String>)>>,
+    /// Bumped by filesystem-mutating editor handlers (create/rename/delete/save)
+    /// so `files_cache` is invalidated immediately rather than waiting for the TTL.
+    pub(crate) fs_generation: std::sync::atomic::AtomicU64,
 }
 
 async fn run_server(

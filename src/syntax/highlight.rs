@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use ropey::Rope;
 use streaming_iterator::StreamingIterator;
@@ -24,8 +24,8 @@ pub struct HighlightSpan {
 struct BufferHighlight {
     parser: Parser,
     tree: Option<Tree>,
-    query: Query,
-    indent_query: Option<Query>,
+    query: Arc<Query>,
+    indent_query: Option<Arc<Query>>,
     visible_cache: RefCell<Option<VisibleHighlightCache>>,
     #[allow(dead_code)]
     language: Language,
@@ -97,6 +97,32 @@ fn highlight_text_cache() -> &'static Mutex<HighlightTextCache> {
     CACHE.get_or_init(|| Mutex::new(HighlightTextCache::new()))
 }
 
+/// Compile and cache a tree-sitter `Query` from a `&'static` query source,
+/// returning a shared handle. `Query::new` compiles the query string (the
+/// dominant cost of a highlight request), so memoizing it turns repeated
+/// highlights of the same language from a cache miss into a near-free clone.
+///
+/// Keyed by the source string's pointer: each grammar's HIGHLIGHTS / indent /
+/// tags query is a distinct `&'static str`, so the pointer uniquely identifies a
+/// `(language, query)` pair. Shared across the terminal editor and the server's
+/// `/api/highlight` + `/blob` paths.
+pub(crate) fn compiled_query(language: &Language, src: &'static str) -> Option<Arc<Query>> {
+    static CACHE: OnceLock<Mutex<HashMap<usize, Arc<Query>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = src.as_ptr() as usize;
+
+    if let Some(query) = cache.lock().expect("query cache lock poisoned").get(&key) {
+        return Some(query.clone());
+    }
+
+    let query = Arc::new(Query::new(language, src).ok()?);
+    cache
+        .lock()
+        .expect("query cache lock poisoned")
+        .insert(key, query.clone());
+    Some(query)
+}
+
 fn highlight_text_cache_key(text: &str, lang_def: &LanguageDef) -> HighlightTextCacheKey {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     lang_def.name.hash(&mut hasher);
@@ -153,14 +179,14 @@ impl HighlightManager {
             return;
         }
 
-        let query = match Query::new(&language, lang_def.highlight_query) {
-            Ok(q) => q,
-            Err(_) => return,
+        let query = match compiled_query(&language, lang_def.highlight_query) {
+            Some(q) => q,
+            None => return,
         };
 
         let indent_query = lang_def
             .indent_query
-            .and_then(|iq| Query::new(&language, iq).ok());
+            .and_then(|iq| compiled_query(&language, iq));
 
         let tree = parse_rope(&mut parser, rope, None);
 
@@ -232,7 +258,7 @@ impl HighlightManager {
     pub fn indent_query(&self, buf_id: BufferId) -> Option<&Query> {
         self.highlights
             .get(&buf_id)
-            .and_then(|bh| bh.indent_query.as_ref())
+            .and_then(|bh| bh.indent_query.as_deref())
     }
 
     /// Query highlight spans for visible lines. Returns a map from line index to spans.
@@ -361,9 +387,9 @@ pub fn highlight_text(text: &str, lang_def: &LanguageDef) -> HashMap<usize, Vec<
     if parser.set_language(&language).is_err() {
         return result;
     }
-    let query = match Query::new(&language, lang_def.highlight_query) {
-        Ok(q) => q,
-        Err(_) => return result,
+    let query = match compiled_query(&language, lang_def.highlight_query) {
+        Some(q) => q,
+        None => return result,
     };
 
     let tree = match parser.parse(text, None) {
