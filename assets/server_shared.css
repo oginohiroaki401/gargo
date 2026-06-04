@@ -45,15 +45,17 @@ body {
     .sidebar { position: static; width: auto; max-height: none; }
 }
 
-/* Preview / Code toggle on the blob view. Rendered as two pills sized and
-   styled to match the Copy / open-action buttons beside them, with the active
-   mode marked by the same blue accent the pills use on hover. Scoped to
-   `.file-panel` so these win (by specificity) over the segmented `.md-toggle-btn`
-   rules that render_diff_styles() injects inline on the same page. */
+/* Preview / Code toggle on the blob view. Rendered as two pills sized to match
+   the Copy / open-action buttons beside them; the active mode is a GitHub-style
+   white highlight with dark text. Scoped to `.file-panel` so these win (by
+   specificity) over the segmented `.md-toggle-btn` rules that render_diff_styles()
+   injects inline on the same page — including its `.md-view-toggle` bottom margin,
+   which otherwise pushes the toggle out of vertical alignment with the pills. */
 .file-panel .md-view-toggle {
     display: inline-flex;
     align-items: center;
     gap: 4px;
+    margin: 0;
 }
 .file-panel .md-toggle-btn {
     display: inline-flex;
@@ -78,8 +80,8 @@ body {
     border-radius: 6px;
     border-left: 1px solid #d0d7de;
 }
-.file-panel .md-toggle-btn:hover { background: #eaeef2; border-color: #0969da; color: #0969da; }
-.file-panel .md-toggle-btn.active { background: #ffffff; border-color: #0969da; color: #0969da; font-weight: 600; }
+.file-panel .md-toggle-btn:hover { background: #eaeef2; color: #24292f; }
+.file-panel .md-toggle-btn.active { background: #ffffff; border-color: #d0d7de; color: #24292f; font-weight: 600; }
 
 /* "View on GitHub" pill on the blob page */
 .view-on-github-btn {
