@@ -1535,9 +1535,14 @@ pub(crate) async fn handle_directory_listing(
     files.sort();
 
     // Remote + default branch power the per-file "open on GitHub" pills below;
-    // resolved once here and reused for the rail's "View on GitHub" link.
-    let repo_url = github_repo_url(repo_root).await;
-    let default_branch = default_branch_name(repo_root).await;
+    // resolved once here and reused for the rail's "View on GitHub" link. They
+    // are session-static (cached); the last-commit strip is an independent
+    // `git log -1`. Spawn all three concurrently instead of three serial gits.
+    let (repo_url, default_branch, commit_info) = tokio::join!(
+        cached_github_repo_url(repo_root),
+        cached_default_branch_name(repo_root),
+        path_commit_strip_html(repo_root, display_path, ctx),
+    );
 
     let mut file_list = String::from("<div class=\"file-list\">");
 
@@ -1620,7 +1625,6 @@ pub(crate) async fn handle_directory_listing(
     };
     let root_path = repo_root.display().to_string();
 
-    let commit_info = path_commit_strip_html(repo_root, display_path, ctx).await;
     let branch_chip = path_branch_chip_html(ctx);
     let breadcrumb = format!("{branch_chip}{}", path_breadcrumb_html(ctx, display_path));
     let github_href = repo_url.as_deref().map(|base| {
@@ -1698,8 +1702,15 @@ pub(crate) async fn handle_file_display(
     };
 
     let root_path = repo_root.display().to_string();
-    let repo_url = github_repo_url(repo_root).await;
-    let default_branch = default_branch_name(repo_root).await;
+
+    // The remote URL and default branch are session-static (cached); the
+    // last-commit strip is an independent `git log -1`. Run all three
+    // concurrently instead of spawning git three times back-to-back.
+    let (repo_url, default_branch, commit_info) = tokio::join!(
+        cached_github_repo_url(repo_root),
+        cached_default_branch_name(repo_root),
+        path_commit_strip_html(repo_root, display_path, ctx),
+    );
 
     // Preview/Code toggle goes into the breadcrumb row. View on GitHub now
     // lives in the rail, so the in-body toolbar carries view-mode chips plus the
@@ -1760,7 +1771,6 @@ pub(crate) async fn handle_file_display(
         ),
     };
 
-    let commit_info = path_commit_strip_html(repo_root, display_path, ctx).await;
     let branch_chip = path_branch_chip_html(ctx);
     let breadcrumb = format!("{branch_chip}{}", path_breadcrumb_html(ctx, display_path));
     let github_href = repo_url.as_deref().map(|base| {
