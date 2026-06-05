@@ -12,6 +12,14 @@
 //! This bench exercises those two functions against THIS repo so numbers are
 //! reproducible and reflect a realistic working tree.
 //!
+//! A later HAR (gargo_v2.har) showed the `/status` and `/branches` pages were
+//! dominated by *serial* git subprocess spawns: the HTML handlers awaited 4
+//! `git` processes one-at-a-time (one redundantly re-fetching the remote URL),
+//! and `/api/status` awaited `git diff` then `git diff --cached` in sequence.
+//! The `status git spawns` section below measures that serial-vs-concurrent
+//! gap directly, since the handlers themselves are `pub(crate)` and unreachable
+//! from a bench crate.
+//!
 //! Run: cargo run --bench bench-server --release
 //!  (or: cargo bench --bench bench-server)
 
@@ -115,6 +123,88 @@ fn bench_highlight_hit(
 }
 
 // ---------------------------------------------------------------------------
+// Benchmark: status / page-context git spawns  (/status, /branches, /api/status)
+// ---------------------------------------------------------------------------
+
+/// Mirror of the server's `git_output_in_repo`: same `-c` flags so spawn cost
+/// matches the real handlers.
+async fn git_out(root: &Path, args: &[&str]) -> String {
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.args(["-c", "core.quotepath=off"]);
+    cmd.args(["-c", "core.optionalLocks=false"]);
+    cmd.args(args);
+    cmd.current_dir(root);
+    match cmd.output().await {
+        Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
+        Err(_) => String::new(),
+    }
+}
+
+/// `/api/status` git work, the OLD way: two diffs awaited back-to-back.
+async fn status_diffs_serial(root: &Path) {
+    let _unstaged = git_out(root, &["diff"]).await;
+    let _staged = git_out(root, &["diff", "--cached"]).await;
+}
+
+/// `/api/status` git work, the NEW way: both diffs spawned concurrently.
+async fn status_diffs_parallel(root: &Path) {
+    let _ = tokio::join!(
+        git_out(root, &["diff"]),
+        git_out(root, &["diff", "--cached"]),
+    );
+}
+
+/// `/status` / `/branches` header context, the OLD way: 4 serial spawns, the
+/// 3rd a redundant re-fetch of the remote URL.
+async fn page_context_serial(root: &Path) {
+    let _remote = git_out(root, &["config", "--get", "remote.origin.url"]).await;
+    let _branch = git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"]).await;
+    let _remote_again = git_out(root, &["config", "--get", "remote.origin.url"]).await;
+    let _default = git_out(
+        root,
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+    )
+    .await;
+}
+
+/// `/status` / `/branches` header context, the NEW way: dedup the remote URL and
+/// spawn the 3 distinct lookups concurrently. (Caching makes steady-state state
+/// even cheaper — this measures the cold, uncached path.)
+async fn page_context_parallel(root: &Path) {
+    let _ = tokio::join!(
+        git_out(root, &["config", "--get", "remote.origin.url"]),
+        git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        git_out(
+            root,
+            &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]
+        ),
+    );
+}
+
+/// Time an async closure over warmup + iterations, returning per-iter micros.
+fn time_async<F, Fut>(
+    rt: &tokio::runtime::Runtime,
+    warmup: usize,
+    iters: usize,
+    mut f: F,
+) -> Vec<f64>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    for _ in 0..warmup {
+        rt.block_on(f());
+    }
+    let mut times = Vec::with_capacity(iters);
+    for _ in 0..iters {
+        let t0 = Instant::now();
+        rt.block_on(f());
+        times.push(t0.elapsed().as_secs_f64() * 1_000_000.0);
+    }
+    times
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -190,4 +280,32 @@ fn main() {
             "", "", "hit", h_avg, h_p95, h_p99
         );
     }
+
+    // -----------------------------------------------------------------------
+    // 3. status / page-context git spawns  (/status, /branches, /api/status)
+    // -----------------------------------------------------------------------
+    println!();
+    println!("=== git-spawn pattern: serial (old) vs concurrent (new) ===");
+    println!("{:>26} {:>10} {:>10} {:>10}", "case", "avg", "p95", "p99");
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+
+    let report = |label: &str, times: &mut Vec<f64>| {
+        let avg = format_us(stat_avg(times));
+        let p95 = format_us(stat_percentile(times, 95.0));
+        let p99 = format_us(stat_percentile(times, 99.0));
+        println!("{label:>26} {avg:>10} {p95:>10} {p99:>10}");
+    };
+
+    let mut t = time_async(&rt, warmup, iterations, || status_diffs_serial(&root));
+    report("api/status diffs: serial", &mut t);
+    let mut t = time_async(&rt, warmup, iterations, || status_diffs_parallel(&root));
+    report("api/status diffs: parallel", &mut t);
+    let mut t = time_async(&rt, warmup, iterations, || page_context_serial(&root));
+    report("page ctx (4 spawns): serial", &mut t);
+    let mut t = time_async(&rt, warmup, iterations, || page_context_parallel(&root));
+    report("page ctx (dedup): parallel", &mut t);
 }

@@ -689,17 +689,83 @@ pub(crate) fn owner_repo_for_root(root_path: &str, repo_url: Option<&str>) -> (S
         })
 }
 
-/// Resolve the owner/repo/branch for a repository (runs git).
+/// Per-repo cache of the two git facts that are effectively static for a
+/// session: the GitHub remote URL and the default branch name. The current
+/// branch is deliberately *not* cached here — a checkout changes it. Caching
+/// avoids re-spawning `git config` / `git symbolic-ref` on every page load and
+/// every in-page navigation. Locks are never held across an `.await`.
+static REPO_URL_CACHE: std::sync::OnceLock<Mutex<HashMap<PathBuf, Option<String>>>> =
+    std::sync::OnceLock::new();
+static DEFAULT_BRANCH_CACHE: std::sync::OnceLock<Mutex<HashMap<PathBuf, Option<String>>>> =
+    std::sync::OnceLock::new();
+
+/// `github_repo_url`, memoized per repo root.
+async fn cached_github_repo_url(repo_root: &Path) -> Option<String> {
+    let cache = REPO_URL_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(hit) = cache.lock().unwrap().get(repo_root).cloned() {
+        return hit;
+    }
+    let value = github_repo_url(repo_root).await;
+    cache
+        .lock()
+        .unwrap()
+        .insert(repo_root.to_path_buf(), value.clone());
+    value
+}
+
+/// `default_branch_name`, memoized per repo root.
+async fn cached_default_branch_name(repo_root: &Path) -> Option<String> {
+    let cache = DEFAULT_BRANCH_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(hit) = cache.lock().unwrap().get(repo_root).cloned() {
+        return hit;
+    }
+    let value = default_branch_name(repo_root).await;
+    cache
+        .lock()
+        .unwrap()
+        .insert(repo_root.to_path_buf(), value.clone());
+    value
+}
+
+/// Resolve the owner/repo/branch for a repository (runs git). The remote URL is
+/// cached and the current-branch lookup runs concurrently with it.
 pub(crate) async fn resolve_repo_url_context(repo_root: &Path) -> RepoUrlContext {
-    let repo_url = github_repo_url(repo_root).await;
+    let (repo_url, branch) = tokio::join!(
+        cached_github_repo_url(repo_root),
+        detect_current_branch(repo_root),
+    );
     let root_path = repo_root.display().to_string();
     let (owner, repo) = owner_repo_for_root(&root_path, repo_url.as_deref());
-    let branch = detect_current_branch(repo_root).await;
     RepoUrlContext {
         owner,
         repo,
         branch,
     }
+}
+
+/// Resolve everything an HTML page header needs — `RepoUrlContext`, the GitHub
+/// remote URL, and the default branch — spawning the underlying git lookups
+/// concurrently (and reusing the per-repo caches). Replaces three sequential
+/// `await`s, one of which previously re-fetched the remote URL redundantly.
+pub(crate) async fn resolve_page_context(
+    repo_root: &Path,
+) -> (RepoUrlContext, Option<String>, Option<String>) {
+    let (repo_url, branch, default_branch) = tokio::join!(
+        cached_github_repo_url(repo_root),
+        detect_current_branch(repo_root),
+        cached_default_branch_name(repo_root),
+    );
+    let root_path = repo_root.display().to_string();
+    let (owner, repo) = owner_repo_for_root(&root_path, repo_url.as_deref());
+    (
+        RepoUrlContext {
+            owner,
+            repo,
+            branch,
+        },
+        repo_url,
+        default_branch,
+    )
 }
 
 /// Current branch name; falls back to the short commit hash when detached,

@@ -3018,9 +3018,8 @@ pub(crate) async fn handle_split_request(
         deletions: 0,
     });
 
-    let ctx = crate::command::gargo_preview_server::resolve_repo_url_context(repo_root).await;
-    let repo_url = crate::command::gargo_preview_server::github_repo_url(repo_root).await;
-    let default_branch = crate::command::gargo_preview_server::default_branch_name(repo_root).await;
+    let (ctx, repo_url, default_branch) =
+        crate::command::gargo_preview_server::resolve_page_context(repo_root).await;
     let active_tab = match &source {
         SplitSource::Status { .. } => "status",
         SplitSource::Compare { .. } => "branches",
@@ -3179,9 +3178,7 @@ pub(crate) async fn handle_html_request(
 ) -> impl IntoResponse {
     use crate::command::gargo_preview_server as gh;
     let root_path = state.project_root.display().to_string();
-    let ctx = gh::resolve_repo_url_context(&state.project_root).await;
-    let repo_url = gh::github_repo_url(&state.project_root).await;
-    let default_branch = gh::default_branch_name(&state.project_root).await;
+    let (ctx, repo_url, default_branch) = gh::resolve_page_context(&state.project_root).await;
     let rail = crate::command::app_shell::app_rail_html(&ctx, repo_url.as_deref(), "status");
     let ctx_script = repo_ctx_script(&ctx, repo_url.as_deref(), default_branch.as_deref());
     Html(
@@ -3207,11 +3204,9 @@ pub(crate) async fn handle_commit_html_request(
     State(state): State<Arc<DiffServerState>>,
 ) -> impl IntoResponse {
     use crate::command::gargo_preview_server as gh;
-    let ctx = gh::resolve_repo_url_context(&state.project_root).await;
-    let repo_url = gh::github_repo_url(&state.project_root).await;
+    let (ctx, repo_url, default_branch) = gh::resolve_page_context(&state.project_root).await;
     // Keep "Status" highlighted in the rail — the commit page is part of that flow.
     let rail = crate::command::app_shell::app_rail_html(&ctx, repo_url.as_deref(), "status");
-    let default_branch = gh::default_branch_name(&state.project_root).await;
     let ctx_script = repo_ctx_script(&ctx, repo_url.as_deref(), default_branch.as_deref());
     Html(
         COMMIT_HTML_TEMPLATE
@@ -3336,18 +3331,23 @@ pub(crate) async fn handle_api_status_request(
     let show_untracked = parse_bool_param(params.get("show_untracked"), true);
     let repo_root = &state.project_root;
 
-    let unstaged_raw = match git_output_in_repo(repo_root, &["diff"]).await {
+    // The unstaged diff, staged diff, and viewed-state lookup are independent —
+    // run them concurrently instead of awaiting one git subprocess at a time.
+    let (unstaged_res, staged_res, viewed) = tokio::join!(
+        git_output_in_repo(repo_root, &["diff"]),
+        git_output_in_repo(repo_root, &["diff", "--cached"]),
+        // One lookup of the persisted viewed state for the whole page; each file
+        // is reported viewed only while its current content hash still matches.
+        load_viewed_map(&state, PAGE_STATUS, String::new(), String::new()),
+    );
+    let unstaged_raw = match unstaged_res {
         Ok(output) => output,
         Err(error) => return bad_request(error),
     };
-    let staged_raw = match git_output_in_repo(repo_root, &["diff", "--cached"]).await {
+    let staged_raw = match staged_res {
         Ok(output) => output,
         Err(error) => return bad_request(error),
     };
-
-    // One lookup of the persisted viewed state for the whole page; each file is
-    // reported viewed only while its current content hash still matches.
-    let viewed = load_viewed_map(&state, PAGE_STATUS, String::new(), String::new()).await;
 
     let unstaged_files: Vec<serde_json::Value> = parse_unified_diff(&unstaged_raw)
         .iter()
@@ -3366,25 +3366,48 @@ pub(crate) async fn handle_api_status_request(
                 Ok(output) => output,
                 Err(error) => return bad_request(error),
             };
-        let mut entries = Vec::new();
-        for path in raw.lines().map(str::trim).filter(|line| !line.is_empty()) {
-            // A whole untracked file shows up as an all-additions diff, so its
-            // line count drives the client's huge-diff collapse decision.
-            let (additions, binary, hash) = scan_untracked_file(repo_root, path).await;
-            let is_viewed = viewed
-                .get(&("untracked".to_string(), path.to_string()))
-                .is_some_and(|stored| !hash.is_empty() && *stored == hash);
-            entries.push(serde_json::json!({
-                "path": path,
-                "old_path": serde_json::Value::Null,
-                "status": "untracked",
-                "binary": binary,
-                "additions": additions,
-                "deletions": 0,
-                "viewed": is_viewed,
-            }));
+        let paths: Vec<String> = raw
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect();
+
+        // Scan every untracked file concurrently — each scan is independent
+        // file I/O, so a serial loop needlessly waited on one read at a time.
+        // Results are slotted back by index to preserve `ls-files` order.
+        let mut set = tokio::task::JoinSet::new();
+        for (idx, path) in paths.iter().cloned().enumerate() {
+            let root = repo_root.to_path_buf();
+            set.spawn(async move { (idx, scan_untracked_file(&root, &path).await) });
         }
-        entries
+        let mut scans: Vec<(usize, bool, String)> = vec![(0, false, String::new()); paths.len()];
+        while let Some(joined) = set.join_next().await {
+            if let Ok((idx, scan)) = joined {
+                scans[idx] = scan;
+            }
+        }
+
+        paths
+            .iter()
+            .zip(scans)
+            .map(|(path, (additions, binary, hash))| {
+                // A whole untracked file shows up as an all-additions diff, so
+                // its line count drives the client's huge-diff collapse decision.
+                let is_viewed = viewed
+                    .get(&("untracked".to_string(), path.to_string()))
+                    .is_some_and(|stored| !hash.is_empty() && *stored == hash);
+                serde_json::json!({
+                    "path": path,
+                    "old_path": serde_json::Value::Null,
+                    "status": "untracked",
+                    "binary": binary,
+                    "additions": additions,
+                    "deletions": 0,
+                    "viewed": is_viewed,
+                })
+            })
+            .collect()
     } else {
         Vec::new()
     };
@@ -4102,9 +4125,7 @@ pub(crate) async fn handle_compare_html_request(
 ) -> impl IntoResponse {
     use crate::command::gargo_preview_server as gh;
     let root_path = state.project_root.display().to_string();
-    let ctx = gh::resolve_repo_url_context(&state.project_root).await;
-    let repo_url = gh::github_repo_url(&state.project_root).await;
-    let default_branch = gh::default_branch_name(&state.project_root).await;
+    let (ctx, repo_url, default_branch) = gh::resolve_page_context(&state.project_root).await;
     let rail = crate::command::app_shell::app_rail_html(&ctx, repo_url.as_deref(), "branches");
     let ctx_script = repo_ctx_script(&ctx, repo_url.as_deref(), default_branch.as_deref());
     Html(
