@@ -549,14 +549,17 @@ async fn run_server(
 }
 
 async fn handle_commits_html(State(state): State<Arc<GargoServerState>>) -> impl IntoResponse {
-    let repo_url = gargo_preview_server::github_repo_url(&state.repo_root).await;
+    // Memoized + concurrent: avoids two serial cold git spawns per page load.
+    let (repo_url, default_branch) = tokio::join!(
+        gargo_preview_server::cached_github_repo_url(&state.repo_root),
+        gargo_preview_server::cached_default_branch_name(&state.repo_root),
+    );
     let github_href = repo_url
         .as_deref()
         .map(|base| format!("{base}/commits/{}", state.url_ctx.branch));
     let rail =
         crate::command::app_shell::app_rail_html(&state.url_ctx, github_href.as_deref(), "commits");
     let commit_prefix = gargo_preview_server::commit_url(&state.url_ctx, "");
-    let default_branch = gargo_preview_server::default_branch_name(&state.repo_root).await;
     let repo_ctx = crate::command::server_shared::repo_ctx_script(
         &state.url_ctx.owner,
         &state.url_ctx.repo,
@@ -591,14 +594,17 @@ async fn handle_commit_html(
     AxumPath((_owner, _repo, hash)): AxumPath<(String, String, String)>,
 ) -> impl IntoResponse {
     let hash = gargo_preview_server::html_escape(&hash);
-    let repo_url = gargo_preview_server::github_repo_url(&state.repo_root).await;
+    // Memoized + concurrent: avoids two serial cold git spawns per page load.
+    let (repo_url, default_branch) = tokio::join!(
+        gargo_preview_server::cached_github_repo_url(&state.repo_root),
+        gargo_preview_server::cached_default_branch_name(&state.repo_root),
+    );
     let github_href = repo_url
         .as_deref()
         .map(|base| format!("{base}/commit/{hash}"));
     let rail =
         crate::command::app_shell::app_rail_html(&state.url_ctx, github_href.as_deref(), "commits");
     let commit_prefix = gargo_preview_server::commit_url(&state.url_ctx, "");
-    let default_branch = gargo_preview_server::default_branch_name(&state.repo_root).await;
     let repo_ctx = crate::command::server_shared::repo_ctx_script(
         &state.url_ctx.owner,
         &state.url_ctx.repo,
@@ -896,31 +902,44 @@ async fn handle_api_commit(
     let Some(hash) = parse_commit_hash(&hash) else {
         return diff_server::bad_request("invalid commit hash");
     };
-    let meta_raw = match diff_server::git_output_in_repo(
-        &state.repo_root,
-        &[
-            "show",
-            "-s",
-            "--date=short",
-            "--format=%H%n%an%n%ae%n%ad%n%B",
-            &hash,
-        ],
-    )
-    .await
-    {
+    // The metadata, name-status, and full-diff lookups are independent (all keyed
+    // only on `hash`) — spawn them concurrently instead of three serial gits.
+    // Bind the arg arrays to locals so they outlive the concurrent borrow (they
+    // hold `&hash`, so they can't be promoted to a `'static` temporary).
+    let meta_args = [
+        "show",
+        "-s",
+        "--date=short",
+        "--format=%H%n%an%n%ae%n%ad%n%B",
+        hash.as_str(),
+    ];
+    let files_args = [
+        "diff-tree",
+        "--no-commit-id",
+        "--name-status",
+        "-r",
+        hash.as_str(),
+    ];
+    let diff_args = ["show", "--format=", "--no-ext-diff", hash.as_str()];
+    let (meta_res, files_res, diff_res) = tokio::join!(
+        diff_server::git_output_in_repo(&state.repo_root, &meta_args),
+        diff_server::git_output_in_repo(&state.repo_root, &files_args),
+        diff_server::git_output_in_repo(&state.repo_root, &diff_args),
+    );
+    // Surface errors in the original sequential order so behavior is unchanged.
+    let meta_raw = match meta_res {
+        Ok(raw) => raw,
+        Err(err) => return diff_server::bad_request(err),
+    };
+    let files_raw = match files_res {
+        Ok(raw) => raw,
+        Err(err) => return diff_server::bad_request(err),
+    };
+    let diff_raw = match diff_res {
         Ok(raw) => raw,
         Err(err) => return diff_server::bad_request(err),
     };
     let meta: Vec<_> = meta_raw.splitn(5, '\n').collect();
-    let files_raw = match diff_server::git_output_in_repo(
-        &state.repo_root,
-        &["diff-tree", "--no-commit-id", "--name-status", "-r", &hash],
-    )
-    .await
-    {
-        Ok(raw) => raw,
-        Err(err) => return diff_server::bad_request(err),
-    };
     let files: Vec<_> = files_raw
         .lines()
         .filter_map(|line| {
@@ -930,15 +949,6 @@ async fn handle_api_commit(
             Some(serde_json::json!({ "path": path, "status": status.to_string() }))
         })
         .collect();
-    let diff_raw = match diff_server::git_output_in_repo(
-        &state.repo_root,
-        &["show", "--format=", "--no-ext-diff", &hash],
-    )
-    .await
-    {
-        Ok(raw) => raw,
-        Err(err) => return diff_server::bad_request(err),
-    };
     let diff_files: Vec<_> = parse_unified_diff(&diff_raw)
         .iter()
         .map(|f| diff_server::file_metadata_json(f, false))
