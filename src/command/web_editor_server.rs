@@ -201,19 +201,26 @@ struct GitStatusResponse {
 /// Mirrors the terminal status colors via [`crate::command::git_backend::status_map`]
 /// (`gix`, native-only). Returns an empty map outside a repo or with no changes.
 pub(crate) async fn handle_api_git_status(State(state): State<Arc<GargoServerState>>) -> Response {
-    let statuses = crate::command::git_backend::status_map(&state.repo_root)
-        .into_iter()
-        .map(|(path, st)| {
-            let label = match st {
-                crate::command::git::GitFileStatus::Modified => "modified",
-                crate::command::git::GitFileStatus::Added => "added",
-                crate::command::git::GitFileStatus::Untracked => "untracked",
-                crate::command::git::GitFileStatus::Deleted => "deleted",
-                crate::command::git::GitFileStatus::Conflict => "conflict",
-            };
-            (path, label.to_string())
-        })
-        .collect();
+    // `status_map` scans the working tree via `gix` (blocking I/O) — keep it off
+    // the async worker thread.
+    let repo_root = state.repo_root.clone();
+    let statuses = tokio::task::spawn_blocking(move || {
+        crate::command::git_backend::status_map(&repo_root)
+            .into_iter()
+            .map(|(path, st)| {
+                let label = match st {
+                    crate::command::git::GitFileStatus::Modified => "modified",
+                    crate::command::git::GitFileStatus::Added => "added",
+                    crate::command::git::GitFileStatus::Untracked => "untracked",
+                    crate::command::git::GitFileStatus::Deleted => "deleted",
+                    crate::command::git::GitFileStatus::Conflict => "conflict",
+                };
+                (path, label.to_string())
+            })
+            .collect::<std::collections::HashMap<String, String>>()
+    })
+    .await
+    .unwrap_or_default();
     ok_json(&GitStatusResponse { statuses })
 }
 
@@ -316,36 +323,43 @@ struct HighlightResponse {
 /// the browser can color substrings of the rows it already renders. Returns an
 /// empty map for unknown / unsupported languages.
 pub(crate) async fn handle_api_highlight(Json(req): Json<HighlightRequest>) -> Response {
-    use crate::syntax::language::LanguageRegistry;
+    // Tree-sitter parse + query is CPU-bound and would block the async worker
+    // thread (the editor highlights fresh content per keystroke, so the internal
+    // cache mostly misses). Offload it to the blocking pool.
+    let HighlightRequest { path, content } = req;
+    let lines = tokio::task::spawn_blocking(move || {
+        use crate::syntax::language::LanguageRegistry;
 
-    let registry = LanguageRegistry::new();
-    let Some(lang_def) = registry.detect_by_extension(&req.path) else {
-        return ok_json(&HighlightResponse {
-            lines: std::collections::HashMap::new(),
-        });
-    };
-
-    let by_line = crate::syntax::highlight::highlight_text(&req.content, lang_def);
-    let line_texts: Vec<&str> = req.content.split('\n').collect();
-
-    let mut lines = std::collections::HashMap::new();
-    for (line_idx, spans) in by_line {
-        let Some(text) = line_texts.get(line_idx) else {
-            continue;
+        let registry = LanguageRegistry::new();
+        let Some(lang_def) = registry.detect_by_extension(&path) else {
+            return std::collections::HashMap::new();
         };
-        let dtos: Vec<HighlightSpanDto> = spans
-            .into_iter()
-            .map(|s| HighlightSpanDto {
-                start: byte_to_expanded_col(text, s.start),
-                end: byte_to_expanded_col(text, s.end),
-                scope: capture_to_scope(&s.capture_name).to_string(),
-            })
-            .filter(|s| s.start < s.end)
-            .collect();
-        if !dtos.is_empty() {
-            lines.insert(line_idx.to_string(), dtos);
+
+        let by_line = crate::syntax::highlight::highlight_text(&content, lang_def);
+        let line_texts: Vec<&str> = content.split('\n').collect();
+
+        let mut lines = std::collections::HashMap::new();
+        for (line_idx, spans) in by_line {
+            let Some(text) = line_texts.get(line_idx) else {
+                continue;
+            };
+            let dtos: Vec<HighlightSpanDto> = spans
+                .into_iter()
+                .map(|s| HighlightSpanDto {
+                    start: byte_to_expanded_col(text, s.start),
+                    end: byte_to_expanded_col(text, s.end),
+                    scope: capture_to_scope(&s.capture_name).to_string(),
+                })
+                .filter(|s| s.start < s.end)
+                .collect();
+            if !dtos.is_empty() {
+                lines.insert(line_idx.to_string(), dtos);
+            }
         }
-    }
+        lines
+    })
+    .await
+    .unwrap_or_default();
 
     ok_json(&HighlightResponse { lines })
 }
@@ -423,22 +437,28 @@ struct SymbolsResponse {
 /// runs server-side (it can't run in the browser's wasm core). Returns an empty
 /// list for unknown / unsupported languages.
 pub(crate) async fn handle_api_symbols(Json(req): Json<SymbolsRequest>) -> Response {
-    use crate::syntax::language::LanguageRegistry;
+    // Tree-sitter parse + tags query is CPU-bound — offload off the async worker.
+    let SymbolsRequest { path, content } = req;
+    let symbols = tokio::task::spawn_blocking(move || {
+        use crate::syntax::language::LanguageRegistry;
 
-    let registry = LanguageRegistry::new();
-    let Some(lang_def) = registry.detect_by_extension(&req.path) else {
-        return ok_json(&SymbolsResponse { symbols: vec![] });
-    };
+        let registry = LanguageRegistry::new();
+        let Some(lang_def) = registry.detect_by_extension(&path) else {
+            return Vec::new();
+        };
 
-    let symbols = crate::syntax::symbol::extract_symbols(&req.content, lang_def)
-        .into_iter()
-        .map(|s| SymbolDto {
-            name: s.name,
-            kind: s.kind,
-            line: s.line,
-            col: s.char_col,
-        })
-        .collect();
+        crate::syntax::symbol::extract_symbols(&content, lang_def)
+            .into_iter()
+            .map(|s| SymbolDto {
+                name: s.name,
+                kind: s.kind,
+                line: s.line,
+                col: s.char_col,
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default();
 
     ok_json(&SymbolsResponse { symbols })
 }
@@ -503,18 +523,23 @@ pub(crate) async fn handle_api_git_gutter(
     let Some(full) = resolve_in_repo(&state.repo_root, &req.path) else {
         return bad_request("invalid path");
     };
-    let status = crate::command::git_backend::diff_line_status_for_content(&full, &req.content);
-    let lines = status
-        .into_iter()
-        .map(|(line, st)| {
-            let label = match st {
-                crate::command::git::GitLineStatus::Added => "added",
-                crate::command::git::GitLineStatus::Modified => "modified",
-                crate::command::git::GitLineStatus::Deleted => "deleted",
-            };
-            (line.to_string(), label.to_string())
-        })
-        .collect();
+    // The `gix` line-diff is blocking — keep it off the async worker thread.
+    let content = req.content;
+    let lines = tokio::task::spawn_blocking(move || {
+        crate::command::git_backend::diff_line_status_for_content(&full, &content)
+            .into_iter()
+            .map(|(line, st)| {
+                let label = match st {
+                    crate::command::git::GitLineStatus::Added => "added",
+                    crate::command::git::GitLineStatus::Modified => "modified",
+                    crate::command::git::GitLineStatus::Deleted => "deleted",
+                };
+                (line.to_string(), label.to_string())
+            })
+            .collect::<std::collections::HashMap<String, String>>()
+    })
+    .await
+    .unwrap_or_default();
     ok_json(&GitGutterResponse { lines })
 }
 
