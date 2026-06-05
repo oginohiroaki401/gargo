@@ -1535,7 +1535,12 @@
         const toResult = (p, positions) => ({
           text: p,
           positions,
-          onChoose: (e) => (e && (e.metaKey || e.altKey) ? openFileInNewWindow(p) : openFile(p)),
+          onChoose: (e) => {
+            // Cmd/Alt opens in a new window — keep this picker open so the user
+            // can fan out several files; plain Enter/click closes it.
+            if (e && (e.metaKey || e.altKey)) openFileInNewWindow(p);
+            else { closePicker(); openFile(p); }
+          },
         });
         if (!q) return (allFiles || []).slice(0, PICKER_LIMIT).map((p) => toResult(p, []));
         const scored = [];
