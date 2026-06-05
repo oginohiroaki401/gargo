@@ -895,64 +895,43 @@ async fn handle_api_commit(
     let Some(hash) = parse_commit_hash(&hash) else {
         return diff_server::bad_request("invalid commit hash");
     };
-    // The metadata, name-status, and full-diff lookups are independent (all keyed
-    // only on `hash`) — spawn them concurrently instead of three serial gits.
-    // Bind the arg arrays to locals so they outlive the concurrent borrow (they
-    // hold `&hash`, so they can't be promoted to a `'static` temporary).
-    let meta_args = [
-        "show",
-        "-s",
-        "--date=short",
-        "--format=%H%n%an%n%ae%n%ad%n%B",
-        hash.as_str(),
-    ];
-    let files_args = [
-        "diff-tree",
-        "--no-commit-id",
-        "--name-status",
-        "-r",
-        hash.as_str(),
-    ];
-    let diff_args = ["show", "--format=", "--no-ext-diff", hash.as_str()];
-    let (meta_res, files_res, diff_res) = tokio::join!(
-        diff_server::git_output_in_repo(&state.repo_root, &meta_args),
-        diff_server::git_output_in_repo(&state.repo_root, &files_args),
-        diff_server::git_output_in_repo(&state.repo_root, &diff_args),
-    );
-    // Surface errors in the original sequential order so behavior is unchanged.
-    let meta_raw = match meta_res {
-        Ok(raw) => raw,
-        Err(err) => return diff_server::bad_request(err),
+    // Commit metadata + full diff, both in-process via gix (no subprocess). The
+    // file list is derived from the parsed diff, so there's no separate
+    // `diff-tree --name-status` call.
+    let repo_root = state.repo_root.clone();
+    let hash_c = hash.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let meta = crate::command::git_backend::commit_meta(&repo_root, &hash_c)?;
+        let text = crate::command::git_backend::commit_diff_text(&repo_root, &hash_c, None)?;
+        Some((meta, parse_unified_diff(&text)))
+    })
+    .await;
+    let Ok(Some((meta, parsed))) = result else {
+        return diff_server::bad_request("invalid commit hash");
     };
-    let files_raw = match files_res {
-        Ok(raw) => raw,
-        Err(err) => return diff_server::bad_request(err),
-    };
-    let diff_raw = match diff_res {
-        Ok(raw) => raw,
-        Err(err) => return diff_server::bad_request(err),
-    };
-    let meta: Vec<_> = meta_raw.splitn(5, '\n').collect();
-    let files: Vec<_> = files_raw
-        .lines()
-        .filter_map(|line| {
-            let mut parts = line.splitn(2, '\t');
-            let status = parts.next()?.chars().next().unwrap_or('M');
-            let path = parts.next()?.to_string();
-            Some(serde_json::json!({ "path": path, "status": status.to_string() }))
+    let files: Vec<_> = parsed
+        .iter()
+        .map(|f| {
+            let letter = match f.status.as_str() {
+                "added" | "untracked" => "A",
+                "deleted" => "D",
+                "renamed" => "R",
+                _ => "M",
+            };
+            serde_json::json!({ "path": f.path, "status": letter })
         })
         .collect();
-    let diff_files: Vec<_> = parse_unified_diff(&diff_raw)
+    let diff_files: Vec<_> = parsed
         .iter()
         .map(|f| diff_server::file_metadata_json(f, false))
         .collect();
     diff_server::ok_json(serde_json::json!({
         "hash": hash,
-        "full_hash": meta.first().copied().unwrap_or(""),
-        "author": meta.get(1).copied().unwrap_or(""),
-        "author_email": meta.get(2).copied().unwrap_or(""),
-        "date": meta.get(3).copied().unwrap_or(""),
-        "message": meta.get(4).copied().unwrap_or(""),
+        "full_hash": meta.full_hash,
+        "author": meta.author,
+        "author_email": meta.author_email,
+        "date": meta.date,
+        "message": meta.message,
         "files": files,
         "diff_files": diff_files,
     }))
@@ -972,15 +951,16 @@ async fn handle_api_commit_file(
     let Some(path) = diff_server::parse_diff_path(path_raw) else {
         return diff_server::bad_request("invalid path");
     };
-    let diff = match diff_server::git_output_in_repo(
-        &state.repo_root,
-        &["show", "--format=", "--no-ext-diff", &hash, "--", &path],
-    )
+    // In-process gix diff for just this file (no `git show -- <path>` subprocess).
+    let repo_root = state.repo_root.clone();
+    let hash_c = hash.clone();
+    let path_c = path.clone();
+    let diff = tokio::task::spawn_blocking(move || {
+        crate::command::git_backend::commit_diff_text(&repo_root, &hash_c, Some(&path_c))
+            .unwrap_or_default()
+    })
     .await
-    {
-        Ok(raw) => raw,
-        Err(err) => return diff_server::bad_request(err),
-    };
+    .unwrap_or_default();
     match parse_unified_diff(&diff).into_iter().next() {
         Some(file) => diff_server::ok_json(serde_json::json!({
             "path": file.path,

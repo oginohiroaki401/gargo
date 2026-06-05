@@ -41,7 +41,7 @@ tree-sitter-php = "0.24"
 regex = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 url = "2"
-gix = { version = "0.78.0", features = ["attributes", "status", "revision", "parallel"], default-features = false }
+gix = { version = "0.78.0", features = ["attributes", "status", "revision", "parallel", "blob-diff"], default-features = false }
 imara-diff = "0.2.0"
 self_update = { version = "0.42", default-features = false, features = ["archive-tar", "compression-flate2", "rustls"] }
 semver = "1"

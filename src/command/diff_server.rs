@@ -4217,10 +4217,18 @@ pub(crate) async fn handle_api_compare_request(
         Err(resp) => return resp,
     };
 
-    let range = format!("{}...{}", base, compare);
-    let diff = match git_output_in_repo(&state.project_root, &["diff", &range]).await {
-        Ok(output) => output,
-        Err(error) => return bad_request(error),
+    // In-process gix `base...compare` diff (no `git diff` subprocess).
+    let repo_root = state.project_root.clone();
+    let (base_c, compare_c) = (base.clone(), compare.clone());
+    let diff = tokio::task::spawn_blocking(move || {
+        crate::command::git_backend::compare_diff_text(&repo_root, &base_c, &compare_c, None)
+    })
+    .await
+    .ok()
+    .flatten();
+    let diff = match diff {
+        Some(output) => output,
+        None => return bad_request("invalid base/compare ref"),
     };
 
     // Viewed records are scoped to this exact base/compare pair, so switching
@@ -4238,15 +4246,25 @@ pub(crate) async fn handle_api_compare_request(
     }))
 }
 
-/// Run `git diff base...compare -- <path>` and return the parsed [`DiffFile`].
+/// `base...compare` diff for a single file via in-process gix, parsed.
 async fn load_compare_diff_file(
     repo_root: &Path,
     base: &str,
     compare: &str,
     path: &str,
 ) -> Result<Option<DiffFile>, String> {
-    let range = format!("{}...{}", base, compare);
-    let diff = git_output_in_repo(repo_root, &["diff", &range, "--", path]).await?;
+    let (root, base, compare, path) = (
+        repo_root.to_path_buf(),
+        base.to_string(),
+        compare.to_string(),
+        path.to_string(),
+    );
+    let diff = tokio::task::spawn_blocking(move || {
+        crate::command::git_backend::compare_diff_text(&root, &base, &compare, Some(&path))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| "invalid base/compare ref".to_string())?;
     Ok(parse_unified_diff(&diff).into_iter().next())
 }
 

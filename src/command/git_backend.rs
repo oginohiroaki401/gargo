@@ -369,6 +369,316 @@ pub(crate) fn commit_log(root: &Path, skip: usize, count: usize) -> Option<Vec<C
     Some(out)
 }
 
+// ---------------------------------------------------------------------------
+// Unified-diff TEXT via in-process gix + imara (drop-in for `git diff`/`git show`).
+//
+// These produce the same git-style unified diff text the subprocess paths did,
+// so callers keep feeding the result to `parse_unified_diff` unchanged. Two
+// documented cosmetic divergences from git: the `\ No newline at end of file`
+// marker is omitted, and hunk headers always carry an explicit `,1` length
+// (`@@ -5,1 +5,1 @@` vs git's `@@ -5 +5 @@`). Neither affects the parsed
+// `DiffFile` content, line numbers, or additions/deletions counts.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+enum FileChangeKind {
+    Added,
+    Deleted,
+    Modified,
+    Renamed,
+}
+
+/// Commit metadata for the commit-detail header (`git show -s`).
+pub(crate) struct CommitMeta {
+    pub full_hash: String,    // %H
+    pub author: String,       // %an
+    pub author_email: String, // %ae
+    pub date: String,         // %ad --date=short
+    pub message: String,      // %B (raw full message)
+}
+
+/// Resolve `rev` and read its commit metadata. `None` if it can't be resolved.
+pub(crate) fn commit_meta(root: &Path, rev: &str) -> Option<CommitMeta> {
+    let repo = shared_repo(root)?.to_thread_local();
+    let id = repo.rev_parse_single(rev.as_bytes().as_bstr()).ok()?;
+    let commit = repo.find_commit(id).ok()?;
+    let author = commit.author().ok()?;
+    let date = match author.time() {
+        Ok(time) => time.format_or_unix(gix::date::time::format::SHORT),
+        Err(_) => String::new(),
+    };
+    let message = commit
+        .message_raw()
+        .map(|m| m.to_str_lossy().into_owned())
+        .unwrap_or_default();
+    Some(CommitMeta {
+        full_hash: commit.id().to_string(),
+        author: author.name.to_str_lossy().into_owned(),
+        author_email: author.email.to_str_lossy().into_owned(),
+        date,
+        message,
+    })
+}
+
+/// `git show <rev>` patch text: the commit's tree against its first parent
+/// (against the empty tree for a root commit). `only_path` restricts output to
+/// a single file (`git show <rev> -- <path>`). `None` if `rev` can't resolve.
+pub(crate) fn commit_diff_text(root: &Path, rev: &str, only_path: Option<&str>) -> Option<String> {
+    let repo = shared_repo(root)?.to_thread_local();
+    let id = repo.rev_parse_single(rev.as_bytes().as_bstr()).ok()?;
+    let commit = repo.find_commit(id).ok()?;
+    let new_tree = commit.tree().ok()?;
+    let parent_tree = commit
+        .parent_ids()
+        .next()
+        .and_then(|pid| repo.find_commit(pid.detach()).ok())
+        .and_then(|p| p.tree().ok());
+    Some(tree_diff_text(
+        &repo,
+        parent_tree.as_ref(),
+        Some(&new_tree),
+        only_path,
+    ))
+}
+
+/// `git diff <base>...<compare>` patch text: the merge-base of `base` and
+/// `compare` against `compare`. `None` if either side can't resolve.
+pub(crate) fn compare_diff_text(
+    root: &Path,
+    base: &str,
+    compare: &str,
+    only_path: Option<&str>,
+) -> Option<String> {
+    let repo = shared_repo(root)?.to_thread_local();
+    let base_id = repo.rev_parse_single(base.as_bytes().as_bstr()).ok()?;
+    let compare_id = repo.rev_parse_single(compare.as_bytes().as_bstr()).ok()?;
+    let compare_tree = repo.find_commit(compare_id).ok()?.tree().ok()?;
+    // `base...compare` diffs from the merge-base, matching `git diff A...B`.
+    let merge_base = repo
+        .merge_base(base_id.detach(), compare_id.detach())
+        .ok()?;
+    let base_tree = repo.find_commit(merge_base.detach()).ok()?.tree().ok()?;
+    Some(tree_diff_text(
+        &repo,
+        Some(&base_tree),
+        Some(&compare_tree),
+        only_path,
+    ))
+}
+
+/// Build git-style unified diff text for every change between two trees, in
+/// path order, optionally filtered to a single file.
+fn tree_diff_text(
+    repo: &Repository,
+    old_tree: Option<&gix::Tree<'_>>,
+    new_tree: Option<&gix::Tree<'_>>,
+    only_path: Option<&str>,
+) -> String {
+    let Ok(mut changes) = repo.diff_tree_to_tree(old_tree, new_tree, None) else {
+        return String::new();
+    };
+    // git emits changed files sorted by path; sort by the destination path.
+    changes.sort_by_key(change_sort_key);
+
+    let mut out = String::new();
+    for change in &changes {
+        if let Some(only) = only_path
+            && change_sort_key(change) != only
+        {
+            continue;
+        }
+        append_change(&mut out, repo, change);
+    }
+    out
+}
+
+/// The path a change is filed under (destination for adds/mods/renames, the
+/// removed path for deletions) — used for ordering and `-- <path>` filtering.
+fn change_sort_key(change: &gix::diff::tree_with_rewrites::Change) -> String {
+    use gix::diff::tree_with_rewrites::Change;
+    let loc = match change {
+        Change::Addition { location, .. }
+        | Change::Deletion { location, .. }
+        | Change::Modification { location, .. }
+        | Change::Rewrite { location, .. } => location,
+    };
+    loc.to_str_lossy().into_owned()
+}
+
+fn blob_bytes(repo: &Repository, id: gix::ObjectId) -> Vec<u8> {
+    repo.find_object(id)
+        .map(|o| o.detach().data)
+        .unwrap_or_default()
+}
+
+fn append_change(
+    out: &mut String,
+    repo: &Repository,
+    change: &gix::diff::tree_with_rewrites::Change,
+) {
+    use gix::diff::tree_with_rewrites::Change;
+    match change {
+        Change::Addition {
+            location,
+            entry_mode,
+            id,
+            ..
+        } => {
+            if !entry_mode.is_blob() {
+                return;
+            }
+            let path = location.to_str_lossy();
+            append_file_diff(
+                out,
+                &path,
+                &path,
+                &[],
+                &blob_bytes(repo, *id),
+                FileChangeKind::Added,
+            );
+        }
+        Change::Deletion {
+            location,
+            entry_mode,
+            id,
+            ..
+        } => {
+            if !entry_mode.is_blob() {
+                return;
+            }
+            let path = location.to_str_lossy();
+            append_file_diff(
+                out,
+                &path,
+                &path,
+                &blob_bytes(repo, *id),
+                &[],
+                FileChangeKind::Deleted,
+            );
+        }
+        Change::Modification {
+            location,
+            previous_id,
+            id,
+            entry_mode,
+            previous_entry_mode,
+            ..
+        } => {
+            if !entry_mode.is_blob() && !previous_entry_mode.is_blob() {
+                return;
+            }
+            let path = location.to_str_lossy();
+            append_file_diff(
+                out,
+                &path,
+                &path,
+                &blob_bytes(repo, *previous_id),
+                &blob_bytes(repo, *id),
+                FileChangeKind::Modified,
+            );
+        }
+        Change::Rewrite {
+            source_location,
+            source_id,
+            location,
+            id,
+            ..
+        } => {
+            let old_path = source_location.to_str_lossy();
+            let new_path = location.to_str_lossy();
+            append_file_diff(
+                out,
+                &old_path,
+                &new_path,
+                &blob_bytes(repo, *source_id),
+                &blob_bytes(repo, *id),
+                FileChangeKind::Renamed,
+            );
+        }
+    }
+}
+
+/// Whether a blob looks binary by git's heuristic: a NUL byte in the first 8000.
+fn looks_binary(bytes: &[u8]) -> bool {
+    bytes.iter().take(8000).any(|&b| b == 0)
+}
+
+/// Append one file's git-style unified diff (header + hunks) to `out`.
+fn append_file_diff(
+    out: &mut String,
+    old_path: &str,
+    new_path: &str,
+    old_bytes: &[u8],
+    new_bytes: &[u8],
+    kind: FileChangeKind,
+) {
+    use std::fmt::Write as _;
+
+    let _ = writeln!(out, "diff --git a/{old_path} b/{new_path}");
+    match kind {
+        FileChangeKind::Added => {
+            let _ = writeln!(out, "new file mode 100644");
+        }
+        FileChangeKind::Deleted => {
+            let _ = writeln!(out, "deleted file mode 100644");
+        }
+        FileChangeKind::Renamed => {
+            let _ = writeln!(out, "rename from {old_path}");
+            let _ = writeln!(out, "rename to {new_path}");
+        }
+        FileChangeKind::Modified => {}
+    }
+
+    if looks_binary(old_bytes) || looks_binary(new_bytes) {
+        let _ = writeln!(out, "Binary files a/{old_path} and b/{new_path} differ");
+        return;
+    }
+    if old_bytes == new_bytes {
+        // Pure rename / mode change with identical content — no hunks.
+        return;
+    }
+
+    let a_label = if matches!(kind, FileChangeKind::Added) {
+        "/dev/null".to_string()
+    } else {
+        format!("a/{old_path}")
+    };
+    let b_label = if matches!(kind, FileChangeKind::Deleted) {
+        "/dev/null".to_string()
+    } else {
+        format!("b/{new_path}")
+    };
+    let _ = writeln!(out, "--- {a_label}");
+    let _ = writeln!(out, "+++ {b_label}");
+
+    out.push_str(&unified_hunks(old_bytes, new_bytes));
+}
+
+/// Render just the `@@` hunks for a pair of blobs via imara's unified printer
+/// (3 lines of context, matching git's default).
+fn unified_hunks(old_bytes: &[u8], new_bytes: &[u8]) -> String {
+    let old = String::from_utf8_lossy(old_bytes);
+    let new = String::from_utf8_lossy(new_bytes);
+
+    let mut input = InternedInput {
+        before: Vec::new(),
+        after: Vec::new(),
+        interner: Interner::new(0),
+    };
+    input.update_before(old.split_inclusive('\n'));
+    input.update_after(new.split_inclusive('\n'));
+
+    // git defaults to the Myers algorithm; `postprocess_lines` applies the same
+    // slider / indent heuristic git enables by default (since 2.11), so hunk
+    // boundaries line up with `git diff`.
+    let mut diff = imara_diff::Diff::compute(imara_diff::Algorithm::Myers, &input);
+    diff.postprocess_lines(&input);
+
+    let printer = imara_diff::BasicLineDiffPrinter(&input.interner);
+    diff.unified_diff(&printer, imara_diff::UnifiedDiffConfig::default(), &input)
+        .to_string()
+}
+
 /// Raw bytes of a blob at a gix revspec such as `"HEAD:src/x.rs"`, `"master:x"`,
 /// or `":src/x.rs"` (the index). Mirrors `git show <ref>:<path>` — no smudge
 /// filter is applied, matching git's blob output. `None` if the path/ref can't
@@ -581,6 +891,134 @@ mod tests {
         expected.sort_by(|a, b| a.0.cmp(&b.0));
         let expected_branches: Vec<String> = expected.iter().map(|(_, s)| s.clone()).collect();
         assert_eq!(list.branches, expected_branches);
+    }
+
+    // ---- Stage 4 differential oracle: gix diff text vs `git show`/`git diff` ----
+
+    /// File-level facts that MUST match git exactly: the set of changed files,
+    /// each with its status, rename source, and binary flag. (Exact per-line
+    /// counts/attribution are NOT compared — imara's and git's Myers make
+    /// different but equally-valid choices among duplicate lines.)
+    fn file_facts(
+        files: &[crate::diff_render::DiffFile],
+    ) -> Vec<(String, Option<String>, String, bool)> {
+        let mut v: Vec<_> = files
+            .iter()
+            .map(|f| {
+                (
+                    f.path.clone(),
+                    f.old_path.clone(),
+                    f.status.as_str().to_string(),
+                    f.binary,
+                )
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// Assert the gix diff describes a valid transformation of the real blobs:
+    /// every added line exists in the new blob, every removed line in the old.
+    /// This catches wrong-blob / old↔new-swap bugs while staying invariant to
+    /// the exact edit script git chose.
+    fn assert_lines_belong(
+        files: &[crate::diff_render::DiffFile],
+        new_blob_of: impl Fn(&str) -> String,
+        old_blob_of: impl Fn(&str) -> String,
+        ctx: &str,
+    ) {
+        use crate::diff_render::LineKind;
+        for f in files {
+            if f.binary {
+                continue;
+            }
+            let new_blob = new_blob_of(&f.path);
+            let new_lines: std::collections::HashSet<&str> = new_blob.lines().collect();
+            let old_path = f.old_path.as_deref().unwrap_or(&f.path);
+            let old_blob = old_blob_of(old_path);
+            let old_lines: std::collections::HashSet<&str> = old_blob.lines().collect();
+            for h in &f.hunks {
+                for l in &h.lines {
+                    match l.kind {
+                        LineKind::Add => assert!(
+                            l.content.is_empty() || new_lines.contains(l.content.as_str()),
+                            "{ctx} {}: added line not in new blob: {:?}",
+                            f.path,
+                            l.content
+                        ),
+                        LineKind::Remove => assert!(
+                            l.content.is_empty() || old_lines.contains(l.content.as_str()),
+                            "{ctx} {}: removed line not in old blob: {:?}",
+                            f.path,
+                            l.content
+                        ),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    fn git_raw_stdout(args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo_root())
+            .output()
+            .expect("git");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    #[test]
+    fn gix_commit_diff_matches_git_show() {
+        let root = repo_root();
+        let hashes = git_raw_stdout(&["log", "-n8", "--format=%H"]);
+        for hash in hashes.lines() {
+            let gix_text = commit_diff_text(&root, hash, None)
+                .unwrap_or_else(|| panic!("gix commit_diff_text none for {hash}"));
+            let git_text = git_raw_stdout(&["show", "--format=", "--no-ext-diff", hash]);
+            let gix_files = crate::diff_render::parse_unified_diff(&gix_text);
+            let git_files = crate::diff_render::parse_unified_diff(&git_text);
+            assert_eq!(
+                file_facts(&gix_files),
+                file_facts(&git_files),
+                "commit {hash} file facts"
+            );
+            assert_lines_belong(
+                &gix_files,
+                |path| git_raw_stdout(&["show", &format!("{hash}:{path}")]),
+                |path| git_raw_stdout(&["show", &format!("{hash}^:{path}")]),
+                &format!("commit {hash}"),
+            );
+        }
+    }
+
+    #[test]
+    fn gix_compare_diff_matches_git() {
+        let root = repo_root();
+        let base = git_raw_stdout(&["rev-parse", "HEAD~5"]).trim().to_string();
+        let compare = git_raw_stdout(&["rev-parse", "HEAD"]).trim().to_string();
+        if base.is_empty() || compare.is_empty() {
+            return;
+        }
+        // `A...B` diffs from the merge-base; for this linear history that's `A`.
+        let mb = git_raw_stdout(&["merge-base", &base, &compare])
+            .trim()
+            .to_string();
+        let gix_text = compare_diff_text(&root, &base, &compare, None).expect("gix compare none");
+        let git_text = git_raw_stdout(&["diff", "--no-ext-diff", &format!("{base}...{compare}")]);
+        let gix_files = crate::diff_render::parse_unified_diff(&gix_text);
+        let git_files = crate::diff_render::parse_unified_diff(&git_text);
+        assert_eq!(
+            file_facts(&gix_files),
+            file_facts(&git_files),
+            "compare file facts"
+        );
+        assert_lines_belong(
+            &gix_files,
+            |path| git_raw_stdout(&["show", &format!("{compare}:{path}")]),
+            |path| git_raw_stdout(&["show", &format!("{mb}:{path}")]),
+            "compare",
+        );
     }
 
     #[test]
