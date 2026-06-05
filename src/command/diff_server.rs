@@ -3476,8 +3476,11 @@ async fn read_file_range_at_ref(
 ) -> Result<Vec<String>, String> {
     let content = match git_ref {
         Some(r) => {
+            // In-process gix blob read (no `git show` subprocess). Revspec
+            // `<ref>:<path>` resolves HEAD / a branch / `:` (the index).
             let spec = format!("{}:{}", r, rel_path);
-            git_output_in_repo(repo_root, &["show", &spec]).await?
+            crate::command::git_backend::blob_at_revspec(repo_root, &spec)
+                .ok_or_else(|| format!("path not found at ref: {spec}"))?
         }
         None => {
             let path = repo_root.join(rel_path);
@@ -4154,65 +4157,27 @@ pub(crate) async fn handle_compare_html_request(
 pub(crate) async fn handle_api_branches_request(
     State(state): State<Arc<DiffServerState>>,
 ) -> Response {
-    let repo_root = &state.project_root;
-    // The ref listing and the `origin/HEAD` probe are independent — the branch
-    // list is only consulted *after* the probe returns — so run them concurrently.
-    let (raw_res, origin_head_res) = tokio::join!(
-        git_output_in_repo(
-            repo_root,
-            &[
-                "for-each-ref",
-                "--format=%(refname)|%(refname:short)|%(HEAD)",
-                "refs/heads/",
-                "refs/remotes/",
-            ],
-        ),
-        git_output_in_repo(
-            repo_root,
-            &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-        ),
-    );
-    let raw = match raw_res {
-        Ok(output) => output,
-        Err(error) => return bad_request(error),
+    // Listing refs + reading `origin/HEAD` is in-process gix work (no subprocess);
+    // it still touches the ref store on disk, so run it on the blocking pool.
+    let repo_root = state.project_root.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let list = crate::command::git_backend::list_branches(&repo_root)?;
+        let origin_head = crate::command::git_backend::origin_head_short(&repo_root);
+        Some((list, origin_head))
+    })
+    .await;
+
+    let Ok(Some((list, origin_head))) = result else {
+        return bad_request("not a git repository");
     };
 
-    let mut branches: Vec<String> = Vec::new();
-    let mut remotes: Vec<String> = Vec::new();
-    let mut current: Option<String> = None;
-    for line in raw.lines() {
-        let line = line.trim_end_matches('\r');
-        if line.is_empty() {
-            continue;
-        }
-        let mut it = line.splitn(3, '|');
-        let full = it.next().unwrap_or("").trim();
-        let short = it.next().unwrap_or("").trim();
-        let head = it.next().unwrap_or("").trim();
-        if short.is_empty() {
-            continue;
-        }
-        // Skip `refs/remotes/origin/HEAD` and friends — they shadow a real
-        // remote branch and confuse the user when listed alongside it.
-        if short.ends_with("/HEAD") {
-            continue;
-        }
-        if head == "*" {
-            current = Some(short.to_string());
-        }
-        if full.starts_with("refs/remotes/") {
-            remotes.push(short.to_string());
-        }
-        branches.push(short.to_string());
-    }
-
-    let default = resolve_default_from(origin_head_res.ok(), &branches);
+    let default = resolve_default_from(origin_head, &list.branches);
 
     ok_json(serde_json::json!({
-        "current": current,
+        "current": list.current,
         "default": default,
-        "branches": branches,
-        "remotes": remotes,
+        "branches": list.branches,
+        "remotes": list.remotes,
     }))
 }
 

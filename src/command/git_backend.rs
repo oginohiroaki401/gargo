@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use gix::bstr::ByteSlice;
 use gix::diff::Rewrites;
@@ -25,9 +26,9 @@ const MAX_DIFF_BYTES: usize = MAX_DIFF_LINES * 128;
 pub fn status_map(project_root: &Path) -> HashMap<String, GitFileStatus> {
     let mut map = HashMap::new();
 
-    let repo = match open_repo(project_root) {
-        Ok(repo) => repo.to_thread_local(),
-        Err(_) => return map,
+    let repo = match shared_repo(project_root) {
+        Some(repo) => repo.to_thread_local(),
+        None => return map,
     };
 
     let work_dir = match repo.workdir() {
@@ -169,7 +170,7 @@ fn diff_base(path: &Path) -> Option<String> {
     let file = gix::path::realpath(path).ok()?;
     let repo_dir = file.parent()?;
 
-    let repo = open_repo(repo_dir).ok()?.to_thread_local();
+    let repo = shared_repo(repo_dir)?.to_thread_local();
     let head = repo.head_commit().ok()?;
     let oid = find_file_in_commit(&repo, &head, &file).ok()?;
 
@@ -191,6 +192,192 @@ fn diff_base(path: &Path) -> Option<String> {
     };
 
     Some(String::from_utf8_lossy(&bytes).to_string())
+}
+
+/// Process-global cache of opened repositories, keyed by the path handed to
+/// `shared_repo`. Opening (discovering) a repo is comparatively expensive and
+/// the server only ever touches a fixed set of roots, so we open once and reuse
+/// the `Arc<ThreadSafeRepository>` (which is `Send + Sync`). gix reads refs and
+/// objects from disk on demand, so a cached handle still observes new commits
+/// and branches; only the config snapshot is captured at open time (fine — the
+/// remote URL etc. don't change mid-session).
+static REPO_CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<ThreadSafeRepository>>>> = OnceLock::new();
+
+/// Open (or reuse) the repository discovered upward from `root`, returning a
+/// shared handle. Returns `None` when `root` is not inside a git repo, so all
+/// callers degrade exactly as the previous subprocess paths did on git failure.
+pub(crate) fn shared_repo(root: &Path) -> Option<Arc<ThreadSafeRepository>> {
+    let cache = REPO_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(hit) = cache.lock().unwrap().get(root).cloned() {
+        return Some(hit);
+    }
+    let repo = Arc::new(open_repo(root).ok()?);
+    cache
+        .lock()
+        .unwrap()
+        .insert(root.to_path_buf(), repo.clone());
+    Some(repo)
+}
+
+// ---------------------------------------------------------------------------
+// Read-only git facts via in-process gix (no subprocess spawn).
+// ---------------------------------------------------------------------------
+
+/// `git config --get remote.origin.url`.
+pub(crate) fn remote_origin_url(root: &Path) -> Option<String> {
+    let repo = shared_repo(root)?.to_thread_local();
+    let snapshot = repo.config_snapshot();
+    let value = snapshot.string("remote.origin.url")?;
+    Some(value.to_str_lossy().into_owned())
+}
+
+/// Short name that `refs/remotes/origin/HEAD` points to (e.g. `"origin/master"`),
+/// matching `git symbolic-ref --short refs/remotes/origin/HEAD`. `None` when the
+/// symbolic ref is absent or not symbolic.
+pub(crate) fn origin_head_short(root: &Path) -> Option<String> {
+    let repo = shared_repo(root)?.to_thread_local();
+    let reference = repo.find_reference("refs/remotes/origin/HEAD").ok()?;
+    match reference.target() {
+        gix::refs::TargetRef::Symbolic(name) => Some(name.shorten().to_str_lossy().into_owned()),
+        gix::refs::TargetRef::Object(_) => None,
+    }
+}
+
+/// Whether `refs/heads/<name>` exists (`git rev-parse --verify --quiet refs/heads/<name>`).
+pub(crate) fn local_branch_exists(root: &Path, name: &str) -> bool {
+    let Some(repo) = shared_repo(root) else {
+        return false;
+    };
+    let repo = repo.to_thread_local();
+    repo.find_reference(format!("refs/heads/{name}").as_str())
+        .is_ok()
+}
+
+/// Current branch short name (`git rev-parse --abbrev-ref HEAD`), or `None` when
+/// HEAD is detached or unborn.
+pub(crate) fn current_branch(root: &Path) -> Option<String> {
+    let repo = shared_repo(root)?.to_thread_local();
+    let name = repo.head_name().ok()??;
+    Some(name.shorten().to_str_lossy().into_owned())
+}
+
+/// Short HEAD hash (`git rev-parse --short HEAD`) for the detached-HEAD fallback.
+pub(crate) fn head_short_hash(root: &Path) -> Option<String> {
+    let repo = shared_repo(root)?.to_thread_local();
+    let id = repo.head_id().ok()?;
+    Some(id.shorten_or_id().to_string())
+}
+
+/// Local + remote branches with the layout `/api/branches` needs. `branches`
+/// holds every short name (heads then remotes) in `for-each-ref` lexical order
+/// by full refname, `remotes` the remote subset, `current` the checked-out
+/// branch. `*/HEAD` symbolic refs are skipped (they shadow a real branch).
+pub(crate) struct BranchList {
+    pub branches: Vec<String>,
+    pub remotes: Vec<String>,
+    pub current: Option<String>,
+}
+
+pub(crate) fn list_branches(root: &Path) -> Option<BranchList> {
+    let repo = shared_repo(root)?.to_thread_local();
+    let current = repo
+        .head_name()
+        .ok()
+        .flatten()
+        .map(|n| n.shorten().to_str_lossy().into_owned());
+
+    // (full refname, short name, is_remote) — sorted by full name to reproduce
+    // `git for-each-ref refs/heads/ refs/remotes/` ordering.
+    let mut entries: Vec<(String, String, bool)> = Vec::new();
+    for reference in repo.references().ok()?.all().ok()?.flatten() {
+        let full = reference.name().as_bstr().to_str_lossy().into_owned();
+        let is_head = full.starts_with("refs/heads/");
+        let is_remote = full.starts_with("refs/remotes/");
+        if !is_head && !is_remote {
+            continue;
+        }
+        let short = reference.name().shorten().to_str_lossy().into_owned();
+        if short.ends_with("/HEAD") {
+            continue;
+        }
+        entries.push((full, short, is_remote));
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut branches = Vec::new();
+    let mut remotes = Vec::new();
+    for (_full, short, is_remote) in entries {
+        if is_remote {
+            remotes.push(short.clone());
+        }
+        branches.push(short);
+    }
+    Some(BranchList {
+        branches,
+        remotes,
+        current,
+    })
+}
+
+/// One row of the commits list (`git log --pretty`).
+pub(crate) struct CommitInfo {
+    pub hash: String,      // %h (min-unique abbreviation)
+    pub full_hash: String, // %H
+    pub author: String,    // %an
+    pub date: String,      // %ad with --date=short (YYYY-MM-DD)
+    pub message: String,   // %s (subject)
+}
+
+/// `git log --skip=<skip> -n <count> --date=short` from HEAD, newest commit
+/// first. Returns `None` when HEAD can't be resolved (e.g. an unborn branch),
+/// matching the previous subprocess path which errored there.
+pub(crate) fn commit_log(root: &Path, skip: usize, count: usize) -> Option<Vec<CommitInfo>> {
+    use gix::revision::walk::Sorting;
+    use gix::traverse::commit::simple::CommitTimeOrder;
+
+    let repo = shared_repo(root)?.to_thread_local();
+    let head = repo.head_id().ok()?;
+    let walk = repo
+        .rev_walk([head.detach()])
+        .sorting(Sorting::ByCommitTime(CommitTimeOrder::NewestFirst))
+        .all()
+        .ok()?;
+
+    let mut out = Vec::with_capacity(count);
+    for info in walk.skip(skip).take(count) {
+        let Ok(info) = info else { break };
+        let Ok(commit) = repo.find_commit(info.id) else {
+            break;
+        };
+        let Ok(author) = commit.author() else { break };
+        let date = match author.time() {
+            Ok(time) => time.format_or_unix(gix::date::time::format::SHORT),
+            Err(_) => String::new(),
+        };
+        let message = commit
+            .message()
+            .map(|m| m.summary().to_str_lossy().into_owned())
+            .unwrap_or_default();
+        out.push(CommitInfo {
+            hash: info.id().shorten_or_id().to_string(),
+            full_hash: info.id.to_string(),
+            author: author.name.to_str_lossy().into_owned(),
+            date,
+            message,
+        });
+    }
+    Some(out)
+}
+
+/// Raw bytes of a blob at a gix revspec such as `"HEAD:src/x.rs"`, `"master:x"`,
+/// or `":src/x.rs"` (the index). Mirrors `git show <ref>:<path>` — no smudge
+/// filter is applied, matching git's blob output. `None` if the path/ref can't
+/// be resolved.
+pub(crate) fn blob_at_revspec(root: &Path, spec: &str) -> Option<String> {
+    let repo = shared_repo(root)?.to_thread_local();
+    let id = repo.rev_parse_single(spec.as_bytes().as_bstr()).ok()?;
+    let object = repo.find_object(id).ok()?;
+    Some(String::from_utf8_lossy(&object.data).into_owned())
 }
 
 fn open_repo(path: &Path) -> Result<ThreadSafeRepository, Box<gix::discover::Error>> {
@@ -317,5 +504,136 @@ mod tests {
     fn diff_limits_enforced() {
         let huge = "x".repeat(MAX_DIFF_BYTES + 1);
         assert!(!within_diff_limits(&huge, 1));
+    }
+
+    // ---- Stage 1 differential parity: gix vs subprocess git on THIS repo ----
+
+    fn repo_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    }
+
+    /// Run `git <args>` in the repo, returning trimmed stdout (None on failure).
+    fn git(args: &[&str]) -> Option<String> {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo_root())
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
+    #[test]
+    fn gix_remote_url_matches_git() {
+        let root = repo_root();
+        assert_eq!(
+            remote_origin_url(&root),
+            git(&["config", "--get", "remote.origin.url"])
+        );
+    }
+
+    #[test]
+    fn gix_current_branch_matches_git() {
+        let root = repo_root();
+        let git_branch = git(&["rev-parse", "--abbrev-ref", "HEAD"]);
+        match git_branch.as_deref() {
+            // Detached HEAD: git prints "HEAD"; gix returns None.
+            Some("HEAD") | None => assert_eq!(current_branch(&root), None),
+            Some(name) => assert_eq!(current_branch(&root).as_deref(), Some(name)),
+        }
+    }
+
+    #[test]
+    fn gix_origin_head_matches_git() {
+        let root = repo_root();
+        assert_eq!(
+            origin_head_short(&root),
+            git(&["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+        );
+    }
+
+    #[test]
+    fn gix_branches_match_git_for_each_ref() {
+        let root = repo_root();
+        let Some(list) = list_branches(&root) else {
+            return; // not a git repo in this environment
+        };
+        // Reproduce the endpoint's expectation from `for-each-ref`.
+        let raw = git(&[
+            "for-each-ref",
+            "--format=%(refname)|%(refname:short)|%(HEAD)",
+            "refs/heads/",
+            "refs/remotes/",
+        ])
+        .unwrap_or_default();
+        let mut expected: Vec<(String, String)> = Vec::new();
+        for line in raw.lines() {
+            let mut it = line.splitn(3, '|');
+            let full = it.next().unwrap_or("").trim().to_string();
+            let short = it.next().unwrap_or("").trim().to_string();
+            if short.is_empty() || short.ends_with("/HEAD") {
+                continue;
+            }
+            expected.push((full, short));
+        }
+        expected.sort_by(|a, b| a.0.cmp(&b.0));
+        let expected_branches: Vec<String> = expected.iter().map(|(_, s)| s.clone()).collect();
+        assert_eq!(list.branches, expected_branches);
+    }
+
+    #[test]
+    fn gix_blob_at_revspec_matches_git_show() {
+        let root = repo_root();
+        for path in ["Cargo.toml", "src/command/git_backend.rs", "README.md"] {
+            let spec = format!("HEAD:{path}");
+            let got = blob_at_revspec(&root, &spec);
+            // Raw `git show` stdout (untrimmed), matching the non-trimming
+            // diff_server::git_output_in_repo the old code used here.
+            let expected = std::process::Command::new("git")
+                .args(["show", &spec])
+                .current_dir(&root)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+            assert_eq!(got, expected, "blob {spec}");
+        }
+    }
+
+    #[test]
+    fn gix_commit_log_matches_git() {
+        let root = repo_root();
+        let Some(rows) = commit_log(&root, 0, 20) else {
+            return; // not a git repo / unborn HEAD in this environment
+        };
+        let raw = git(&[
+            "log",
+            "-n20",
+            "--date=short",
+            "--pretty=format:%H%x00%an%x00%ad%x00%s",
+        ])
+        .unwrap_or_default();
+        let expected: Vec<Vec<&str>> = raw
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| l.splitn(4, '\0').collect())
+            .collect();
+        assert_eq!(rows.len(), expected.len(), "commit count");
+        for (got, exp) in rows.iter().zip(expected.iter()) {
+            assert_eq!(got.full_hash, exp[0], "full hash");
+            assert_eq!(got.author, exp[1], "author");
+            assert_eq!(got.date, exp[2], "date");
+            assert_eq!(got.message, exp[3], "subject");
+            // gix `%h` and git `%h` are both min-unique abbreviations of the
+            // same commit; assert the short hash is a genuine prefix.
+            assert!(
+                got.full_hash.starts_with(&got.hash),
+                "short hash {} not a prefix of {}",
+                got.hash,
+                got.full_hash
+            );
+        }
     }
 }

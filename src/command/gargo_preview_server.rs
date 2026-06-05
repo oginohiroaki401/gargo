@@ -771,14 +771,14 @@ pub(crate) async fn resolve_page_context(
 /// Current branch name; falls back to the short commit hash when detached,
 /// or `main` when git is unavailable.
 async fn detect_current_branch(repo_root: &Path) -> String {
-    match git_output_in_repo(repo_root, &["rev-parse", "--abbrev-ref", "HEAD"]).await {
-        Ok(branch) if branch != "HEAD" && !branch.is_empty() => branch,
-        _ => git_output_in_repo(repo_root, &["rev-parse", "--short", "HEAD"])
-            .await
-            .ok()
-            .filter(|hash| !hash.is_empty())
-            .unwrap_or_else(|| "main".to_string()),
+    if let Some(branch) = crate::command::git_backend::current_branch(repo_root)
+        && !branch.is_empty()
+    {
+        return branch;
     }
+    crate::command::git_backend::head_short_hash(repo_root)
+        .filter(|hash| !hash.is_empty())
+        .unwrap_or_else(|| "main".to_string())
 }
 
 /// `/{owner}/{repo}` — the repository home.
@@ -2038,9 +2038,7 @@ fn render_mermaid_blocks(html: &str) -> String {
 }
 
 pub(crate) async fn github_repo_url(repo_root: &Path) -> Option<String> {
-    let remote = git_output_in_repo(repo_root, &["config", "--get", "remote.origin.url"])
-        .await
-        .ok()?;
+    let remote = crate::command::git_backend::remote_origin_url(repo_root)?;
     remote_to_github_url(&remote)
 }
 
@@ -2050,30 +2048,14 @@ pub(crate) async fn github_repo_url(repo_root: &Path) -> Option<String> {
 /// the remote head nor a conventional branch exists — callers then hide the
 /// "open on default branch" affordance.
 pub(crate) async fn default_branch_name(repo_root: &Path) -> Option<String> {
-    if let Ok(out) = git_output_in_repo(
-        repo_root,
-        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-    )
-    .await
-        && let Some(rest) = out.trim().strip_prefix("origin/")
+    if let Some(short) = crate::command::git_backend::origin_head_short(repo_root)
+        && let Some(rest) = short.strip_prefix("origin/")
         && !rest.is_empty()
     {
         return Some(rest.to_string());
     }
     for candidate in ["main", "master"] {
-        if git_output_in_repo(
-            repo_root,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/{candidate}"),
-            ],
-        )
-        .await
-        .map(|s| !s.is_empty())
-        .unwrap_or(false)
-        {
+        if crate::command::git_backend::local_branch_exists(repo_root, candidate) {
             return Some(candidate.to_string());
         }
     }

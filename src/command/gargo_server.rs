@@ -861,37 +861,30 @@ async fn handle_api_commits(
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(50)
         .min(200);
-    let format = "%h%x00%H%x00%an%x00%ad%x00%s";
-    let raw = match diff_server::git_output_in_repo(
-        &state.repo_root,
-        &[
-            "log",
-            &format!("--skip={skip}"),
-            &format!("-n{count_plus}", count_plus = count + 1),
-            "--date=short",
-            &format!("--pretty=format:{format}"),
-        ],
-    )
-    .await
-    {
-        Ok(raw) => raw,
-        Err(err) => return diff_server::bad_request(err),
+    // In-process gix commit walk (no `git log` subprocess). Over-fetch one row
+    // to compute `has_more`, exactly as the subprocess path did.
+    let repo_root = state.repo_root.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        crate::command::git_backend::commit_log(&repo_root, skip, count + 1)
+    })
+    .await;
+    let Ok(Some(mut rows)) = result else {
+        return diff_server::bad_request("not a git repository");
     };
-    let mut commits = Vec::new();
-    for line in raw.lines().filter(|line| !line.is_empty()) {
-        let parts: Vec<_> = line.splitn(5, '\0').collect();
-        if parts.len() == 5 {
-            commits.push(serde_json::json!({
-                "hash": parts[0],
-                "full_hash": parts[1],
-                "author": parts[2],
-                "date": parts[3],
-                "message": parts[4],
-            }));
-        }
-    }
-    let has_more = commits.len() > count;
-    commits.truncate(count);
+    let has_more = rows.len() > count;
+    rows.truncate(count);
+    let commits: Vec<_> = rows
+        .into_iter()
+        .map(|c| {
+            serde_json::json!({
+                "hash": c.hash,
+                "full_hash": c.full_hash,
+                "author": c.author,
+                "date": c.date,
+                "message": c.message,
+            })
+        })
+        .collect();
     diff_server::ok_json(serde_json::json!({ "commits": commits, "has_more": has_more }))
 }
 
