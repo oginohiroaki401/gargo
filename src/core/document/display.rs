@@ -34,7 +34,16 @@ impl Document {
         }
     }
 
+    /// On wasm there is no local git or filesystem access, so the status-bar
+    /// path falls back to the plain path. The browser editor receives repo
+    /// context from the server, not from this code path.
+    #[cfg(target_arch = "wasm32")]
+    fn get_git_repo_info(_file_path: &std::path::Path) -> Option<(String, String)> {
+        None
+    }
+
     /// Returns (repo_name, relative_path) if the file is in a git repo
+    #[cfg(not(target_arch = "wasm32"))]
     fn get_git_repo_info(file_path: &std::path::Path) -> Option<(String, String)> {
         let file_dir = file_path.parent()?;
         let repo_root = crate::command::git_backend::repo_root(file_dir).or_else(|| {
@@ -71,6 +80,9 @@ impl Document {
     ///   git@github.com:user/repo.git -> repo
     ///   https://github.com/user/repo.git -> repo
     ///   https://github.com/user/repo -> repo
+    // Pure string logic with no native deps; on wasm `get_git_repo_info` is a
+    // stub so this is unused there, but native tests exercise it directly.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(super) fn extract_repo_name_from_remote(remote: &str) -> Option<String> {
         let remote = remote.trim();
 

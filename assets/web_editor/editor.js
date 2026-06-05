@@ -1951,11 +1951,25 @@
       const GSEARCH_MIN = 3; // matches the server-side trigram minimum
       const GSEARCH_MAX = 500; // server caps per file, so this spans many files
 
+      // Focus + select the project-search query. Done now and again on the next
+      // frame: the immediate call covers the common path, while the deferred one
+      // wins when the panel was only just unhidden or another handler grabbed
+      // focus in the same tick (e.g. the command palette's close → els.ime.focus()
+      // runs right before this when launched from "Search in Project").
+      function focusGsearchInput() {
+        els.gsearchInput.focus();
+        els.gsearchInput.select();
+        requestAnimationFrame(() => {
+          if (!gsearchOpen) return;
+          els.gsearchInput.focus();
+          els.gsearchInput.select();
+        });
+      }
+
       function openGlobalSearch() {
         // Already open → just re-focus and select the query (Cmd+Shift+F again).
         if (gsearchOpen) {
-          els.gsearchInput.focus();
-          els.gsearchInput.select();
+          focusGsearchInput();
           return;
         }
         gsearchOpen = true;
@@ -1964,8 +1978,7 @@
         const seed = editor ? editor.selection_text() : "";
         if (seed && !seed.includes("\n")) els.gsearchInput.value = seed;
         runGlobalSearch(els.gsearchInput.value);
-        els.gsearchInput.focus();
-        els.gsearchInput.select();
+        focusGsearchInput();
       }
 
       function closeGlobalSearch() {
@@ -3243,8 +3256,14 @@
         if (gitGutterTimer) { clearTimeout(gitGutterTimer); gitGutterTimer = null; }
 
         // A find/preview tied to the previous buffer is meaningless now: drop the
-        // find overlay and reconcile the preview pane against the new file.
+        // find overlay and reconcile the preview pane against the new file. The
+        // project-search pane is a full-area overlay (position:absolute; inset:0),
+        // so leaving it open after jumping to a result would both hide the file we
+        // just opened and cover the Cmd+F find widget; close it on every in-tab
+        // navigation. Opening a result in a new window goes through window.open()
+        // and never reaches loadFile, so that tab's pane correctly stays open.
         if (findOpen) closeFind();
+        if (gsearchOpen) closeGlobalSearch();
         syncPreview();
 
         els.ime.focus();
