@@ -437,9 +437,6 @@ async function renderCodeSurface(container, options) {
     input.highlightTimer = setTimeout(() => updateHighlightLayer(layer, options.path, input.value), 140);
     scheduleGitGutter(options.path, input.value);
   });
-  input.addEventListener("scroll", () => {
-    layer.style.transform = `translate(${-input.scrollLeft}px, ${-input.scrollTop}px)`;
-  });
   input.addEventListener("mousedown", event => {
     if (state.editorMode === "readonly") {
       event.preventDefault();
@@ -479,10 +476,26 @@ function leaveEditorInsertMode() {
   setFocus("app", 0);
 }
 
+// Accumulating smooth scroll: repeated key presses extend a single target and
+// ease toward it on rAF, instead of each press starting a fresh `behavior:
+// "smooth"` animation from a mid-flight position (the source of the "rattle").
+function smoothScrollBy(el, delta) {
+  if (!el) return;
+  if (!el._scrollRAF) el._scrollTarget = el.scrollTop;
+  const max = el.scrollHeight - el.clientHeight;
+  el._scrollTarget = Math.max(0, Math.min((el._scrollTarget ?? el.scrollTop) + delta, max));
+  if (el._scrollRAF) return;
+  const step = () => {
+    const diff = el._scrollTarget - el.scrollTop;
+    if (Math.abs(diff) < 1) { el.scrollTop = el._scrollTarget; el._scrollRAF = null; return; }
+    el.scrollTop += diff * 0.28;
+    el._scrollRAF = requestAnimationFrame(step);
+  };
+  el._scrollRAF = requestAnimationFrame(step);
+}
+
 function scrollExplorer(direction) {
-  const surface = app.querySelector("#explorer-surface .code-surface")
-    || app.querySelector("#explorer-surface");
-  surface?.scrollBy({ top: direction * 40, behavior: "smooth" });
+  smoothScrollBy(editorScroller(), direction * 80);
 }
 
 function editorScroller() {
@@ -552,6 +565,14 @@ function numberedPlainText(content) {
 }
 
 async function updateHighlightLayer(layer, path, content) {
+  // Very large files: skip the server round-trip + per-token markup and render
+  // plain numbered text, so editing stays responsive (master virtualizes; this
+  // is the lightweight equivalent for the textarea surface).
+  if (content.length > 200000) {
+    layer.innerHTML = numberedPlainText(content);
+    applyGitGutter(layer);
+    return;
+  }
   try {
     layer.innerHTML = await highlightedTextHtml(path, content);
   } catch (_) {
@@ -680,10 +701,7 @@ function previewScroller() {
 
 function scrollPreview(direction, amount = 0.7) {
   const preview = previewScroller();
-  preview?.scrollBy({
-    top: direction * preview.clientHeight * amount,
-    behavior: "smooth",
-  });
+  if (preview) smoothScrollBy(preview, direction * preview.clientHeight * amount);
 }
 
 // True when the focused pane is the rightmost (preview) pane of a diff view,

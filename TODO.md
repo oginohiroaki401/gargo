@@ -28,11 +28,13 @@
   - copy relative path(from repo root)
   - copy absolute path
   - copy whole content
-- [ ] editor edit is slower than master so want more speed. check master's editor.js impl
+- [x] editor edit is slower than master so want more speed. check master's editor.js impl
 - [x] cmd d select word, undo, redo... are missing. check master's editor.js impl and add what it should be
 - [x] editor should have git gutter(only in code view or editor view)
 - [x] fix tab name to have ${reponame}/${opened file or open tab} or something like more informative, not `gargo`
-- [ ] scroll rattle so want it to be more smooth
+- [x] scroll rattle so want it to be more smooth
+- [ ] make status view real time
+- [ ] make history real time
 
 ## memo1
 - have app to have two focus in explorer tab. app(with editor READONLY) or editor(writable)
