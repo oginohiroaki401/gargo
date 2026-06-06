@@ -9,6 +9,8 @@ const popup = document.getElementById("popup");
 const popupPreview = document.getElementById("popup-preview");
 const popupHint = document.getElementById("popup-hint");
 const toast = document.getElementById("toast");
+const helpBackdrop = document.getElementById("help-backdrop");
+const helpBody = document.getElementById("help-body");
 
 const COMPONENTS = ["explorer", "history", "compare", "status"];
 const state = {
@@ -42,7 +44,58 @@ const state = {
   treeRoot: null,
   treeExpanded: new Set(),
   treePreviewToken: 0,
+  help: false,
 };
+
+const HELP_SECTIONS = [
+  {
+    title: "Global", keys: [
+      ["g e / g h / g c / g s", "Explorer / History / Compare / Status"],
+      ["⌘P / ⌘⇧P", "File picker / Command picker"],
+      ["⌘@", "Symbol picker"],
+      ["⌘⇧F", "Global search"],
+      ["⌘S", "Save current file"],
+      ["r", "Refresh component"],
+      ["?", "Toggle this help"],
+    ],
+  },
+  {
+    title: "Explorer / Editor", keys: [
+      ["t", "Open file tree"],
+      ["i / Enter", "Edit (insert) mode"],
+      ["Esc", "Back to app focus"],
+      ["j / k", "Scroll"],
+      ["g g", "Jump to head of file"],
+      ["G", "Jump to tail of file"],
+    ],
+  },
+  {
+    title: "Diff views", keys: [
+      ["j / k", "Move selection · scroll preview when focused"],
+      ["l / Tab", "Focus next pane"],
+      ["h / Esc", "Focus previous pane / component"],
+      ["Ctrl-d / Ctrl-u", "Scroll preview"],
+      ["o", "Open selected file in editor"],
+      ["v", "Toggle viewed"],
+    ],
+  },
+  {
+    title: "History / Compare", keys: [
+      ["J / K", "History: prev/next changed file · Compare: scroll preview"],
+      ["b / c", "Compare: focus base / compare ref"],
+    ],
+  },
+  {
+    title: "File tree", keys: [
+      ["j / k", "Move"],
+      ["h / l", "Collapse / expand"],
+      ["Enter", "Open"],
+      ["⌥Enter / ⌘Enter", "Open in new tab"],
+      ["/", "Filter"],
+      ["J / K", "Scroll preview"],
+    ],
+  },
+];
 
 const COMMANDS = [
   { label: "Switch to Explorer", hint: "g e", run: () => switchComponent("explorer") },
@@ -52,6 +105,7 @@ const COMMANDS = [
   { label: "Open file tree", hint: "t", run: () => openTreePicker() },
   { label: "Save current file", hint: "Cmd+S", run: () => saveCurrentFile() },
   { label: "Refresh current component", hint: "r", run: () => refreshComponent() },
+  { label: "Show keybindings", hint: "?", run: () => toggleHelp() },
 ];
 
 function escapeHtml(value) {
@@ -152,7 +206,7 @@ async function ensureFiles() {
 
 async function renderExplorer() {
   app.innerHTML = `<section class="component">
-    ${componentBar("Explorer", `<span><span class="key">app:t</span> tree · <span class="key">⌘P</span> files · <span class="key">⌘⇧P</span> commands · <span class="key">⌘@</span> symbols</span>`)}
+    ${componentBar("Explorer", `<span><span class="key">app:t</span> tree · <span class="key">⌘P</span> files · <span class="key">⌘⇧P</span> commands · <span class="key">⌘@</span> symbols · <span class="key">⌘⇧F</span> search · <span class="key">?</span> help</span>`)}
     <div id="explorer-surface" class="pane focused" tabindex="-1" data-pane="0" data-name="editor"></div>
   </section>`;
   if (!state.currentFile) {
@@ -700,6 +754,23 @@ function fuzzyScore(text, query) {
   return score - text.length * .001;
 }
 
+function toggleHelp() {
+  if (state.help) { closeHelp(); return; }
+  helpBody.innerHTML = HELP_SECTIONS.map(section =>
+    `<div class="help-group"><h3>${escapeHtml(section.title)}</h3><dl>${section.keys.map(
+      ([key, desc]) => `<dt>${escapeHtml(key)}</dt><dd>${escapeHtml(desc)}</dd>`
+    ).join("")}</dl></div>`).join("");
+  state.help = true;
+  helpBackdrop.hidden = false;
+  document.getElementById("help").focus({ preventScroll: true });
+}
+
+function closeHelp() {
+  state.help = false;
+  helpBackdrop.hidden = true;
+  setFocus(state.focusLevel, state.pane);
+}
+
 function showPopup(kind, title, items, placeholder = "") {
   state.popup = kind;
   state.popupItems = items;
@@ -986,6 +1057,13 @@ header.addEventListener("click", event => {
 
 window.addEventListener("keydown", async event => {
   const isText = event.target.matches("textarea, input");
+  if (state.help) {
+    if (event.key === "Escape" || event.key === "?") {
+      event.preventDefault();
+      closeHelp();
+    }
+    return;
+  }
   if (state.popup) return;
 
   // Preserve native browser focus-location and reload shortcuts.
@@ -1025,6 +1103,12 @@ window.addEventListener("keydown", async event => {
     return;
   }
   if (isText) return;
+
+  if (event.key === "?") {
+    event.preventDefault();
+    toggleHelp();
+    return;
+  }
 
   if (state.gPending) {
     state.gPending = false;
