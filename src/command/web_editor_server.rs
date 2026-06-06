@@ -26,12 +26,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::command::gargo_server::GargoServerState;
 
-/// The browser editor: an emacs/VSCode-style always-insert editor whose modal
-/// core runs in-tab as wasm. The page template carries `{{APP_CSS}}` and
-/// `{{APP_RAIL}}` slots so it shows the same top nav as the rest of the server,
-/// plus `{{EDITOR_CSS}}`/`{{EDITOR_JS}}` slots filled from the sibling files
-/// below (kept separate from the HTML for maintainability; still embedded so the
-/// page is served as one self-contained document with no extra requests).
+/// The browser application defined by `MEMO.md`. Its Explorer editor and the
+/// read-only previews used by History, Compare, and Status share one client-side
+/// code-surface implementation. Assets stay embedded so `gargo` remains a
+/// self-contained binary.
 const EDITOR_HTML: &str = include_str!("../../assets/web_editor/editor.html");
 const EDITOR_CSS: &str = include_str!("../../assets/web_editor/editor.css");
 const EDITOR_JS: &str = include_str!("../../assets/web_editor/editor.js");
@@ -48,36 +46,15 @@ const EDITOR_JS: &str = include_str!("../../assets/web_editor/editor.js");
 const WASM_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/gargo_wasm.js"));
 const WASM_BG: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/gargo_wasm_bg.wasm"));
 
-pub(crate) async fn handle_editor_page(State(state): State<Arc<GargoServerState>>) -> Html<String> {
-    let rail = crate::command::app_shell::app_rail_html(&state.url_ctx, None, "editor");
-    let css = format!(
-        "<style>\n{}</style>",
-        crate::command::server_shared::SHARED_CSS
-    );
-    // Syntax + chrome colors come from `[theme.editor]` in the user's config,
-    // mirroring the terminal editor's `[theme]`. Defaults to a light palette.
+pub(crate) async fn handle_editor_page() -> Html<String> {
     let config = crate::config::Config::load();
     let theme_css = crate::command::web_editor_theme::editor_theme_css(&config.theme);
-    // Default soft-wrap state (`[theme.editor] wrap`); the client persists a
-    // per-tab override in localStorage on top of this.
-    let wrap_default = if config.theme.editor.wrap {
-        "true"
-    } else {
-        "false"
-    };
-    // The repo root, JSON-encoded, so the client can build absolute paths for
-    // "Copy Path" in the sidebar context menu. `to_string` yields a quoted,
-    // escaped JS string literal we drop straight into the inline script.
-    let repo_root = serde_json::to_string(&state.repo_root.to_string_lossy())
-        .unwrap_or_else(|_| "\"\"".to_string());
+    let diff_css = crate::diff_render::render_diff_styles();
     let page = EDITOR_HTML
         .replace("{{EDITOR_CSS}}", EDITOR_CSS)
         .replace("{{EDITOR_JS}}", EDITOR_JS)
-        .replace("{{APP_CSS}}", &css)
-        .replace("{{APP_RAIL}}", &rail)
         .replace("{{THEME_CSS}}", &theme_css)
-        .replace("{{REPO_ROOT}}", &repo_root)
-        .replace("{{EDITOR_WRAP}}", wrap_default);
+        .replace("{{DIFF_CSS}}", diff_css);
     Html(page)
 }
 

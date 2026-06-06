@@ -125,15 +125,16 @@ fn unified_gargo_server_serves_code_diffs_compare_commits_and_events() {
     let base_url = format!("http://127.0.0.1:{port}");
 
     let root_html = get_text_with_retry(&format!("{base_url}/"));
-    assert!(root_html.contains("app-rail-link app-rail-link-active"));
-    assert!(root_html.contains(">Code</a>"));
-    assert!(root_html.contains(">Status</a>"));
-    assert!(root_html.contains(">Branches</a>"));
-    assert!(!root_html.contains("Repository browser"));
-    assert!(!root_html.contains(r#"<span class="context-key">Showing</span>"#));
-    assert!(root_html.contains(r#"href="https://github.com/aplio/gargo""#));
-    assert!(root_html.contains(r#"<span class="repo-owner">aplio/</span>"#));
-    assert!(root_html.contains("README.md"));
+    assert!(root_html.contains(r#"data-component="explorer">Explorer</button>"#));
+    assert!(root_html.contains(r#"data-component="history">History</button>"#));
+    assert!(root_html.contains(r#"data-component="compare">Compare</button>"#));
+    assert!(root_html.contains(r#"data-component="status">Status</button>"#));
+    assert!(root_html.contains("function renderCodeSurface"));
+    assert!(root_html.contains("function renderHistory"));
+    assert!(root_html.contains("function renderCompare"));
+    assert!(root_html.contains("function renderStatus"));
+    assert!(root_html.contains("openTreePicker"));
+    assert!(!root_html.contains("id=\"sidebar\""));
 
     let blob_html = get_text_with_retry(&format!("{base_url}/aplio/gargo/blob/master/README.md"));
     assert!(blob_html.contains("Test Repo"));
@@ -199,10 +200,8 @@ fn unified_gargo_server_serves_code_diffs_compare_commits_and_events() {
     assert_eq!(status["unstaged"][0]["path"], "README.md");
     assert_eq!(status["untracked"][0]["path"], "scratch.txt");
     let status_html = get_text_with_retry(&format!("{base_url}/status"));
-    assert!(status_html.contains(r#"href="/status""#));
-    assert!(status_html.contains(r#"data-tab="status">Status</a>"#));
-    assert!(status_html.contains("app-rail-link app-rail-link-active"));
-    assert!(status_html.contains(r#"href="https://github.com/aplio/gargo""#));
+    assert!(status_html.contains(r#"data-component="status">Status</button>"#));
+    assert!(status_html.contains(r#"location.pathname === "/status""#));
     let file_diff = get_json_with_retry(&format!(
         "{base_url}/api/status/file?section=unstaged&path=README.md"
     ));
@@ -222,15 +221,11 @@ fn unified_gargo_server_serves_code_diffs_compare_commits_and_events() {
             .any(|b| b == "feature")
     );
     let branches_html = get_text_with_retry(&format!("{base_url}/branches"));
-    assert!(branches_html.contains(r#"href="/branches""#));
-    assert!(branches_html.contains(r#"data-tab="branches">Branches</a>"#));
-    assert!(branches_html.contains("app-rail-link app-rail-link-active"));
-    assert!(branches_html.contains(r#"href="https://github.com/aplio/gargo""#));
+    assert!(branches_html.contains(r#"data-component="compare">Compare</button>"#));
+    assert!(branches_html.contains(r#"location.pathname === "/branches""#));
     let commits_html = get_text_with_retry(&format!("{base_url}/aplio/gargo/commits/master"));
-    assert!(commits_html.contains(r#"data-tab="status">Status</a>"#));
-    assert!(commits_html.contains(r#"data-tab="branches">Branches</a>"#));
-    assert!(!commits_html.contains("Repository commits"));
-    assert!(commits_html.contains(r#"href="https://github.com/aplio/gargo/commits/"#));
+    assert!(commits_html.contains(r#"data-component="history">History</button>"#));
+    assert!(commits_html.contains(r#"location.pathname.includes("/commits")"#));
     let compare = get_json_with_retry(&format!(
         "{base_url}/api/compare?base=master&compare=feature"
     ));
@@ -270,20 +265,8 @@ fn unified_gargo_server_serves_code_diffs_compare_commits_and_events() {
             .contains("Test Repo")
     );
     let commit_html = get_text_with_retry(&format!("{base_url}/aplio/gargo/commit/{first_hash}"));
-    assert!(commit_html.contains("Commit"));
-    assert!(
-        commit_html.contains("position: sticky")
-            && commit_html.contains("top: var(--app-rail-height, 46px)"),
-        "expected commit file headers to stay sticky below the app rail"
-    );
-    // Commit view collapses huge file diffs by default and defers fetching
-    // their bodies so the browser stays light on big commits.
-    assert!(
-        commit_html.contains("HUGE_DIFF_LINES")
-            && commit_html.contains("gr-file-collapsed")
-            && commit_html.contains("gr-collapsed-note"),
-        "expected commit view to collapse huge diffs by default"
-    );
+    assert!(commit_html.contains(r#"data-component="history">History</button>"#));
+    assert!(commit_html.contains("loadCurrentDiffPreview"));
 
     handle
         .command_tx
@@ -424,8 +407,8 @@ fn gargo_server_plugin_start_opens_repository_root_not_active_file() {
         thread::sleep(Duration::from_millis(30));
     };
     assert!(
-        url.ends_with("/aplio/gargo"),
-        "expected server start to open repository root, got {url}"
+        url.ends_with('/'),
+        "expected server start to open the gargo app root, got {url}"
     );
     assert!(
         !url.contains("/blob/README.md"),

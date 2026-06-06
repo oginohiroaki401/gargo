@@ -1,110 +1,38 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>gargo · editor</title>
-    <!-- Shared server chrome CSS (.app-rail etc.), injected by the server. -->
-    {{APP_CSS}}
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>gargo</title>
     <style>
 {{EDITOR_CSS}}
-      /* Theme injected by the server from `[theme.editor]` (light by default).
-         It overrides the chrome variables and token colors above; the statics
-         are only a fallback for when the page is served without substitution. */
-      {{THEME_CSS}}
+{{THEME_CSS}}
+{{DIFF_CSS}}
     </style>
   </head>
   <body>
-    <!-- Absolute repo root, injected by the server (for "Copy Path"). -->
-    <script>window.__GARGO_REPO_ROOT__ = {{REPO_ROOT}};</script>
-    <!-- Default soft-wrap state from [theme.editor] wrap, injected by the server. -->
-    <script>window.__GARGO_WRAP__ = {{EDITOR_WRAP}};</script>
-    <!-- Shared server top nav, injected by the server. -->
-    {{APP_RAIL}}
-    <div id="status">
-      <span class="mode" id="mode">insert</span>
-      <span class="path" id="path"></span>
-      <span class="spacer"></span>
-      <span class="dirty" id="dirty"></span>
-      <span class="hint">Cmd+P でファイル · Cmd+F で検索 · Cmd+Shift+F で全文検索 · Ctrl+f/b/n/p/a/e で移動 · Ctrl/Cmd+S で保存</span>
-    </div>
-    <div id="main">
-      <nav id="sidebar">
-        <div id="tree-head">Explorer</div>
-        <div id="tree"></div>
-      </nav>
-      <div id="sidebar-resizer"></div>
-      <div id="scroller">
-        <div id="sizer">
-          <textarea id="ime" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
-          <div id="preedit"></div>
-        </div>
-      </div>
+    <header id="header" aria-label="Components">
+      <button data-component="explorer">Explorer</button>
+      <span>|</span>
+      <button data-component="history">History</button>
+      <span>|</span>
+      <button data-component="compare">Compare</button>
+      <span>|</span>
+      <button data-component="status">Status</button>
+      <div id="focus-path" aria-live="polite"></div>
+    </header>
 
-      <!-- Rendered Markdown/HTML preview, split to the right of the editor.
-           Toggled from the command palette for .md/.html files. The rendered
-           output lives in a sandboxed iframe so its styles/scripts (incl.
-           mermaid) can't leak into the editor chrome. -->
-      <div id="preview-resizer" hidden></div>
-      <div id="preview-pane" hidden>
-        <iframe id="preview-frame" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>
-      </div>
+    <main id="app" tabindex="-1"></main>
+    <div id="toast" role="status" hidden></div>
 
-      <!-- Cmd+F in-file search / replace (VSCode-style), floats over editor. -->
-      <div id="find" hidden>
-        <button id="find-expand" title="Toggle Replace">▸</button>
-        <div class="find-rows">
-          <div class="find-row">
-            <input id="find-input" type="text" placeholder="Find"
-              autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
-            <button id="find-case" class="toggle" title="Match Case">Aa</button>
-            <button id="find-word" class="toggle" title="Match Whole Word"><u>ab</u></button>
-            <button id="find-regex" class="toggle" title="Use Regular Expression">.*</button>
-            <span id="find-count">No results</span>
-            <button id="find-prev" title="Previous match (Shift+Enter)">↑</button>
-            <button id="find-next" title="Next match (Enter)">↓</button>
-            <button id="find-close" title="Close (Esc)">✕</button>
-          </div>
-          <div class="find-row" id="replace-row">
-            <input id="replace-input" type="text" placeholder="Replace"
-              autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
-            <button id="replace-one" title="Replace (Enter)">↪</button>
-            <button id="replace-all" title="Replace All">⇉</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Cmd+Shift+F project-wide search (Zed-style): a full pane over the
-           editor area, grouped by file. Not a floating popup. -->
-      <div id="gsearch" hidden>
-        <div id="gsearch-bar">
-          <input id="gsearch-input" type="text" placeholder="Search project…"
-            autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
-          <span id="gsearch-status"></span>
-          <button id="gsearch-close" title="Close (Esc)">✕</button>
-        </div>
-        <ul id="gsearch-list"></ul>
-      </div>
-    </div>
-    <div id="error"></div>
-
-    <!-- Cmd+P fuzzy file picker (mirrors the terminal file picker). -->
-    <div id="picker" hidden>
-      <input id="picker-input" type="text" placeholder="Go to file…"
-        autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
-      <ul id="picker-list"></ul>
-    </div>
-
-    <!-- Right-click context menu for the sidebar; items built in JS. -->
-    <div id="ctxmenu" hidden></div>
-
-    <!-- Modal text prompt for New File / New Folder / Rename. -->
-    <div id="fsprompt" hidden>
-      <div class="fsprompt-box">
-        <div class="fsprompt-title" id="fsprompt-title"></div>
-        <input id="fsprompt-input" type="text"
-          autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
-      </div>
+    <div id="popup-backdrop" hidden>
+      <section id="popup" role="dialog" aria-modal="true">
+        <div id="popup-title"></div>
+        <input id="popup-input" autocomplete="off" autocorrect="off"
+          autocapitalize="off" spellcheck="false">
+        <ol id="popup-list"></ol>
+        <div id="popup-hint">j/k or arrows to move · Enter to select · Esc to close</div>
+      </section>
     </div>
 
     <script type="module">

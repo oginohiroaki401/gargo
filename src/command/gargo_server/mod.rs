@@ -1,5 +1,4 @@
-//! Unified local GitHub-style server for repository browsing, diffs, compares,
-//! and commit history.
+//! Unified local server for the keyboard-driven gargo code and Git browser.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
@@ -17,11 +16,9 @@ use crate::command::gargo_preview_server::{
     self, GargoPreviewEvent, PreviewBrowserEvent, PreviewBrowserEventKind, PreviewServerState,
 };
 
-mod commit_pages;
 mod repo_api;
 mod util;
 
-pub(crate) use commit_pages::*;
 pub(crate) use repo_api::*;
 pub(crate) use util::*;
 
@@ -79,7 +76,7 @@ impl GargoServerHandle {
             port: None,
         };
         let worker_thread = thread::Builder::new()
-            .name("github-server".to_string())
+            .name("gargo-server".to_string())
             .spawn(move || worker.run())
             .map_err(|e| format!("Failed to spawn worker thread: {}", e))?;
         Ok(Self {
@@ -162,11 +159,7 @@ impl GargoServerWorker {
         let url_ctx = self
             .tokio_runtime
             .block_on(gargo_preview_server::resolve_repo_url_context(&repo_root));
-        let root_url = format!(
-            "http://127.0.0.1:{}{}",
-            port,
-            gargo_preview_server::repo_home_url(&url_ctx)
-        );
+        let root_url = format!("http://127.0.0.1:{port}/");
 
         let bridge_tx = bridge_preview_events(self.event_tx.clone());
         let preview_state = Arc::new(Mutex::new(PreviewServerState {
@@ -196,7 +189,6 @@ impl GargoServerWorker {
         });
         let github_state = Arc::new(GargoServerState {
             repo_root,
-            url_ctx,
             files_cache: std::sync::Mutex::new(None),
             fs_generation: std::sync::atomic::AtomicU64::new(0),
         });
@@ -352,15 +344,12 @@ impl GargoServerWorker {
 }
 
 impl GargoServerRoute {
-    fn path(&self, ctx: &gargo_preview_server::RepoUrlContext) -> String {
+    fn path(&self, _ctx: &gargo_preview_server::RepoUrlContext) -> String {
         match self {
-            Self::Root => gargo_preview_server::repo_home_url(ctx),
-            Self::Tree { path } => gargo_preview_server::tree_url(ctx, path),
-            Self::Blob { path } => gargo_preview_server::blob_url(ctx, path),
-            Self::Changes => "/status".to_string(),
-            Self::Compare => "/branches".to_string(),
-            Self::Commits => gargo_preview_server::commits_url(ctx),
-            Self::Commit { hash } => gargo_preview_server::commit_url(ctx, hash),
+            Self::Root | Self::Tree { .. } | Self::Blob { .. } => "/#explorer".to_string(),
+            Self::Changes => "/#status".to_string(),
+            Self::Compare => "/#compare".to_string(),
+            Self::Commits | Self::Commit { .. } => "/#history".to_string(),
         }
     }
 }
@@ -370,7 +359,7 @@ fn bridge_preview_events(
 ) -> mpsc::Sender<GargoPreviewEvent> {
     let (tx, rx) = mpsc::channel();
     let _ = thread::Builder::new()
-        .name("github-server-preview-events".to_string())
+        .name("gargo-server-preview-events".to_string())
         .spawn(move || {
             while let Ok(event) = rx.recv() {
                 match event {
@@ -390,7 +379,6 @@ fn bridge_preview_events(
 #[derive(Debug)]
 pub(crate) struct GargoServerState {
     pub(crate) repo_root: PathBuf,
-    pub(crate) url_ctx: gargo_preview_server::RepoUrlContext,
     /// Short-lived cache for the `/api/files` listing (`git ls-files`), which the
     /// editor hits on every Cmd+P open. Holds `(generation, cached_at, files)`;
     /// reused while the generation matches and the entry is within the TTL.
@@ -413,7 +401,6 @@ async fn run_server(
     // (`/events`, `/assets`, `/status`, `/api`, ...) rank above it in axum's
     // router, so do not add new top-level 2-segment static routes.
     let preview_routes = Router::new()
-        .route("/", get(gargo_preview_server::handle_bare_root))
         .route("/events", get(gargo_preview_server::handle_events))
         .route(
             "/assets/mermaid.min.js",
@@ -427,7 +414,6 @@ async fn run_server(
             "/assets/server-shortcuts.js",
             get(gargo_preview_server::handle_shortcuts_js_asset),
         )
-        .route("/{owner}/{repo}", get(gargo_preview_server::handle_root))
         .route(
             "/{owner}/{repo}/tree/{*rest}",
             get(gargo_preview_server::handle_tree),
@@ -443,12 +429,30 @@ async fn run_server(
         .with_state(preview_state);
 
     let diff_routes = Router::new()
-        .route("/diff", get(diff_server::handle_html_request))
-        .route("/changes", get(diff_server::handle_html_request))
-        .route("/status", get(diff_server::handle_html_request))
-        .route("/commit", get(diff_server::handle_commit_html_request))
-        .route("/compare", get(diff_server::handle_compare_html_request))
-        .route("/branches", get(diff_server::handle_compare_html_request))
+        .route(
+            "/diff",
+            get(crate::command::web_editor_server::handle_editor_page),
+        )
+        .route(
+            "/changes",
+            get(crate::command::web_editor_server::handle_editor_page),
+        )
+        .route(
+            "/status",
+            get(crate::command::web_editor_server::handle_editor_page),
+        )
+        .route(
+            "/commit",
+            get(crate::command::web_editor_server::handle_editor_page),
+        )
+        .route(
+            "/compare",
+            get(crate::command::web_editor_server::handle_editor_page),
+        )
+        .route(
+            "/branches",
+            get(crate::command::web_editor_server::handle_editor_page),
+        )
         .route("/api/status", get(diff_server::handle_api_status_request))
         .route(
             "/api/status/file",
@@ -499,12 +503,26 @@ async fn run_server(
         .with_state(diff_state);
 
     let github_routes = Router::new()
-        .route("/{owner}/{repo}/commits", get(handle_commits_html))
+        .route(
+            "/",
+            get(crate::command::web_editor_server::handle_editor_page),
+        )
+        .route(
+            "/{owner}/{repo}",
+            get(crate::command::web_editor_server::handle_editor_page),
+        )
+        .route(
+            "/{owner}/{repo}/commits",
+            get(crate::command::web_editor_server::handle_editor_page),
+        )
         .route(
             "/{owner}/{repo}/commits/{*branch}",
-            get(handle_commits_html),
+            get(crate::command::web_editor_server::handle_editor_page),
         )
-        .route("/{owner}/{repo}/commit/{hash}", get(handle_commit_html))
+        .route(
+            "/{owner}/{repo}/commit/{hash}",
+            get(crate::command::web_editor_server::handle_editor_page),
+        )
         .route("/api/tree/{*path}", get(handle_api_tree))
         .route("/api/blob/{*path}", get(handle_api_blob))
         .route("/api/commits", get(handle_api_commits))

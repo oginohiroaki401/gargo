@@ -1,650 +1,252 @@
-      :root {
-        --bg: #1e1e1e;
-        --fg: #d4d4d4;
-        --gutter: #858585;
-        --caret: #d4d4d4;
-        --sel: #264f78;
-        --git-added: #587c0c;
-        --git-modified: #bb8009;
-        --git-deleted: #94151b;
-        --status-bg: #6a2c91; /* distinct from modal editor's blue */
-        /* Overlay/panel chrome (find widget, pickers, sidebar). Themed by the
-           server alongside the editor surface so a light theme stays coherent. */
-        --panel-bg: #252526;
-        --panel-border: #454545;
-        --input-bg: #3c3c3c;
-        --hover-bg: #2a2d2e;
-        --muted: #8a8a8a;
-        --accent: #4daafc;
-        --line-height: 20px;
-        --font: 14px Menlo, Monaco, "DejaVu Sans Mono", Consolas, monospace;
-      }
-      * { box-sizing: border-box; }
-      html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); }
-      body { display: flex; flex-direction: column; font: var(--font); }
+:root {
+  color-scheme: dark;
+  --bg: #111318;
+  --fg: #d8dee9;
+  --panel-bg: #171a21;
+  --panel-border: #303641;
+  --hover-bg: #1d212a;
+  --muted: #8992a3;
+  --accent: #8aadf4;
+  --sel: #26364e;
+  --git-added: #a6da95;
+  --git-deleted: #ed8796;
+  --git-modified: #eed49f;
+  --panel: var(--panel-bg);
+  --panel-2: var(--hover-bg);
+  --line: var(--panel-border);
+  --line-strong: var(--accent);
+  --text: var(--fg);
+  --accent-dim: var(--sel);
+  --green: var(--git-added);
+  --red: var(--git-deleted);
+  --yellow: var(--git-modified);
+  --font: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
 
-      #status {
-        height: 22px;
-        line-height: 22px;
-        padding: 0 10px;
-        background: var(--status-bg);
-        color: #fff;
-        font-size: 12px;
-        display: flex;
-        gap: 16px;
-        flex: 0 0 auto;
-      }
-      #status .mode { text-transform: uppercase; font-weight: bold; }
-      #status .spacer { flex: 1; }
+* { box-sizing: border-box; }
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+body { display: flex; flex-direction: column; background: var(--bg); color: var(--text); font: 13px/1.5 var(--font); }
+button, input, textarea { font: inherit; }
+button { color: inherit; }
 
-      #scroller {
-        flex: 1 1 auto;
-        overflow: auto;
-        position: relative;
-      }
-      /* Sized to total content so the native scrollbar reflects the document. */
-      /* user-select:none: dragging drives our own selection overlay, not the
-         browser's native text selection. */
-      #sizer { position: relative; user-select: none; }
+#header {
+  height: 42px;
+  flex: 0 0 42px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+#header button {
+  border: 0;
+  padding: 4px 2px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+#header button.active { color: var(--text); border-bottom: 1px solid var(--accent); }
+#header button.focused { color: var(--accent); }
+#header > span { color: var(--line); }
+#focus-path { margin-left: auto; color: var(--muted); font-size: 11px; }
 
-      .gutter, .row {
-        position: absolute;
-        height: var(--line-height);
-        line-height: var(--line-height);
-        white-space: pre;
-        /* Text sits above the selection highlight so it stays readable. */
-        z-index: 2;
-      }
-      .gutter {
-        left: 0;
-        width: var(--gutter-w, 50px);
-        color: var(--gutter);
-        text-align: right;
-        padding-right: 8px;
-        user-select: none;
-      }
-      .row { left: var(--gutter-w, 50px); }
+#app { flex: 1 1 auto; min-height: 0; outline: none; }
+.component, .panes, .pane, .code-surface { height: 100%; min-height: 0; }
+.component { display: flex; flex-direction: column; }
+.component-bar {
+  height: 34px;
+  flex: 0 0 34px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+}
+.component-bar strong { color: var(--text); font-weight: 600; }
+.component-bar .grow { flex: 1; }
+.key { color: var(--yellow); }
 
-      /* Clickable links (markdown [..](..) or bare URLs), detected per row. They
-         look like normal text until hovered, then they underline and show a
-         pointer — Cmd/Ctrl+click opens them (see onMouseDown). Hover (no modifier
-         toggle) avoids the flicker the old Cmd/Ctrl-held class caused. */
-      .elink { cursor: inherit; }
-      .elink:hover {
-        cursor: pointer;
-        text-decoration: underline;
-        text-decoration-color: var(--accent, #4daafc);
-      }
+.panes { display: grid; }
+.panes.history { grid-template-columns: minmax(210px, 25%) minmax(210px, 25%) minmax(0, 1fr); }
+.panes.compare, .panes.status { grid-template-columns: minmax(320px, 34%) minmax(0, 1fr); }
+.pane {
+  overflow: auto;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+  outline: none;
+}
+.pane:last-child { border-right: 0; background: var(--bg); }
+.pane.focused { box-shadow: inset 0 0 0 1px var(--line-strong); }
+.pane-title {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  min-height: 31px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.pane-title .grow { flex: 1; }
+.list { list-style: none; padding: 4px; margin: 0; }
+.list li {
+  display: flex;
+  gap: 9px;
+  align-items: baseline;
+  min-width: 0;
+  padding: 5px 7px;
+  border-radius: 3px;
+  cursor: default;
+}
+.list li.selected { background: var(--accent-dim); color: var(--text); }
+.list li:hover { background: var(--panel-2); }
+.list .primary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.list .secondary { margin-left: auto; flex: 0 0 auto; color: var(--muted); font-size: 11px; }
+.list .stack { min-width: 0; }
+.list .stack .secondary { display: block; margin: 1px 0 0; }
+.status-badge { width: 1.4em; flex: 0 0 1.4em; text-align: center; font-weight: 700; }
+.status-added, .status-untracked { color: var(--green); }
+.status-deleted { color: var(--red); }
+.status-modified, .status-renamed { color: var(--yellow); }
+.empty, .loading, .error { padding: 18px; color: var(--muted); }
+.error { color: var(--red); }
 
-      /* Soft-wrap mode: rows flow normally (no absolute positioning) and the
-         browser wraps long lines; gutter and text sit in a flex row so the line
-         number aligns to the first visual row. Caret/selection overlays are still
-         absolute children of #sizer, positioned from real DOM rects (Range
-         getClientRects), so they follow the wrapping exactly. */
-      #sizer.wrap { width: 100% !important; }
-      .wline { display: flex; align-items: flex-start; }
-      .wgutter {
-        position: relative; /* anchor for the git-deleted ::after marker */
-        flex: 0 0 var(--gutter-w, 50px);
-        width: var(--gutter-w, 50px);
-        line-height: var(--line-height);
-        color: var(--gutter);
-        text-align: right;
-        padding-right: 8px;
-        user-select: none;
-      }
-      .wgutter.git-added { border-left: 3px solid var(--git-added); }
-      .wgutter.git-modified { border-left: 3px solid var(--git-modified); }
-      .wgutter.git-deleted::after {
-        content: "";
-        position: absolute;
-        left: 0;
-        bottom: 0;
-        width: 3px;
-        height: 6px;
-        background: var(--git-deleted);
-      }
-      .wrow {
-        position: relative; /* so z-index applies, keeping text above .sel */
-        z-index: 2;
-        flex: 1 1 auto;
-        min-width: 0; /* allow the flex item to shrink so text wraps */
-        min-height: var(--line-height);
-        line-height: var(--line-height);
-        white-space: pre-wrap;
-        overflow-wrap: anywhere;
-      }
+.ref-form { display: grid; grid-template-columns: 1fr auto 1fr auto; gap: 7px; padding: 9px; border-bottom: 1px solid var(--line); }
+.ref-form input {
+  min-width: 0;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 5px 7px;
+  background: var(--bg);
+  color: var(--text);
+  outline: none;
+}
+.ref-form input:focus { border-color: var(--accent); }
+.small-button {
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 4px 9px;
+  background: var(--panel-2);
+  cursor: pointer;
+}
 
-      /* Git change gutter: a colored bar on the gutter's left edge. Added and
-         modified lines get a full-height bar; a deletion sits between lines, so
-         it shows as a short marker at the bottom edge (like the terminal's ▔). */
-      .gutter.git-added { border-left: 3px solid var(--git-added); }
-      .gutter.git-modified { border-left: 3px solid var(--git-modified); }
-      .gutter.git-deleted::after {
-        content: "";
-        position: absolute;
-        left: 0;
-        bottom: 0;
-        width: 3px;
-        height: 6px;
-        background: var(--git-deleted);
-      }
+.code-surface { position: relative; overflow: auto; background: var(--bg); }
+.code-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  height: 31px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--muted);
+}
+.code-toolbar .path { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.code-toolbar .grow { flex: 1; }
+.code-toolbar .dirty { color: var(--yellow); }
+.code-body { min-height: calc(100% - 31px); }
+.editor-wrap { position: relative; min-height: 100%; }
+.highlight-layer, .editor-input {
+  width: 100%;
+  min-height: calc(100vh - 108px);
+  margin: 0;
+  border: 0;
+  padding: 12px 14px 40px 58px;
+  font: 13px/20px var(--font);
+  tab-size: 4;
+  white-space: pre;
+}
+.highlight-layer { position: absolute; inset: 0; overflow: hidden; color: var(--text); pointer-events: none; }
+.editor-input {
+  position: relative;
+  display: block;
+  resize: none;
+  outline: none;
+  overflow: hidden;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--text);
+  -webkit-text-fill-color: transparent;
+}
+.editor-input::selection { background: var(--sel); }
+.line-number {
+  display: inline-block;
+  width: 38px;
+  margin-left: -45px;
+  margin-right: 7px;
+  color: var(--muted);
+  text-align: right;
+  user-select: none;
+}
+.diff-preview { min-width: max-content; padding-bottom: 30px; }
+.diff-preview .gr-diff-body, .diff-preview .code-view { border: 0 !important; }
 
-      .caret {
-        position: absolute;
-        width: 2px;
-        height: var(--line-height);
-        background: var(--caret);
-        left: var(--gutter-w, 50px);
-        /* Steady (non-blinking) caret, drawn above text + selection. */
-        z-index: 3;
-      }
-      .caret.block { width: var(--char-w, 8px); opacity: 0.5; }
+#popup-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: start center;
+  padding-top: min(13vh, 110px);
+  background: color-mix(in srgb, var(--bg) 58%, transparent);
+}
+#popup-backdrop[hidden] { display: none; }
+#popup {
+  width: min(720px, calc(100vw - 32px));
+  max-height: min(680px, 76vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: 0 18px 60px rgba(0,0,0,.5);
+}
+#popup-title { padding: 8px 11px; color: var(--muted); font-size: 11px; text-transform: uppercase; }
+#popup-input {
+  margin: 0 9px 8px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 8px 10px;
+  outline: none;
+  background: var(--bg);
+  color: var(--text);
+}
+#popup-input:focus { border-color: var(--accent); }
+#popup-list { overflow: auto; list-style: none; margin: 0; padding: 4px; }
+#popup-list li { padding: 6px 9px; border-radius: 3px; white-space: pre; cursor: default; }
+#popup-list li.selected { background: var(--accent-dim); color: var(--text); }
+#popup-list .match { color: var(--accent); font-weight: 700; }
+#popup-list .hint { float: right; color: var(--muted); }
+#popup-hint { padding: 7px 10px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
 
-      .sel {
-        position: absolute;
-        height: var(--line-height);
-        background: var(--sel);
-        left: var(--gutter-w, 50px);
-        /* Behind the text (z-index:2) so selected glyphs stay visible. */
-        z-index: 1;
-      }
+#toast {
+  position: fixed;
+  z-index: 200;
+  right: 16px;
+  bottom: 16px;
+  max-width: 440px;
+  padding: 8px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--panel-2);
+  box-shadow: 0 8px 30px rgba(0,0,0,.4);
+}
+#toast[hidden] { display: none; }
 
-      /* Hidden textarea: captures keys + IME, positioned at the caret so the
-         OS candidate window appears in the right place. */
-      #ime {
-        position: absolute;
-        width: 1px;
-        height: var(--line-height);
-        padding: 0;
-        margin: 0;
-        border: 0;
-        outline: none;
-        resize: none;
-        overflow: hidden;
-        background: transparent;
-        color: transparent;
-        caret-color: transparent;
-        font: var(--font);
-        z-index: 5;
-      }
-      /* Pre-edit (composing) text shown inline under the IME. */
-      #preedit {
-        position: absolute;
-        height: var(--line-height);
-        line-height: var(--line-height);
-        white-space: pre;
-        text-decoration: underline;
-        color: var(--fg);
-        z-index: 4;
-      }
-      /* Inline IME pre-edit: spliced into the caret row during composition so the
-         caret + trailing text follow it (see paintPreedit in editor.js). */
-      .preedit-inline {
-        text-decoration: underline;
-        text-decoration-skip-ink: none;
-      }
-      #error {
-        position: fixed;
-        bottom: 12px;
-        left: 50%;
-        transform: translateX(-50%);
-        background: #5a1d1d;
-        color: #fff;
-        padding: 8px 14px;
-        border-radius: 4px;
-        font-size: 13px;
-        display: none;
-        z-index: 10;
-      }
-
-      /* In-file search highlights. The current match is drawn as the editor
-         selection (.sel, blue); every other match gets this translucent band. */
-      .match-hl {
-        position: absolute;
-        height: var(--line-height);
-        background: rgba(234, 179, 8, 0.32);
-        outline: 1px solid rgba(234, 179, 8, 0.6);
-        left: var(--gutter-w, 50px);
-        z-index: 1;
-        pointer-events: none;
-      }
-
-      /* VSCode-style find/replace widget, floating at the top-right. */
-      #find {
-        position: absolute;
-        top: 6px;
-        right: 18px;
-        display: flex;
-        align-items: flex-start;
-        gap: 2px;
-        background: var(--panel-bg);
-        border: 1px solid var(--panel-border);
-        border-radius: 4px;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
-        padding: 4px 6px 4px 2px;
-        z-index: 50;
-      }
-      #find[hidden] { display: none; }
-      .find-rows { display: flex; flex-direction: column; gap: 4px; }
-      .find-row { display: flex; align-items: center; gap: 4px; }
-      /* Replace row only shows once expanded (chevron / Cmd+Alt+F). */
-      #find:not(.with-replace) #replace-row { display: none; }
-      #find-input, #replace-input {
-        border: 1px solid var(--panel-border);
-        outline: none;
-        background: var(--input-bg);
-        color: var(--fg);
-        font: var(--font);
-        padding: 3px 6px;
-        border-radius: 3px;
-        width: 200px;
-      }
-      #find-input:focus, #replace-input:focus { border-color: var(--sel); }
-      #find-count {
-        color: var(--muted);
-        font-size: 12px;
-        min-width: 74px;
-        text-align: center;
-        white-space: nowrap;
-      }
-      #find button {
-        border: 0;
-        background: transparent;
-        color: var(--fg);
-        cursor: pointer;
-        font-size: 14px;
-        line-height: 1;
-        padding: 3px 5px;
-        border-radius: 3px;
-      }
-      #find button:hover { background: var(--hover-bg); }
-      #find button.toggle.on { background: var(--sel); color: #fff; }
-      #find button u { text-decoration: underline; }
-      /* The expand chevron sits in its own left column, full widget height. */
-      #find-expand {
-        align-self: stretch;
-        display: flex;
-        align-items: center;
-        color: var(--muted);
-      }
-      #find.with-replace #find-expand { transform: rotate(90deg); }
-
-      /* Cmd+P file picker overlay. */
-      #picker {
-        position: fixed;
-        top: 60px;
-        left: 50%;
-        transform: translateX(-50%);
-        width: min(640px, 90vw);
-        max-height: 60vh;
-        background: var(--panel-bg);
-        border: 1px solid var(--panel-border);
-        border-radius: 6px;
-        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
-        display: flex;
-        flex-direction: column;
-        overflow: hidden;
-        z-index: 100;
-      }
-      #picker[hidden] { display: none; }
-      #picker-input {
-        flex: 0 0 auto; /* stay pinned at the top while the list scrolls */
-        border: 0;
-        outline: none;
-        background: var(--input-bg);
-        color: var(--fg);
-        font: var(--font);
-        padding: 8px 10px;
-        margin: 6px;
-        border-radius: 4px;
-      }
-      #picker-list {
-        flex: 1 1 auto; /* take the remaining height so the input stays put */
-        min-height: 0; /* allow the flex child to shrink and scroll internally */
-        list-style: none;
-        margin: 0;
-        padding: 0 6px 6px;
-        overflow-y: auto;
-      }
-      #picker-list li {
-        display: flex; /* command rows show a right-aligned keybinding hint */
-        align-items: baseline;
-        padding: 4px 8px;
-        border-radius: 4px;
-        white-space: nowrap;
-        overflow: hidden;
-        cursor: pointer;
-      }
-      /* The label text ellipsizes; the hint keeps its full width. */
-      #picker-list li .picker-label {
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      #picker-list li .picker-hint {
-        margin-left: auto;
-        padding-left: 12px;
-        color: var(--muted);
-        font-size: 0.85em;
-        flex: 0 0 auto;
-      }
-      /* Distinct class from the editor's .sel selection overlay (which is
-         absolutely positioned) so the highlighted row stays in flow. */
-      #picker-list li.picked { background: var(--sel); }
-      #picker-list li b { color: var(--accent); font-weight: 600; }
-
-      /* Cmd+Shift+F project search: a full pane filling the editor area
-         (#main is position:relative), Zed-style — not a floating popup. */
-      #gsearch {
-        position: absolute;
-        inset: 0;
-        background: var(--bg, #1e1e1e);
-        display: flex;
-        flex-direction: column;
-        overflow: hidden;
-        z-index: 50;
-      }
-      #gsearch[hidden] { display: none; }
-      #gsearch-bar {
-        flex: 0 0 auto;
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 10px 14px;
-        border-bottom: 1px solid var(--panel-border);
-        background: var(--panel-bg);
-      }
-      #gsearch-input {
-        flex: 1 1 auto;
-        border: 1px solid var(--panel-border);
-        outline: none;
-        background: var(--input-bg);
-        color: var(--fg);
-        font: var(--font);
-        padding: 8px 10px;
-        border-radius: 4px;
-      }
-      #gsearch-input:focus { border-color: var(--accent); }
-      #gsearch-status {
-        flex: 0 0 auto;
-        color: var(--muted);
-        font-size: 12px;
-        white-space: nowrap;
-      }
-      #gsearch-bar #gsearch-close {
-        flex: 0 0 auto;
-        background: transparent;
-        border: 0;
-        color: var(--muted);
-        cursor: pointer;
-        font-size: 14px;
-        padding: 2px 6px;
-      }
-      #gsearch-bar #gsearch-close:hover { color: var(--fg); }
-      #gsearch-list {
-        flex: 1 1 auto;
-        min-height: 0;
-        list-style: none;
-        margin: 0;
-        padding: 0 0 12px;
-        overflow-y: auto;
-      }
-      #gsearch-list li { cursor: pointer; }
-      /* File-group header: path + match count, sticky so it stays visible. */
-      #gsearch-list li.gfile {
-        position: sticky;
-        top: 0;
-        background: var(--hover-bg);
-        color: var(--fg);
-        padding: 5px 14px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        cursor: pointer;
-        z-index: 1;
-      }
-      #gsearch-list li.gfile.picked { background: var(--sel); color: var(--fg); }
-      #gsearch-list li.gfile .gchevron {
-        display: inline-block;
-        width: 1.2em;
-        color: var(--muted);
-      }
-      #gsearch-list li.gfile .gcount { color: var(--muted); margin-left: 6px; }
-      /* A single match row: line number gutter + excerpt. */
-      #gsearch-list li.ghit {
-        display: flex;
-        gap: 10px;
-        padding: 2px 14px 2px 28px;
-        white-space: pre;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      #gsearch-list li.ghit:hover { background: var(--hover-bg); }
-      #gsearch-list li.ghit.picked { background: var(--sel); }
-      #gsearch-list li.ghit .gline {
-        flex: 0 0 auto;
-        color: var(--muted);
-        text-align: right;
-        min-width: 4ch;
-      }
-      #gsearch-list li.ghit .gtext {
-        flex: 1 1 auto;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      #gsearch-list li.ghit b { color: #4daafc; font-weight: 600; }
-
-      /* Main row: sidebar file tree | editor. */
-      #main {
-        flex: 1 1 auto;
-        display: flex;
-        flex-direction: row;
-        min-height: 0;
-        overflow: hidden;
-        /* Positioning context for the floating find widget. */
-        position: relative;
-      }
-      #sidebar {
-        flex: 0 0 auto;
-        width: var(--sidebar-w, 240px);
-        overflow: auto;
-        background: var(--panel-bg);
-        border-right: 1px solid var(--panel-border);
-        user-select: none;
-        font-size: 13px;
-      }
-      #sidebar[hidden] { display: none; }
-      #sidebar-resizer {
-        flex: 0 0 auto;
-        width: 4px;
-        cursor: col-resize;
-        background: transparent;
-      }
-      #sidebar-resizer:hover { background: var(--sel); }
-      #sidebar-resizer[hidden] { display: none; }
-      /* Split preview pane (Markdown/HTML), mirrors the sidebar resizer. */
-      #preview-resizer {
-        flex: 0 0 auto;
-        width: 4px;
-        cursor: col-resize;
-        background: transparent;
-      }
-      #preview-resizer:hover { background: var(--sel); }
-      #preview-resizer[hidden] { display: none; }
-      #preview-pane {
-        flex: 0 0 var(--preview-w, 50%);
-        min-width: 0;
-        overflow: hidden;
-        background: #fff;
-        border-left: 1px solid var(--panel-border);
-      }
-      #preview-pane[hidden] { display: none; }
-      #preview-frame {
-        width: 100%;
-        height: 100%;
-        border: 0;
-        background: #fff;
-      }
-      #tree-head {
-        padding: 6px 10px;
-        color: var(--muted);
-        text-transform: uppercase;
-        font-size: 11px;
-        letter-spacing: 0.5px;
-      }
-      .tnode {
-        display: flex;
-        align-items: center;
-        height: 22px;
-        line-height: 22px;
-        white-space: nowrap;
-        cursor: pointer;
-        padding-right: 8px;
-        /* File rows are <a> anchors (native Cmd/middle-click open); strip the
-           default link styling so they look identical to the dir <div> rows. */
-        text-decoration: none;
-        color: inherit;
-      }
-      .tnode:hover { background: var(--hover-bg); }
-      .tnode.active { background: var(--sel); }
-      .tnode.focused { outline: 1px solid var(--accent); outline-offset: -1px; }
-      #sidebar:focus { outline: none; }
-      .tnode .twist {
-        width: 14px;
-        text-align: center;
-        flex: 0 0 auto;
-        color: var(--muted);
-      }
-      .tnode .tlabel {
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      .tnode.dir .tlabel { color: var(--fg); }
-      .tnode.file .tlabel { color: var(--muted); }
-      /* Git status decorations (colors match the editor gutter / terminal). The
-         one-letter badge sits right-aligned; the label is recolored to match.
-         These follow the .dir/.file rules so equal-specificity selectors win. */
-      .tnode .tstatus {
-        margin-left: auto;
-        padding-left: 8px;
-        flex: 0 0 auto;
-        font-size: 11px;
-        font-weight: 600;
-      }
-      .tnode.git-modified .tlabel,
-      .tnode.git-modified .tstatus { color: var(--git-modified); }
-      .tnode.git-added .tlabel,
-      .tnode.git-added .tstatus,
-      .tnode.git-untracked .tlabel,
-      .tnode.git-untracked .tstatus { color: var(--git-added); }
-      .tnode.git-deleted .tlabel,
-      .tnode.git-deleted .tstatus { color: var(--git-deleted); }
-      .tnode.git-conflict .tlabel,
-      .tnode.git-conflict .tstatus { color: #b267e6; }
-      /* Dir roll-up: keep the folder name its normal color, just show a dot. */
-      .tnode.git-dir .tstatus { color: var(--git-modified); }
-      /* Inline new-entry textbox (double-click empty sidebar space). */
-      .tnode .tinput {
-        flex: 1 1 auto;
-        min-width: 0;
-        border: 1px solid var(--accent);
-        outline: none;
-        background: var(--input-bg);
-        color: var(--fg);
-        font: inherit;
-        padding: 0 4px;
-        height: 18px;
-        border-radius: 3px;
-      }
-
-      /* Right-click context menu for the sidebar file tree. */
-      #ctxmenu {
-        position: fixed;
-        z-index: 200;
-        min-width: 210px;
-        background: var(--panel-bg);
-        border: 1px solid var(--panel-border);
-        border-radius: 6px;
-        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
-        padding: 4px;
-        font-size: 13px;
-        user-select: none;
-      }
-      #ctxmenu[hidden] { display: none; }
-      .ctxitem {
-        display: flex;
-        align-items: center;
-        padding: 5px 10px;
-        border-radius: 4px;
-        cursor: pointer;
-        white-space: nowrap;
-        color: var(--fg);
-      }
-      .ctxitem:hover { background: var(--hover-bg); }
-      .ctxitem .ctxhint {
-        margin-left: auto;
-        padding-left: 24px;
-        color: var(--muted);
-        font-size: 0.85em;
-      }
-      .ctxsep { height: 1px; background: var(--panel-border); margin: 4px 0; }
-
-      /* Modal text prompt for New File / New Folder / Rename. */
-      #fsprompt {
-        position: fixed;
-        inset: 0;
-        z-index: 300;
-        display: flex;
-        align-items: flex-start;
-        justify-content: center;
-        background: rgba(0, 0, 0, 0.2);
-      }
-      #fsprompt[hidden] { display: none; }
-      .fsprompt-box {
-        margin-top: 120px;
-        width: min(480px, 90vw);
-        background: var(--panel-bg);
-        border: 1px solid var(--panel-border);
-        border-radius: 6px;
-        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
-        padding: 12px;
-      }
-      .fsprompt-title { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
-      #fsprompt-input {
-        width: 100%;
-        box-sizing: border-box;
-        border: 1px solid var(--panel-border);
-        outline: none;
-        background: var(--input-bg);
-        color: var(--fg);
-        font: var(--font);
-        padding: 8px 10px;
-        border-radius: 4px;
-      }
-
-      /* Syntax highlight token colors (VSCode Dark+ palette). */
-      .tok-keyword { color: #569cd6; }
-      .tok-string { color: #ce9178; }
-      .tok-comment { color: #6a9955; font-style: italic; }
-      .tok-function { color: #dcdcaa; }
-      .tok-type { color: #4ec9b0; }
-      .tok-constructor { color: #4ec9b0; }
-      .tok-number { color: #b5cea8; }
-      .tok-constant { color: #569cd6; }
-      .tok-boolean { color: #569cd6; }
-      .tok-operator { color: #d4d4d4; }
-      .tok-variable { color: #9cdcfe; }
-      .tok-parameter { color: #9cdcfe; }
-      .tok-property { color: #9cdcfe; }
-      .tok-attribute { color: #9cdcfe; }
-      .tok-namespace { color: #4ec9b0; }
-      .tok-label { color: #c8c8c8; }
-      .tok-tag { color: #569cd6; }
-      .tok-punctuation { color: #d4d4d4; }
-      .tok-escape { color: #d7ba7d; }
-      /* Markdown scopes (mapped server-side from tree-sitter `text.*`). */
-      .tok-title { color: #569cd6; font-weight: 600; }
-      .tok-link { color: #4ec9b0; text-decoration: underline; }
-      .tok-emphasis { font-style: italic; }
-      .tok-strong { font-weight: 700; }
-
+@media (max-width: 800px) {
+  .panes.history { grid-template-columns: 42% 58% 100%; overflow-x: auto; }
+  .panes.compare, .panes.status { grid-template-columns: 46% 100%; overflow-x: auto; }
+  #focus-path { display: none; }
+}
