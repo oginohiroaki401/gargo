@@ -434,6 +434,11 @@ async function renderCodeSurface(container, options) {
   fetchGitGutter(options.path, input.value);
   input.addEventListener("input", async () => {
     state.fileContent = input.value;
+    // The visible glyphs are the highlight layer (the textarea text is
+    // transparent), so paint plain text synchronously for zero-lag feedback;
+    // the server syntax pass refines it a beat later (item 41).
+    layer.innerHTML = numberedPlainText(input.value);
+    applyGitGutter(layer);
     // Re-measure height only when the line count changes — `scrollHeight`
     // forces a reflow, so skipping it on intra-line edits keeps typing snappy.
     const lines = input.value.split("\n").length;
@@ -444,7 +449,7 @@ async function renderCodeSurface(container, options) {
     }
     updateDirtyIndicator();
     clearTimeout(input.highlightTimer);
-    input.highlightTimer = setTimeout(() => updateHighlightLayer(layer, options.path, input.value), 140);
+    input.highlightTimer = setTimeout(() => updateHighlightLayer(layer, options.path, input.value), 90);
     scheduleGitGutter(options.path, input.value);
   });
   input.addEventListener("mousedown", event => {
