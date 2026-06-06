@@ -12,7 +12,7 @@
 - [x] explorer(editor) : see memo1
 - [x] if enter to enter edit mode, scroll to cursor position
 - [x] explorer(editor) : gg to go head, gh to head, G to top
-- [ ] compare : j,k to scroll in compare preview not working
+- [x] compare : j,k to scroll in compare preview not working
 - [ ] tree view : alt enter, cmd tab to open that file in new tab
 - [ ] in compare, b to focus input field for base branch, c for compare
 - [ ] `?` to show keybinding and help

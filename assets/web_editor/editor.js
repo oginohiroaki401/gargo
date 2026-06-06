@@ -431,6 +431,15 @@ function scrollPreview(direction, amount = 0.7) {
   });
 }
 
+// True when the focused pane is the rightmost (preview) pane of a diff view,
+// where there is no list to move through so j/k should scroll the preview.
+function isPreviewPaneFocused() {
+  if (state.focusLevel !== "pane") return false;
+  if (!["compare", "status", "history"].includes(state.component)) return false;
+  const count = app.querySelectorAll(".pane").length;
+  return count > 0 && state.pane === count - 1;
+}
+
 async function ensureRefs() {
   if (state.refs.length) return;
   const data = await api("/api/branches");
@@ -1077,6 +1086,11 @@ window.addEventListener("keydown", async event => {
   }
   if (event.key === "r") {
     event.preventDefault(); await refreshComponent(); return;
+  }
+  if (isPreviewPaneFocused() && (event.key === "j" || event.key === "k")) {
+    event.preventDefault();
+    scrollPreview(event.key === "j" ? 1 : -1, 0.25);
+    return;
   }
   if (event.key === "j") { event.preventDefault(); await moveSelection(1); return; }
   if (event.key === "k") { event.preventDefault(); await moveSelection(-1); return; }
