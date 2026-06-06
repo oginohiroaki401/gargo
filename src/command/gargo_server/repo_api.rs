@@ -17,7 +17,9 @@ pub(crate) async fn handle_api_tree(
     State(state): State<Arc<GargoServerState>>,
     AxumPath(path): AxumPath<String>,
 ) -> Response {
-    let path = normalize_api_path(&path);
+    let Some(path) = normalize_api_path(&path) else {
+        return diff_server::bad_request("invalid path");
+    };
     let full_path = state.repo_root.join(&path);
     if !full_path.starts_with(&state.repo_root) {
         return diff_server::bad_request("invalid path");
