@@ -31,6 +31,8 @@ const state = {
   gitGutter: {},
   multiRanges: [],
   multiWord: "",
+  multiGoalCol: 0,
+  editorHistory: null,
   highlightLines: {},
   commits: [],
   historyCommit: 0,
@@ -88,6 +90,9 @@ const HELP_SECTIONS = [
       ["i / Enter", "Edit (insert) mode"],
       ["Esc", "Back to app focus"],
       ["⌘D", "Add cursor: word / next match (multi-cursor)"],
+      ["⌥⌘↓ / ⌥⌘↑", "Add a cursor below / above"],
+      ["⌥⌘⇧↓ / ⌥⌘⇧↑", "Add cursors to bottom / top"],
+      ["⌘⌫ / ⌥⌫", "Multi-cursor: delete to line start / word"],
       ["⌘Z / ⌘⇧Z", "Undo / redo"],
       ["j / k", "Scroll"],
       ["g g", "Jump to head of file"],
@@ -272,7 +277,7 @@ async function ensureFiles() {
 
 async function renderExplorer() {
   app.innerHTML = `<section class="component">
-    ${componentBar("Explorer", `<span><span class="key">app:t</span> tree · <span class="key">⌘P</span> files · <span class="key">⌘⇧P</span> commands · <span class="key">⌘@</span> symbols · <span class="key">⌘⇧F</span> search · <span class="key">p</span> preview · <span class="key">?</span> help</span>`)}
+    ${componentBar("Explorer", `<span><span class="key">t</span> tree · <span class="key">⌘P</span> files · <span class="key">⌘⇧P</span> commands · <span class="key">⌘@</span> symbols · <span class="key">⌘⇧F</span> search · <span class="key">p</span> preview · <span class="key">?</span> help</span>`)}
     <div id="explorer-surface" class="pane focused" tabindex="-1" data-pane="0" data-name="editor"></div>
   </section>`;
   if (!state.currentFile) {
@@ -440,10 +445,12 @@ async function renderCodeSurface(container, options) {
   input.style.height = `${Math.max(input.scrollHeight, body.clientHeight)}px`;
   input.dataset.lines = String(input.value.split("\n").length);
   fetchGitGutter(options.path, input.value);
+  editorHistoryInit(input.value);
   input.addEventListener("keydown", onEditorKeyDown);
   input.addEventListener("input", async () => {
     if (state.multiRanges.length) clearMultiCursors(); // a native edit exits multi-cursor
     state.fileContent = input.value;
+    editorHistoryPush(true);
     // The visible glyphs are the highlight layer (the textarea text is
     // transparent), so paint plain text synchronously for zero-lag feedback;
     // the server syntax pass refines it a beat later.
@@ -642,6 +649,85 @@ function clearMultiCursors() {
   if (!state.multiRanges.length) return;
   state.multiRanges = [];
   state.multiWord = "";
+  state.multiGoalCol = 0;
+  renderMultiCursors();
+}
+
+// Character line/column for a string offset (vs. offsetToVisual's tab-expanded
+// column used for drawing) — these map to/from real caret offsets.
+function offsetLineCol(value, offset) {
+  const nl = value.lastIndexOf("\n", offset - 1);
+  return { line: (value.slice(0, offset).match(/\n/g) || []).length, col: offset - (nl + 1) };
+}
+
+function lineColToOffset(lines, line, col) {
+  let offset = 0;
+  for (let i = 0; i < line; i++) offset += lines[i].length + 1;
+  return offset + Math.min(col, lines[line].length);
+}
+
+function lineStartOffset(value, offset) {
+  return value.lastIndexOf("\n", offset - 1) + 1;
+}
+
+// Start of the word/whitespace run before `offset` — the span Alt+Backspace eats.
+function prevWordStart(value, offset) {
+  let i = offset;
+  while (i > 0 && /\s/.test(value[i - 1]) && value[i - 1] !== "\n") i--;
+  while (i > 0 && WORD_CHAR.test(value[i - 1])) i--;
+  if (i === offset && i > 0) i--; // always remove at least one char (punctuation)
+  return i;
+}
+
+// Seed multi-cursor from the native caret if it isn't active yet, remembering the
+// caret's column as the "goal" so vertical adds keep their column across short lines.
+function seedMultiFromCaret() {
+  const input = app.querySelector(".editor-input");
+  if (state.multiRanges.length) return;
+  state.multiRanges = [{ start: input.selectionStart, end: input.selectionStart }];
+  state.multiWord = "";
+  state.multiGoalCol = offsetLineCol(input.value, input.selectionStart).col;
+}
+
+// Add a single caret one line above/below the current extreme caret (VSCode
+// ⌥⌘↑ / ⌥⌘↓), kept at the goal column.
+function addCursorVertical(dir) {
+  const input = app.querySelector(".editor-input");
+  if (!input || input.readOnly) return;
+  seedMultiFromCaret();
+  const value = input.value;
+  const lines = value.split("\n");
+  const ranges = state.multiRanges;
+  const ref = dir > 0 ? ranges[ranges.length - 1] : ranges[0];
+  const target = offsetLineCol(value, ref.end).line + dir;
+  if (target < 0 || target >= lines.length) { notify("No more lines"); return; }
+  const offset = lineColToOffset(lines, target, state.multiGoalCol);
+  if (ranges.some(r => r.start === r.end && r.start === offset)) return;
+  ranges.push({ start: offset, end: offset });
+  ranges.sort((a, b) => a.start - b.start);
+  input.setSelectionRange(offset, offset);
+  scrollEditorToCursor("auto");
+  renderMultiCursors();
+}
+
+// Drop a caret on every line from the current one to the top/bottom of the file
+// (⌥⌘⇧↑ / ⌥⌘⇧↓), all at the goal column.
+function addCursorsToEdge(dir) {
+  const input = app.querySelector(".editor-input");
+  if (!input || input.readOnly) return;
+  seedMultiFromCaret();
+  const value = input.value;
+  const lines = value.split("\n");
+  const ranges = state.multiRanges;
+  const refLine = offsetLineCol(value, (dir > 0 ? ranges[ranges.length - 1] : ranges[0]).end).line;
+  const edge = dir > 0 ? lines.length - 1 : 0;
+  for (let line = refLine + dir; dir > 0 ? line <= edge : line >= edge; line += dir) {
+    const offset = lineColToOffset(lines, line, state.multiGoalCol);
+    if (!ranges.some(r => r.start === r.end && r.start === offset)) ranges.push({ start: offset, end: offset });
+  }
+  ranges.sort((a, b) => a.start - b.start);
+  input.setSelectionRange(lineColToOffset(lines, edge, state.multiGoalCol), lineColToOffset(lines, edge, state.multiGoalCol));
+  scrollEditorToCursor("auto");
   renderMultiCursors();
 }
 
@@ -699,6 +785,63 @@ function applyMultiEdit(op) {
   const last = next[next.length - 1];
   if (last) input.setSelectionRange(last.start, last.start);
   repaintEditorAfterEdit();
+  editorHistoryPush(false); // structural multi-cursor edit → its own undo step
+}
+
+// ---- Undo / redo -----------------------------------------------------------
+//
+// Setting `textarea.value` directly (multi-cursor edits, programmatic inserts)
+// wipes the browser's native undo stack, so the editor keeps its own. Every edit
+// pushes a snapshot; rapid typing coalesces into one entry so a single Cmd+Z
+// drops a burst rather than one character.
+function editorHistoryInit(value) {
+  const input = app.querySelector(".editor-input");
+  const sel = input ? input.selectionStart : 0;
+  state.editorHistory = { entries: [{ value, selStart: sel, selEnd: sel }], index: 0, lastEdit: 0 };
+}
+
+function editorHistoryPush(coalesce) {
+  const history = state.editorHistory;
+  const input = app.querySelector(".editor-input");
+  if (!history || !input) return;
+  const snap = { value: input.value, selStart: input.selectionStart, selEnd: input.selectionEnd };
+  if (snap.value === history.entries[history.index]?.value) return; // no textual change
+  history.entries.length = history.index + 1; // discard the redo branch
+  const now = Date.now();
+  if (coalesce && now - history.lastEdit < 500 && history.index > 0) {
+    history.entries[history.index] = snap; // fold this keystroke into the current burst
+  } else {
+    history.entries.push(snap);
+    history.index = history.entries.length - 1;
+  }
+  history.lastEdit = coalesce ? now : 0;
+  if (history.entries.length > 500) { history.entries.shift(); history.index--; }
+}
+
+function editorApplyHistory(snap) {
+  const input = app.querySelector(".editor-input");
+  if (!input || !snap) return;
+  clearMultiCursors();
+  input.value = snap.value;
+  input.setSelectionRange(snap.selStart, snap.selEnd);
+  repaintEditorAfterEdit();
+  scrollEditorToCursor("auto");
+}
+
+function editorUndo() {
+  const history = state.editorHistory;
+  if (!history || history.index <= 0) return;
+  history.index--;
+  history.lastEdit = 0;
+  editorApplyHistory(history.entries[history.index]);
+}
+
+function editorRedo() {
+  const history = state.editorHistory;
+  if (!history || history.index >= history.entries.length - 1) return;
+  history.index++;
+  history.lastEdit = 0;
+  editorApplyHistory(history.entries[history.index]);
 }
 
 // Mirror the input-listener side effects for programmatic (multi-cursor) edits,
@@ -721,9 +864,19 @@ function repaintEditorAfterEdit() {
   renderMultiCursors();
 }
 
-// Intercept keys while multi-cursor is active; runs on the textarea before the
-// window handler (which it stops for Escape so the editor isn't also exited).
+// Intercept keys on the textarea. Add-cursor chords (⌥⌘ + arrows) work whether or
+// not multi-cursor is active yet; everything else only matters once it is. Runs
+// before the window handler (which it stops for Escape so the editor isn't exited).
 function onEditorKeyDown(event) {
+  // Multi-cursor add actions — seed from the native caret on first use.
+  if ((event.metaKey || event.ctrlKey) && event.altKey
+      && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.shiftKey) addCursorsToEdge(event.key === "ArrowDown" ? 1 : -1);
+    else addCursorVertical(event.key === "ArrowDown" ? 1 : -1);
+    return;
+  }
   if (!state.multiRanges.length) return;
   if (event.key === "Escape") {
     event.preventDefault();
@@ -732,6 +885,20 @@ function onEditorKeyDown(event) {
     return;
   }
   if (event.metaKey && event.key.toLowerCase() === "d") return; // global adds next match
+  // Cmd/Alt+Backspace delete-to-line-start / delete-word at every cursor. Handle
+  // before the generic modifier-clear below, which would otherwise drop multi-cursor.
+  if (state.multiRanges.length >= 2 && event.key === "Backspace" && (event.metaKey || event.altKey)) {
+    event.preventDefault();
+    const value = app.querySelector(".editor-input").value;
+    applyMultiEdit((sel, r) => {
+      if (sel.length) return { from: r.start, to: r.end, text: "" };
+      let from = event.metaKey ? lineStartOffset(value, r.start) : prevWordStart(value, r.start);
+      if (event.metaKey && from === r.start && from > 0) from -= 1; // at line start → eat newline
+      return { from, to: r.start, text: "" };
+    });
+    return;
+  }
+  if (event.metaKey && event.key.toLowerCase() === "z") return; // global undo/redo
   if (event.metaKey || event.ctrlKey || event.altKey
       || event.key.startsWith("Arrow") || ["Home", "End", "PageUp", "PageDown"].includes(event.key)) {
     clearMultiCursors();
@@ -1870,6 +2037,24 @@ header.addEventListener("click", event => {
   if (button) switchComponent(button.dataset.component);
 });
 
+// Click the dimmed area outside a picker / help dialog → dismiss it. The dialog
+// itself (`#popup` / `#help`) stops the event from reaching the backdrop.
+popupBackdrop.addEventListener("mousedown", event => {
+  if (event.target === popupBackdrop) closePopup();
+});
+helpBackdrop.addEventListener("mousedown", event => {
+  if (event.target === helpBackdrop) closeHelp();
+});
+
+// Click anywhere outside the editor while in insert mode → leave insert mode.
+// Clicks inside the editor, or inside a popup/help dialog (which manage their
+// own focus), are ignored.
+document.addEventListener("mousedown", event => {
+  if (state.editorMode !== "insert") return;
+  if (event.target.closest(".editor-input, #popup-backdrop, #help-backdrop")) return;
+  leaveEditorInsertMode();
+});
+
 window.addEventListener("keydown", async event => {
   const isText = event.target.matches("textarea, input");
   if (state.help) {
@@ -1912,12 +2097,18 @@ window.addEventListener("keydown", async event => {
     multiCursorAddNext();
     return;
   }
-  // Cmd+Z / Cmd+Shift+Z fall through to the textarea's native undo/redo; map
-  // Cmd+Y to redo as well for users who expect it.
+  // Undo/redo run off the editor's own history stack (the textarea's native one
+  // is wiped by programmatic edits): Cmd+Z undo, Cmd+Shift+Z / Cmd+Y redo.
+  if (event.metaKey && event.key.toLowerCase() === "z"
+      && event.target.classList?.contains("editor-input")) {
+    event.preventDefault();
+    if (event.shiftKey) editorRedo(); else editorUndo();
+    return;
+  }
   if (event.metaKey && event.key.toLowerCase() === "y"
       && event.target.classList?.contains("editor-input")) {
     event.preventDefault();
-    document.execCommand("redo");
+    editorRedo();
     return;
   }
   if (event.key === "Escape") {
