@@ -238,9 +238,14 @@ button { color: inherit; }
 #popup-list li.selected { background: var(--accent-dim); color: var(--text); }
 #popup-list .match { color: var(--accent); font-weight: 700; }
 #popup-list .hint { float: right; color: var(--muted); }
-#popup-list .search-loc { display: block; color: var(--muted); font-size: 11px; }
-#popup-list .search-excerpt { display: block; overflow: hidden; text-overflow: ellipsis; }
-#popup-list .search-more { color: var(--muted); font-style: italic; cursor: default; }
+#popup-list li.gfile { display: flex; align-items: center; gap: 6px; color: var(--text); }
+#popup-list li.gfile .gchevron { width: 1em; flex: 0 0 1em; color: var(--muted); text-align: center; }
+#popup-list li.gfile .gfile-path { overflow: hidden; text-overflow: ellipsis; }
+#popup-list li.gfile .gcount { margin-left: auto; color: var(--muted); font-size: 11px; }
+#popup-list li.ghit { display: flex; gap: 10px; padding-left: 22px; }
+#popup-list li.ghit .gline { flex: 0 0 auto; min-width: 3ch; color: var(--muted); text-align: right; }
+#popup-list li.ghit .gtext { overflow: hidden; text-overflow: ellipsis; }
+#popup-list li.ghit .gtext .match { color: var(--accent); font-weight: 700; }
 .tree-popup #popup-list { flex: 0 0 42%; border-right: 1px solid var(--line); }
 .tree-popup #popup-list li { display: flex; align-items: center; gap: 7px; }
 .tree-indent { display: inline-block; flex: 0 0 auto; }

@@ -49,6 +49,9 @@ const state = {
   help: false,
   searchToken: 0,
   lastSearchQuery: null,
+  searchHits: [],
+  searchQuery: "",
+  searchCollapsed: new Set(),
   repoInfo: null,
   quickFiles: [],
   quickCommands: [],
@@ -856,7 +859,7 @@ function closePopup() {
 
 function renderPopupList(emptyText = "No matches") {
   popupList.innerHTML = state.popupFiltered.map((item, index) =>
-    `<li data-index="${index}" class="${index === state.popupIndex ? "selected" : ""}">
+    `<li data-index="${index}" class="${index === state.popupIndex ? "selected " : ""}${item.cls || ""}">
       ${item.html || escapeHtml(item.label)}${item.hint && !item.html ? `<span class="hint">${escapeHtml(item.hint)}</span>` : ""}
     </li>`).join("") || `<li>${escapeHtml(emptyText)}</li>`;
   popupList.querySelectorAll("[data-index]").forEach(li => li.addEventListener("click", () => choosePopup(Number(li.dataset.index))));
@@ -1084,43 +1087,77 @@ async function runGlobalSearch() {
   }
   popupList.innerHTML = `<li>Searching…</li>`;
   try {
-    const data = await api(`/api/search?${new URLSearchParams({ q: query, max: "300" })}`);
+    const data = await api(`/api/search?${new URLSearchParams({ q: query, max: "500" })}`);
     if (token !== state.searchToken || state.popup !== "search") return;
-    state.popupFiltered = (data.hits || []).map(hit => ({
-      label: `${hit.path}:${hit.line + 1}`,
-      run: () => openFile(hit.path, hit.line, hit.col),
-      html: searchHitHtml(hit, query),
-    }));
+    state.searchHits = data.hits || [];
+    state.searchQuery = query;
+    state.searchCollapsed = new Set();
     state.popupIndex = 0;
-    renderPopupList("No matches");
-    if (data.truncated) {
-      popupList.insertAdjacentHTML("beforeend", `<li class="search-more">More results omitted — refine the query</li>`);
+    if (!state.searchHits.length) {
+      state.popupFiltered = [];
+      popupList.innerHTML = `<li>No matches</li>`;
+      popupTitle.textContent = "Search project · no matches";
+      return;
     }
+    state.popupFiltered = buildSearchRows();
+    renderPopupList("No matches");
+    const files = new Set(state.searchHits.map(hit => hit.path)).size;
+    popupTitle.textContent =
+      `Search project · ${state.searchHits.length}${data.truncated ? "+" : ""} matches in ${files} file${files === 1 ? "" : "s"}`;
   } catch (error) {
     if (token !== state.searchToken || state.popup !== "search") return;
     popupList.innerHTML = `<li>${escapeHtml(error.message)}</li>`;
   }
 }
 
-function searchHitHtml(hit, query) {
-  return `<span class="search-loc">${escapeHtml(hit.path)}:${hit.line + 1}:${hit.col + 1}</span>`
-    + `<span class="search-excerpt">${highlightMatch(hit.excerpt, query)}</span>`;
+// Flatten the path-sorted hits into a collapsible per-file tree: one file header
+// row (chevron · path · count) followed by its match rows (line · excerpt).
+// Rows under a collapsed file are dropped so keyboard nav skips them.
+function buildSearchRows() {
+  const counts = new Map();
+  for (const hit of state.searchHits) counts.set(hit.path, (counts.get(hit.path) || 0) + 1);
+  const rows = [];
+  let curPath = null;
+  for (const hit of state.searchHits) {
+    if (hit.path !== curPath) {
+      curPath = hit.path;
+      const path = hit.path;
+      const collapsed = state.searchCollapsed.has(path);
+      rows.push({
+        kind: "file", path, cls: "gfile", keepOpen: true,
+        html: `<span class="gchevron">${collapsed ? "▸" : "▾"}</span>`
+          + `<span class="gfile-path">${escapeHtml(path)}</span>`
+          + `<span class="gcount">${counts.get(path)}</span>`,
+        run: () => toggleSearchFile(path),
+      });
+    }
+    if (state.searchCollapsed.has(hit.path)) continue;
+    rows.push({
+      kind: "hit", cls: "ghit",
+      html: `<span class="gline">${hit.line + 1}</span>`
+        + `<span class="gtext">${highlightExcerpt(hit.excerpt, hit.col, state.searchQuery.length)}</span>`,
+      run: () => openFile(hit.path, hit.line, hit.col),
+    });
+  }
+  return rows;
 }
 
-function highlightMatch(text, query) {
-  const trimmed = String(text || "").replace(/^\s+/, "").slice(0, 200);
-  const q = query.toLowerCase();
-  if (!q) return escapeHtml(trimmed);
-  const lower = trimmed.toLowerCase();
-  let out = "", cursor = 0;
-  for (;;) {
-    const found = lower.indexOf(q, cursor);
-    if (found < 0) { out += escapeHtml(trimmed.slice(cursor)); break; }
-    out += escapeHtml(trimmed.slice(cursor, found));
-    out += `<span class="match">${escapeHtml(trimmed.slice(found, found + q.length))}</span>`;
-    cursor = found + q.length;
-  }
-  return out;
+function toggleSearchFile(path) {
+  if (state.searchCollapsed.has(path)) state.searchCollapsed.delete(path);
+  else state.searchCollapsed.add(path);
+  state.popupFiltered = buildSearchRows();
+  state.popupIndex = Math.min(state.popupIndex, state.popupFiltered.length - 1);
+  renderPopupList("No matches");
+}
+
+// Bold `qlen` characters of the excerpt from the server-provided 0-based column.
+function highlightExcerpt(excerpt, col, qlen) {
+  const chars = Array.from(String(excerpt || ""));
+  const start = Math.max(0, Math.min(col, chars.length));
+  const end = Math.max(start, Math.min(col + qlen, chars.length));
+  return escapeHtml(chars.slice(0, start).join(""))
+    + (end > start ? `<span class="match">${escapeHtml(chars.slice(start, end).join(""))}</span>` : "")
+    + escapeHtml(chars.slice(end).join(""));
 }
 
 popupInput.addEventListener("input", filterPopup);
@@ -1143,6 +1180,12 @@ popupInput.addEventListener("keydown", event => {
     event.preventDefault();
     state.popupIndex = Math.max(0, state.popupIndex - 1);
     filterPopup();
+  } else if (state.popup === "search" && (event.key === "ArrowRight" || event.key === "ArrowLeft")) {
+    const item = state.popupFiltered[state.popupIndex];
+    if (item?.kind === "file" && (event.key === "ArrowRight") === state.searchCollapsed.has(item.path)) {
+      event.preventDefault();
+      toggleSearchFile(item.path);
+    }
   } else if (event.key === "Enter" && state.popup === "tree" && (event.altKey || event.metaKey)) {
     event.preventDefault();
     openTreeSelectionInNewTab();
