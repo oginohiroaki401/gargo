@@ -41,6 +41,7 @@ const state = {
   refs: [],
   compareBase: "",
   compareTarget: "",
+  refPickerWhich: "base",
   compareFiles: [],
   compareFile: 0,
   statusFiles: [],
@@ -108,7 +109,7 @@ const HELP_SECTIONS = [
   {
     title: "History / Compare", keys: [
       ["J / K", "History: prev/next changed file · Compare: scroll preview"],
-      ["B / C", "Compare: focus base / compare ref"],
+      ["B / C", "Compare: pick base / compare ref (fuzzy)"],
     ],
   },
   {
@@ -288,7 +289,7 @@ async function renderExplorer() {
   }
 }
 
-// Markdown/HTML preview (item 22): `p` toggles a rendered view of the current
+// Markdown/HTML preview: `p` toggles a rendered view of the current
 // file. The server renders markdown (GFM) and passes HTML through; mermaid code
 // blocks come back as `<pre class="mermaid">` which the injected bootstrap runs.
 function previewableKind(path) {
@@ -445,26 +446,36 @@ async function renderCodeSurface(container, options) {
     state.fileContent = input.value;
     // The visible glyphs are the highlight layer (the textarea text is
     // transparent), so paint plain text synchronously for zero-lag feedback;
-    // the server syntax pass refines it a beat later (item 41).
+    // the server syntax pass refines it a beat later.
     layer.innerHTML = numberedPlainText(input.value);
     applyGitGutter(layer);
     // Re-measure height only when the line count changes — `scrollHeight`
     // forces a reflow, so skipping it on intra-line edits keeps typing snappy.
     const lines = input.value.split("\n").length;
     if (String(lines) !== input.dataset.lines) {
+      // Resetting the height to `auto` collapses the surface and clamps its
+      // scrollTop, which yanks the viewport on every line added/removed. Pin the
+      // scroll position across the reflow so the view only moves when the caret
+      // actually leaves the viewport (handled by scrollEditorToCursor below).
+      const surface = editorScroller();
+      const keepTop = surface ? surface.scrollTop : 0;
       input.dataset.lines = String(lines);
       input.style.height = "auto";
       input.style.height = `${Math.max(input.scrollHeight, body.clientHeight)}px`;
+      if (surface) surface.scrollTop = keepTop;
+      scrollEditorToCursor("auto");
     }
     updateDirtyIndicator();
     clearTimeout(input.highlightTimer);
     input.highlightTimer = setTimeout(() => updateHighlightLayer(layer, options.path, input.value), 90);
     scheduleGitGutter(options.path, input.value);
   });
-  input.addEventListener("mousedown", event => {
+  input.addEventListener("mousedown", () => {
     if (state.editorMode === "readonly") {
-      event.preventDefault();
-      setFocus("app", 0);
+      // Click into a read-only editor → enter insert mode with the caret where
+      // the click lands. Don't preventDefault: the native mousedown positions
+      // the caret, and setFocus("editor") flips readOnly off and focuses.
+      setFocus("editor", 0);
     } else {
       clearMultiCursors();
     }
@@ -490,8 +501,8 @@ function enterEditorInsertMode() {
   if (!input) return false;
   input.readOnly = false;
   // Drop the caret on the first visible line so entering edit mode keeps the
-  // viewport where the user was reading instead of jumping to the old caret
-  // (item 40). Line height is 20px with 12px top padding (see editor.css).
+  // viewport where the user was reading instead of jumping to the old caret.
+  // Line height is 20px with 12px top padding (see editor.css).
   const surface = editorScroller();
   if (surface) {
     const lines = input.value.split("\n");
@@ -502,7 +513,7 @@ function enterEditorInsertMode() {
   updateEditorModeIndicator();
   setFocus("editor", 0);
   // No scroll-to-cursor here: the caret was just placed on a visible line, so
-  // scrolling would re-center it and undo the point of item 40.
+  // scrolling would re-center it and undo that.
   return true;
 }
 
@@ -533,7 +544,7 @@ function smoothScrollBy(el, delta) {
 }
 
 // The scrollable element behind the explorer keys: the preview iframe's
-// document when previewing (item 39), otherwise the code surface.
+// document when previewing, otherwise the code surface.
 function explorerScrollTarget() {
   if (state.previewMode) {
     const doc = app.querySelector(".preview-frame")?.contentDocument;
@@ -569,7 +580,7 @@ function scrollEditorToCursor(behavior = "smooth") {
   }
 }
 
-// ---- Multi-cursor (item 38) ------------------------------------------------
+// ---- Multi-cursor ----------------------------------------------------------
 //
 // A <textarea> has a single native caret, so multi-cursor is emulated: a set of
 // ranges in `state.multiRanges`, an overlay drawing the extra carets/selection
@@ -782,7 +793,7 @@ async function updateHighlightLayer(layer, path, content) {
   applyGitGutter(layer);
 }
 
-// Git change gutter (items 28/33): per-line added/modified/deleted status from
+// Git change gutter: per-line added/modified/deleted status from
 // `/api/git-gutter`, painted as colored bars on the line-number column. Only the
 // editable code view renders line numbers, so the gutter is scoped to it.
 function scheduleGitGutter(path, content) {
@@ -928,7 +939,6 @@ async function renderCompare() {
   if (!state.compareFiles.length && state.compareBase && state.compareTarget) {
     await loadCompare().catch(error => notify(error.message));
   }
-  const options = state.refs.map(ref => `<option value="${escapeHtml(ref)}"></option>`).join("");
   await renderDiffView({
     kind: "compare",
     title: "Compare",
@@ -936,30 +946,49 @@ async function renderCompare() {
     panes: [
       {
         title: "Source · ref pair", name: "ref pair and changed files",
-        body: `<form class="ref-form" id="ref-form">
-          <label class="ref-label" for="ref-base">Base</label>
-          <input id="ref-base" name="base" value="${escapeHtml(state.compareBase)}" list="refs" aria-label="Base ref">
-          <label class="ref-label" for="ref-compare">Compare</label>
-          <input id="ref-compare" name="target" value="${escapeHtml(state.compareTarget)}" list="refs" aria-label="Compare ref">
-          <button class="small-button" type="submit">Load</button>
-          <datalist id="refs">${options}</datalist>
-        </form>
+        body: `<div class="ref-form" id="ref-form">
+          <label class="ref-label">Base</label>
+          <button type="button" class="ref-button" id="ref-base" aria-label="Base ref">${escapeHtml(state.compareBase) || "—"}</button>
+          <label class="ref-label">Compare</label>
+          <button type="button" class="ref-button" id="ref-target" aria-label="Compare ref">${escapeHtml(state.compareTarget) || "—"}</button>
+        </div>
         ${fileList(state.compareFiles, state.compareFile, { viewed: true })}`,
       },
       { title: "Preview", name: "preview", body: diffSurfaceHtml() },
     ],
     bind: () => {
-      document.getElementById("ref-form").addEventListener("submit", async event => {
-        event.preventDefault();
-        const form = new FormData(event.currentTarget);
-        state.compareBase = String(form.get("base") || "").trim();
-        state.compareTarget = String(form.get("target") || "").trim();
-        await loadCompare();
-        await renderCompare();
-        setFocus("pane", 0);
-      });
+      document.getElementById("ref-base").addEventListener("click", () => openRefPicker("base"));
+      document.getElementById("ref-target").addEventListener("click", () => openRefPicker("target"));
     },
   });
+}
+
+// Fuzzy picker for the Compare base/compare refs (replaces the raw text inputs).
+// Lists known branches/tags/refs; a non-matching query offers a "use verbatim"
+// row so arbitrary commit refs still work.
+async function openRefPicker(which) {
+  await ensureRefs();
+  state.refPickerWhich = which;
+  const current = which === "base" ? state.compareBase : state.compareTarget;
+  const items = state.refs.map(ref => ({
+    label: ref, search: ref,
+    hint: ref === current ? "current" : "",
+    run: () => applyRef(which, ref),
+  }));
+  showPopup("ref", which === "base" ? "Select base ref" : "Select compare ref",
+    items, "Filter branches, tags, refs…");
+}
+
+async function applyRef(which, ref) {
+  ref = String(ref || "").trim();
+  if (!ref) return;
+  if (which === "base") state.compareBase = ref;
+  else state.compareTarget = ref;
+  state.compareFiles = [];
+  state.compareFile = 0;
+  await loadCompare().catch(error => notify(error.message));
+  await renderCompare();
+  setFocus("pane", 0);
 }
 
 async function renderDiffView(source) {
@@ -1402,6 +1431,8 @@ function showPopup(kind, title, items, placeholder = "") {
     ? "type to search project · ↑↓ move · Enter open · Esc close"
     : kind === "quick"
     ? "↑↓ move · Enter select · > commands · @ symbols · Esc close"
+    : kind === "ref"
+    ? "type to filter · Enter select · any commit/tag ref works · Esc close"
     : "arrows move · Enter select · Esc close";
   if (kind !== "tree") popupPreview.innerHTML = "";
   popupBackdrop.hidden = false;
@@ -1452,6 +1483,16 @@ function filterPopup() {
       .sort((a, b) => b.score - a.score)
       .slice(0, 300)
     : state.popupItems.slice(0, 300);
+  // Ref picker: a query that doesn't exactly name a known ref still resolves —
+  // offer it verbatim so arbitrary commit/tag refs can be entered.
+  if (state.popup === "ref" && query
+      && !state.popupFiltered.some(item => item.label === query)) {
+    const which = state.refPickerWhich;
+    state.popupFiltered.unshift({
+      label: query, search: query, hint: "use verbatim",
+      run: () => applyRef(which, query),
+    });
+  }
   state.popupIndex = Math.min(state.popupIndex, Math.max(0, state.popupFiltered.length - 1));
   renderPopupList();
   if (state.popup === "tree") updateTreePreview();
@@ -1521,7 +1562,21 @@ async function loadQuickSymbols() {
 async function openTreePicker() {
   await ensureFiles();
   state.treeRoot = buildTree(state.fileEntries);
+  // Reveal and select the currently open file so the tree lands focused on it.
+  if (state.currentFile) {
+    const parts = state.currentFile.split("/");
+    for (let i = 1; i < parts.length; i++) state.treeExpanded.add(parts.slice(0, i).join("/"));
+  }
   showPopup("tree", "Explorer", treePopupItems(""), "Filter tree");
+  if (state.currentFile) {
+    const index = state.popupFiltered.findIndex(item => item.node?.path === state.currentFile);
+    if (index >= 0) {
+      state.popupIndex = index;
+      renderPopupList();
+      popupList.querySelector(".selected")?.scrollIntoView({ block: "center" });
+      updateTreePreview();
+    }
+  }
 }
 
 function buildTree(entries) {
@@ -1846,7 +1901,9 @@ window.addEventListener("keydown", async event => {
   }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
     event.preventDefault();
-    await saveCurrentFile();
+    // Only persist while actively editing — Cmd+S in a read-only view (diff
+    // panes, or a file opened but not being edited) shouldn't write anything.
+    if (state.editorMode === "insert") await saveCurrentFile();
     return;
   }
   if (event.metaKey && !event.shiftKey && event.key.toLowerCase() === "d"
@@ -1867,7 +1924,7 @@ window.addEventListener("keydown", async event => {
     if (isText && event.target.classList.contains("editor-input")) {
       event.preventDefault();
       // Esc collapses an active selection first (staying in insert mode);
-      // only a second Esc (no selection) returns to app focus (item 43).
+      // only a second Esc (no selection) returns to app focus.
       const input = event.target;
       if (input.selectionStart !== input.selectionEnd) {
         input.setSelectionRange(input.selectionEnd, input.selectionEnd);
@@ -1963,14 +2020,9 @@ window.addEventListener("keydown", async event => {
     return;
   }
   if (state.component === "compare" && (event.key === "B" || event.key === "C")) {
-    const input = document.querySelector(
-      `#ref-form input[name="${event.key === "B" ? "base" : "target"}"]`);
-    if (input) {
-      event.preventDefault();
-      input.focus();
-      input.select();
-      return;
-    }
+    event.preventDefault();
+    await openRefPicker(event.key === "B" ? "base" : "target");
+    return;
   }
   if (state.component === "compare" && state.pane === 0 && event.key === "v") {
     event.preventDefault();
@@ -2017,6 +2069,15 @@ window.addEventListener("keydown", async event => {
   if (event.ctrlKey && (event.key === "d" || event.key === "u")) {
     event.preventDefault();
     scrollPreview(event.key === "d" ? 1 : -1);
+  }
+});
+
+// Warn before closing/reloading the tab while the open file has unsaved edits.
+// The browser shows its own native confirm dialog when returnValue is set.
+window.addEventListener("beforeunload", event => {
+  if (state.currentFile && state.fileContent !== state.fileBaseContent) {
+    event.preventDefault();
+    event.returnValue = "";
   }
 });
 

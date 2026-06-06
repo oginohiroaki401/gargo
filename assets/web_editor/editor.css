@@ -123,19 +123,25 @@ button { color: inherit; }
 .empty, .loading, .error { padding: 18px; color: var(--muted); }
 .error { color: var(--red); }
 
-.ref-form { display: grid; grid-template-columns: auto 1fr auto 1fr auto; gap: 7px; align-items: center; padding: 9px; border-bottom: 1px solid var(--line); }
+.ref-form { display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 7px; align-items: center; padding: 9px; border-bottom: 1px solid var(--line); }
 .ref-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
-.ref-form input {
+.ref-button {
   min-width: 0;
   width: 100%;
+  text-align: left;
   border: 1px solid var(--line);
   border-radius: 3px;
   padding: 5px 7px;
   background: var(--bg);
   color: var(--text);
   outline: none;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: inherit;
 }
-.ref-form input:focus { border-color: var(--accent); }
+.ref-button:hover, .ref-button:focus { border-color: var(--accent); }
 .small-button {
   border: 1px solid var(--line);
   border-radius: 3px;
