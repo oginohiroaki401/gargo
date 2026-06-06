@@ -61,6 +61,7 @@ const state = {
   statusBranch: "",
   statusSignature: "",
   statusPollTimer: null,
+  previewToken: 0,
   popup: null,
   popupItems: [],
   popupFiltered: [],
@@ -1385,10 +1386,16 @@ async function loadCurrentDiffPreview() {
     surface.innerHTML = `<div class="empty">No file selected</div>`;
     return;
   }
+  // Guard against out-of-order responses: while holding j/k, several preview
+  // fetches are in flight at once, and a slow earlier one must not clobber the
+  // diff for the row the user has since landed on.
+  const token = ++state.previewToken;
   try {
     const data = await api(url);
+    if (token !== state.previewToken) return;
     await renderCodeSurface(surface, { path: file.path, diffHtml: data.html || "", editable: false });
   } catch (error) {
+    if (token !== state.previewToken) return;
     surface.innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
   }
 }
@@ -1415,8 +1422,15 @@ async function moveSelectionTo(index) {
     state.compareFile = Math.max(0, Math.min(index, state.compareFiles.length - 1));
     await renderCompare();
   } else if (state.component === "status" && state.pane === 0) {
+    // j/k between files: the file set is already in state (and a 1.5s poller
+    // keeps it fresh), so don't re-fetch /api/status or rebuild the whole view.
+    // Just move the selected row and load the new file's preview — re-rendering
+    // both panes on every keystroke is what made navigation feel sluggish.
     state.statusFile = Math.max(0, Math.min(index, state.statusFiles.length - 1));
-    await renderStatus();
+    const pane0 = app.querySelector('.pane[data-pane="0"]');
+    pane0?.querySelector("li.selected")?.classList.remove("selected");
+    pane0?.querySelector(`li[data-index="${state.statusFile}"]`)?.classList.add("selected");
+    await loadCurrentDiffPreview();
   }
 }
 
