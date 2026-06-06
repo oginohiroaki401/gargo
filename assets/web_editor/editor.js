@@ -27,6 +27,7 @@ const state = {
   fileBaseContent: "",
   fileHash: "",
   editorMode: "readonly",
+  previewMode: false,
   highlightLines: {},
   commits: [],
   historyCommit: 0,
@@ -80,6 +81,7 @@ const HELP_SECTIONS = [
       ["j / k", "Scroll"],
       ["g g", "Jump to head of file"],
       ["G", "Jump to tail of file"],
+      ["p", "Toggle Markdown/HTML preview"],
     ],
   },
   {
@@ -254,12 +256,14 @@ async function ensureFiles() {
 
 async function renderExplorer() {
   app.innerHTML = `<section class="component">
-    ${componentBar("Explorer", `<span><span class="key">app:t</span> tree · <span class="key">⌘P</span> files · <span class="key">⌘⇧P</span> commands · <span class="key">⌘@</span> symbols · <span class="key">⌘⇧F</span> search · <span class="key">?</span> help</span>`)}
+    ${componentBar("Explorer", `<span><span class="key">app:t</span> tree · <span class="key">⌘P</span> files · <span class="key">⌘⇧P</span> commands · <span class="key">⌘@</span> symbols · <span class="key">⌘⇧F</span> search · <span class="key">p</span> preview · <span class="key">?</span> help</span>`)}
     <div id="explorer-surface" class="pane focused" tabindex="-1" data-pane="0" data-name="editor"></div>
   </section>`;
   if (!state.currentFile) {
     app.querySelector("#explorer-surface").innerHTML =
       `<div class="empty">No file open. Press <span class="key">t</span> for the tree or <span class="key">Cmd+P</span> for files.</div>`;
+  } else if (state.previewMode && previewableKind(state.currentFile)) {
+    await renderPreviewSurface(app.querySelector("#explorer-surface"));
   } else {
     await renderCodeSurface(app.querySelector("#explorer-surface"), {
       path: state.currentFile,
@@ -267,6 +271,77 @@ async function renderExplorer() {
       editable: true,
     });
   }
+}
+
+// Markdown/HTML preview (item 22): `p` toggles a rendered view of the current
+// file. The server renders markdown (GFM) and passes HTML through; mermaid code
+// blocks come back as `<pre class="mermaid">` which the injected bootstrap runs.
+function previewableKind(path) {
+  const ext = (path || "").split(".").pop().toLowerCase();
+  if (ext === "md" || ext === "markdown") return "markdown";
+  if (ext === "html" || ext === "htm") return "html";
+  return null;
+}
+
+const PREVIEW_CSS = [
+  "body { margin: 0; padding: 20px; color: #1f2328; background: #fff;",
+  "  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; line-height: 1.6; }",
+  ".markdown-body { max-width: 980px; margin: 0 auto; }",
+  ".markdown-body img { max-width: 100%; }",
+  ".markdown-body pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow: auto; line-height: 1.45; }",
+  ".markdown-body code { background: rgba(175,184,193,0.2); padding: 0.2em 0.4em; border-radius: 6px;",
+  "  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 85%; }",
+  ".markdown-body pre code { background: transparent; padding: 0; border-radius: 0; font-size: 100%; }",
+  ".markdown-body table { border-collapse: collapse; }",
+  ".markdown-body th, .markdown-body td { border: 1px solid #d0d7de; padding: 6px 13px; }",
+  "pre.mermaid { background: #fff; border: none; display: flex; justify-content: center; }",
+].join("\n");
+
+// The escaped `<\/script>` keeps the parent page's <script> from closing early
+// when editor.js is inlined into editor.html.
+const PREVIEW_MERMAID_BOOT =
+  '<script src="/assets/mermaid.min.js"><\/script>'
+  + "<script>(function(){if(!window.mermaid)return;"
+  + "window.mermaid.initialize({startOnLoad:false,theme:'default'});"
+  + "window.mermaid.run({querySelector:'pre.mermaid'}).catch(function(){});})();<\/script>";
+
+function previewDocument(data) {
+  if (data.kind === "html") return data.html || "";
+  if (data.kind === "markdown") {
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>${PREVIEW_CSS}</style></head>`
+      + `<body><div class="markdown-body">${data.html || ""}</div>${PREVIEW_MERMAID_BOOT}</body></html>`;
+  }
+  return "";
+}
+
+async function renderPreviewSurface(container) {
+  const path = state.currentFile;
+  container.innerHTML = `<div class="code-surface preview-surface">
+    <div class="code-toolbar"><span class="path">${escapeHtml(path)}</span>
+      <span class="grow"></span><span class="editor-mode">preview</span><span>p for code</span></div>
+    <div class="code-body"><iframe class="preview-frame" title="Preview"></iframe></div>
+  </div>`;
+  const frame = container.querySelector(".preview-frame");
+  try {
+    const data = await api("/api/preview", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path, content: state.fileContent }),
+    });
+    frame.srcdoc = previewDocument(data);
+  } catch (error) {
+    frame.srcdoc = `<pre style="color:#b00020;padding:16px">${escapeHtml(error.message)}</pre>`;
+  }
+}
+
+async function togglePreview() {
+  if (state.component !== "explorer") return;
+  if (!state.currentFile || !previewableKind(state.currentFile)) {
+    notify("Preview is only available for Markdown and HTML files");
+    return;
+  }
+  state.previewMode = !state.previewMode;
+  await renderExplorer();
+  setFocus("app", 0);
 }
 
 async function openFile(path, line = null, col = 0) {
@@ -1347,6 +1422,11 @@ window.addEventListener("keydown", async event => {
   if (state.component === "explorer" && state.focusLevel === "app" && event.key === "G") {
     event.preventDefault();
     gotoEditorEdge("bottom");
+    return;
+  }
+  if (state.component === "explorer" && state.focusLevel === "app" && event.key === "p") {
+    event.preventDefault();
+    await togglePreview();
     return;
   }
   if (state.component === "compare" && event.shiftKey && event.key === "J") {
