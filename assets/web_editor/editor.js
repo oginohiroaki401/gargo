@@ -45,6 +45,8 @@ const state = {
   treeExpanded: new Set(),
   treePreviewToken: 0,
   help: false,
+  searchToken: 0,
+  lastSearchQuery: null,
 };
 
 const HELP_SECTIONS = [
@@ -105,6 +107,7 @@ const COMMANDS = [
   { label: "Open file tree", hint: "t", run: () => openTreePicker() },
   { label: "Save current file", hint: "Cmd+S", run: () => saveCurrentFile() },
   { label: "Refresh current component", hint: "r", run: () => refreshComponent() },
+  { label: "Search project", hint: "Cmd+Shift+F", run: () => openSearchPopup() },
   { label: "Show keybindings", hint: "?", run: () => toggleHelp() },
 ];
 
@@ -783,6 +786,8 @@ function showPopup(kind, title, items, placeholder = "") {
   popupPreview.hidden = kind !== "tree";
   popupHint.textContent = kind === "tree"
     ? "j/k move · h/l collapse/expand · Enter open · ⌥/⌘Enter new tab · / filter · J/K preview · Esc close"
+    : kind === "search"
+    ? "type to search project · ↑↓ move · Enter open · Esc close"
     : "arrows move · Enter select · Esc close";
   if (kind !== "tree") popupPreview.innerHTML = "";
   popupBackdrop.hidden = false;
@@ -799,8 +804,22 @@ function closePopup() {
   setFocus(state.focusLevel, state.pane);
 }
 
+function renderPopupList(emptyText = "No matches") {
+  popupList.innerHTML = state.popupFiltered.map((item, index) =>
+    `<li data-index="${index}" class="${index === state.popupIndex ? "selected" : ""}">
+      ${item.html || escapeHtml(item.label)}${item.hint && !item.html ? `<span class="hint">${escapeHtml(item.hint)}</span>` : ""}
+    </li>`).join("") || `<li>${escapeHtml(emptyText)}</li>`;
+  popupList.querySelectorAll("[data-index]").forEach(li => li.addEventListener("click", () => choosePopup(Number(li.dataset.index))));
+  popupList.querySelector(".selected")?.scrollIntoView({ block: "nearest" });
+}
+
 function filterPopup() {
   const query = popupInput.value.trim();
+  if (state.popup === "search") {
+    if (query === state.lastSearchQuery) renderPopupList();
+    else scheduleSearch();
+    return;
+  }
   if (state.popup === "tree") {
     state.popupItems = treePopupItems(query);
   }
@@ -812,12 +831,7 @@ function filterPopup() {
       .slice(0, 300)
     : state.popupItems.slice(0, 300);
   state.popupIndex = Math.min(state.popupIndex, Math.max(0, state.popupFiltered.length - 1));
-  popupList.innerHTML = state.popupFiltered.map((item, index) =>
-    `<li data-index="${index}" class="${index === state.popupIndex ? "selected" : ""}">
-      ${item.html || escapeHtml(item.label)}${item.hint && !item.html ? `<span class="hint">${escapeHtml(item.hint)}</span>` : ""}
-    </li>`).join("") || `<li>No matches</li>`;
-  popupList.querySelectorAll("[data-index]").forEach(li => li.addEventListener("click", () => choosePopup(Number(li.dataset.index))));
-  popupList.querySelector(".selected")?.scrollIntoView({ block: "nearest" });
+  renderPopupList();
   if (state.popup === "tree") updateTreePreview();
 }
 
@@ -968,6 +982,68 @@ async function openSymbolPicker() {
   })), "Search symbols");
 }
 
+// Project-wide text search (Cmd+Shift+F). Backed by /api/search, which is a
+// case-insensitive literal substring search with a 3-character minimum.
+function openSearchPopup() {
+  state.lastSearchQuery = null;
+  showPopup("search", "Search project", [], "Search across files");
+}
+
+function scheduleSearch() {
+  clearTimeout(scheduleSearch.timer);
+  scheduleSearch.timer = setTimeout(runGlobalSearch, 150);
+}
+
+async function runGlobalSearch() {
+  const query = popupInput.value.trim();
+  const token = ++state.searchToken;
+  state.lastSearchQuery = query;
+  if (query.length < 3) {
+    state.popupFiltered = [];
+    popupList.innerHTML = `<li>${query ? "Type at least 3 characters…" : "Search across the project"}</li>`;
+    return;
+  }
+  popupList.innerHTML = `<li>Searching…</li>`;
+  try {
+    const data = await api(`/api/search?${new URLSearchParams({ q: query, max: "300" })}`);
+    if (token !== state.searchToken || state.popup !== "search") return;
+    state.popupFiltered = (data.hits || []).map(hit => ({
+      label: `${hit.path}:${hit.line + 1}`,
+      run: () => openFile(hit.path, hit.line, hit.col),
+      html: searchHitHtml(hit, query),
+    }));
+    state.popupIndex = 0;
+    renderPopupList("No matches");
+    if (data.truncated) {
+      popupList.insertAdjacentHTML("beforeend", `<li class="search-more">More results omitted — refine the query</li>`);
+    }
+  } catch (error) {
+    if (token !== state.searchToken || state.popup !== "search") return;
+    popupList.innerHTML = `<li>${escapeHtml(error.message)}</li>`;
+  }
+}
+
+function searchHitHtml(hit, query) {
+  return `<span class="search-loc">${escapeHtml(hit.path)}:${hit.line + 1}:${hit.col + 1}</span>`
+    + `<span class="search-excerpt">${highlightMatch(hit.excerpt, query)}</span>`;
+}
+
+function highlightMatch(text, query) {
+  const trimmed = String(text || "").replace(/^\s+/, "").slice(0, 200);
+  const q = query.toLowerCase();
+  if (!q) return escapeHtml(trimmed);
+  const lower = trimmed.toLowerCase();
+  let out = "", cursor = 0;
+  for (;;) {
+    const found = lower.indexOf(q, cursor);
+    if (found < 0) { out += escapeHtml(trimmed.slice(cursor)); break; }
+    out += escapeHtml(trimmed.slice(cursor, found));
+    out += `<span class="match">${escapeHtml(trimmed.slice(found, found + q.length))}</span>`;
+    cursor = found + q.length;
+  }
+  return out;
+}
+
 popupInput.addEventListener("input", filterPopup);
 popupInput.addEventListener("keydown", event => {
   if (event.key === "Escape") {
@@ -1069,6 +1145,11 @@ window.addEventListener("keydown", async event => {
   // Preserve native browser focus-location and reload shortcuts.
   if (event.metaKey && ["l", "r"].includes(event.key.toLowerCase())) return;
 
+  if (event.metaKey && event.shiftKey && event.key.toLowerCase() === "f") {
+    event.preventDefault();
+    openSearchPopup();
+    return;
+  }
   if (event.metaKey && event.key.toLowerCase() === "p") {
     event.preventDefault();
     if (event.shiftKey) openCommandPicker(); else openFilePicker();

@@ -16,7 +16,7 @@
 - [x] tree view : alt enter, cmd tab to open that file in new tab
 - [x] in compare, b to focus input field for base branch, c for compare
 - [x] `?` to show keybinding and help
-- [ ] in exlorer or editor, cmd shift f to global search. refer to old impl for what it should do
+- [x] in exlorer or editor, cmd shift f to global search. refer to old impl for what it should do
 
 ## memo1
 - have app to have two focus in explorer tab. app(with editor READONLY) or editor(writable)
