@@ -18,7 +18,7 @@
 - [x] `?` to show keybinding and help
 - [x] in exlorer or editor, cmd shift f to global search. refer to old impl for what it should do
 - [x] want ${org}/${reponame} (also these are link to remote) in top left, left to Explorer | History...
-- [ ] command picker, symbol picker, file picker should follow `>`, `@`, `` rule as cli one
+- [x] command picker, symbol picker, file picker should follow `>`, `@`, `` rule as cli one
 - [ ] in app focus in explorer, want `p` to preview/code toggle for markdown. HTML also. default code. use mermaid js for medaid rendering
 - [x] in compare's branch selection, want `Base` and `Compare` text. Also make keybind `B` and `C` not `b` and `c`
 - [ ] want global search result to look more old one(more narrow result, per file mathed line tree. see old master impl)

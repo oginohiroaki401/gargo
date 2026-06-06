@@ -50,6 +50,11 @@ const state = {
   searchToken: 0,
   lastSearchQuery: null,
   repoInfo: null,
+  quickFiles: [],
+  quickCommands: [],
+  quickSymbols: [],
+  quickSymbolsLoaded: false,
+  quickMode: "files",
 };
 
 const HELP_SECTIONS = [
@@ -831,6 +836,8 @@ function showPopup(kind, title, items, placeholder = "") {
     ? "j/k move · h/l collapse/expand · Enter open · ⌥/⌘Enter new tab · / filter · J/K preview · Esc close"
     : kind === "search"
     ? "type to search project · ↑↓ move · Enter open · Esc close"
+    : kind === "quick"
+    ? "↑↓ move · Enter select · > commands · @ symbols · Esc close"
     : "arrows move · Enter select · Esc close";
   if (kind !== "tree") popupPreview.innerHTML = "";
   popupBackdrop.hidden = false;
@@ -857,14 +864,22 @@ function renderPopupList(emptyText = "No matches") {
 }
 
 function filterPopup() {
-  const query = popupInput.value.trim();
+  const raw = popupInput.value;
   if (state.popup === "search") {
-    if (query === state.lastSearchQuery) renderPopupList();
+    if (raw.trim() === state.lastSearchQuery) renderPopupList();
     else scheduleSearch();
     return;
   }
+  let query = raw.trim();
   if (state.popup === "tree") {
     state.popupItems = treePopupItems(query);
+  } else if (state.popup === "quick") {
+    const resolved = resolveQuickMode(raw);
+    if (resolved.mode !== state.quickMode) { state.quickMode = resolved.mode; state.popupIndex = 0; }
+    state.popupItems = resolved.items;
+    query = resolved.query;
+    popupTitle.textContent = resolved.title;
+    if (resolved.mode === "symbols" && !state.quickSymbolsLoaded) loadQuickSymbols();
   }
   state.popupFiltered = query
     ? state.popupItems
@@ -885,31 +900,64 @@ async function choosePopup(index = state.popupIndex) {
   await item.run();
 }
 
-async function openFilePicker() {
+// Unified quick-open (VSCode / CLI style): one picker whose mode is driven by a
+// leading sigil — `>` runs commands, `@` jumps to symbols, anything else is the
+// fuzzy file picker. `initial` seeds the input so the entry-point shortcuts
+// (⌘P / ⌘⇧P / ⌘@) land directly in the right mode.
+async function openQuickPicker(initial = "") {
   await ensureFiles();
   const entries = [...state.fileEntries].sort((a, b) =>
     Number(b.changed) - Number(a.changed)
     || Number(b.mtime || 0) - Number(a.mtime || 0)
     || a.path.localeCompare(b.path)
   );
-  showPopup("files", "File picker", entries.map(entry => ({
+  state.quickFiles = entries.map(entry => ({
     label: entry.path,
     hint: entry.changed ? "changed" : "",
     run: () => openFile(entry.path),
-  })), "Search files");
+  }));
+  state.quickCommands = [...COMMANDS].sort((a, b) => a.label.localeCompare(b.label)).map(command => ({
+    label: command.label, hint: command.hint, run: command.run,
+  }));
+  state.quickSymbols = [];
+  state.quickSymbolsLoaded = false;
+  state.quickMode = "files";
+  showPopup("quick", "Files", [], "Search files · > commands · @ symbols");
+  if (initial) { popupInput.value = initial; filterPopup(); }
+}
+
+function resolveQuickMode(raw) {
+  if (raw.startsWith(">")) {
+    return { mode: "commands", items: state.quickCommands, query: raw.slice(1).trim(), title: "Commands · type to filter" };
+  }
+  if (raw.startsWith("@")) {
+    return { mode: "symbols", items: state.quickSymbols, query: raw.slice(1).trim(), title: "Symbols · type to filter" };
+  }
+  return { mode: "files", items: state.quickFiles, query: raw.trim(), title: "Files · > commands · @ symbols" };
+}
+
+async function loadQuickSymbols() {
+  state.quickSymbolsLoaded = true;
+  if (!state.currentFile) { state.quickSymbols = []; return; }
+  try {
+    const data = await api("/api/symbols", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: state.currentFile, content: state.fileContent }),
+    });
+    state.quickSymbols = (data.symbols || []).map(symbol => ({
+      label: symbol.name, hint: `${symbol.kind} · ${symbol.line + 1}`,
+      run: () => openFile(state.currentFile, symbol.line, symbol.col),
+    }));
+  } catch (_) {
+    state.quickSymbols = [];
+  }
+  if (state.popup === "quick") filterPopup();
 }
 
 async function openTreePicker() {
   await ensureFiles();
   state.treeRoot = buildTree(state.fileEntries);
   showPopup("tree", "Explorer", treePopupItems(""), "Filter tree");
-}
-
-function openCommandPicker() {
-  const commands = [...COMMANDS].sort((a, b) => a.label.localeCompare(b.label));
-  showPopup("commands", "Command picker", commands.map(command => ({
-    label: command.label, hint: command.hint, run: command.run,
-  })), "Run command");
 }
 
 function buildTree(entries) {
@@ -1011,18 +1059,6 @@ async function updateTreePreview() {
     if (token !== state.treePreviewToken || state.popup !== "tree") return;
     popupPreview.innerHTML = `<div class="preview-title">${escapeHtml(node.path)}</div><div class="error">${escapeHtml(error.message)}</div>`;
   }
-}
-
-async function openSymbolPicker() {
-  if (!state.currentFile) { notify("Open a file before using the symbol picker"); return; }
-  const data = await api("/api/symbols", {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ path: state.currentFile, content: state.fileContent }),
-  });
-  showPopup("symbols", `Symbols · ${state.currentFile}`, (data.symbols || []).map(symbol => ({
-    label: symbol.name, hint: `${symbol.kind} · ${symbol.line + 1}`,
-    run: () => openFile(state.currentFile, symbol.line, symbol.col),
-  })), "Search symbols");
 }
 
 // Project-wide text search (Cmd+Shift+F). Backed by /api/search, which is a
@@ -1195,12 +1231,12 @@ window.addEventListener("keydown", async event => {
   }
   if (event.metaKey && event.key.toLowerCase() === "p") {
     event.preventDefault();
-    if (event.shiftKey) openCommandPicker(); else openFilePicker();
+    openQuickPicker(event.shiftKey ? ">" : "");
     return;
   }
   if (event.metaKey && (event.key === "@" || (event.shiftKey && event.key === "2"))) {
     event.preventDefault();
-    openSymbolPicker();
+    openQuickPicker("@");
     return;
   }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
