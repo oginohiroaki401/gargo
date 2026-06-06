@@ -49,6 +49,9 @@ button { color: inherit; }
 #header button.active { color: var(--text); border-bottom: 1px solid var(--accent); }
 #header button.focused { color: var(--accent); }
 #header > span { color: var(--line); }
+#repo-link { color: var(--accent); text-decoration: none; white-space: nowrap; }
+#repo-link[href]:hover { text-decoration: underline; }
+#repo-link[hidden], #repo-sep[hidden] { display: none; }
 #focus-path { margin-left: auto; color: var(--muted); font-size: 11px; }
 
 #app { flex: 1 1 auto; min-height: 0; outline: none; }

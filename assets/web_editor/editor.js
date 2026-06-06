@@ -11,6 +11,8 @@ const popupHint = document.getElementById("popup-hint");
 const toast = document.getElementById("toast");
 const helpBackdrop = document.getElementById("help-backdrop");
 const helpBody = document.getElementById("help-body");
+const repoLink = document.getElementById("repo-link");
+const repoSep = document.getElementById("repo-sep");
 
 const COMPONENTS = ["explorer", "history", "compare", "status"];
 const state = {
@@ -47,6 +49,7 @@ const state = {
   help: false,
   searchToken: 0,
   lastSearchQuery: null,
+  repoInfo: null,
 };
 
 const HELP_SECTIONS = [
@@ -131,6 +134,39 @@ function notify(message) {
   notify.timer = setTimeout(() => { toast.hidden = true; }, 2800);
 }
 
+async function loadRepoInfo() {
+  try {
+    state.repoInfo = await api("/api/repo-info");
+  } catch (_) {
+    state.repoInfo = null;
+  }
+  renderRepoLink();
+  updateTitle();
+}
+
+function renderRepoLink() {
+  const info = state.repoInfo;
+  if (!info || (!info.owner && !info.repo)) {
+    repoLink.hidden = true;
+    repoSep.hidden = true;
+    return;
+  }
+  repoLink.textContent = `${info.owner}/${info.repo}`;
+  if (info.remote_url) repoLink.href = info.remote_url;
+  else repoLink.removeAttribute("href");
+  repoLink.title = info.remote_url || info.root || "";
+  repoLink.hidden = false;
+  repoSep.hidden = false;
+}
+
+function updateTitle() {
+  const repo = state.repoInfo?.repo || "gargo";
+  const detail = state.component === "explorer" && state.currentFile
+    ? state.currentFile
+    : state.component.charAt(0).toUpperCase() + state.component.slice(1);
+  document.title = `${repo}/${detail}`;
+}
+
 function activePane() {
   return app.querySelector(`.pane[data-pane="${state.pane}"]`);
 }
@@ -168,6 +204,7 @@ function updateFocusChrome() {
   const paneName = activePane()?.dataset.name || "";
   focusPath.textContent = [state.focusLevel, state.component, state.focusLevel === "pane" ? paneName : ""]
     .filter(Boolean).join(" › ");
+  updateTitle();
 }
 
 async function switchComponent(component) {
@@ -1312,6 +1349,7 @@ window.addEventListener("keydown", async event => {
 
 async function boot() {
   try {
+    loadRepoInfo();
     const last = await api("/api/last-file").catch(() => ({ path: null }));
     if (last.path) {
       const data = await api(`/api/file?path=${encodeURIComponent(last.path)}`);

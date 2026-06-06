@@ -17,6 +17,22 @@
 - [x] in compare, b to focus input field for base branch, c for compare
 - [x] `?` to show keybinding and help
 - [x] in exlorer or editor, cmd shift f to global search. refer to old impl for what it should do
+- [x] want ${org}/${reponame} (also these are link to remote) in top left, left to Explorer | History...
+- [ ] command picker, symbol picker, file picker should follow `>`, `@`, `` rule as cli one
+- [ ] in app focus in explorer, want `p` to preview/code toggle for markdown. HTML also. default code. use mermaid js for medaid rendering
+- [ ] in compare's branch selection, want `Base` and `Compare` text. Also make keybind `B` and `C` not `b` and `c`
+- [ ] want global search result to look more old one(more narrow result, per file mathed line tree. see old master impl)
+- [ ] for where `o` works for open in editor, want to have `O` to open `open menu popup`. select from following(and shortcut key if possible)
+  - open in github(main/master)
+  - open in github(current branch)
+  - copy relative path(from repo root)
+  - copy absolute path
+  - copy whole content
+- [ ] editor edit is slower than master so want more speed. check master's editor.js impl
+- [ ] cmd d select word, undo, redo... are missing. check master's editor.js impl and add what it should be
+- [ ] editor should have git gutter(only in code view or editor view)
+- [x] fix tab name to have ${reponame}/${opened file or open tab} or something like more informative, not `gargo`
+- [ ] scroll rattle so want it to be more smooth
 
 ## memo1
 - have app to have two focus in explorer tab. app(with editor READONLY) or editor(writable)
