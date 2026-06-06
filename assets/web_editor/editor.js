@@ -457,7 +457,7 @@ async function renderCompare() {
   await renderDiffView({
     kind: "compare",
     title: "Compare",
-    hint: `<span>Any branch, tag, or commit ref · <span class="key">j/k</span> files · <span class="key">J/K</span> preview · <span class="key">v</span> viewed · <span class="key">o</span> edit</span>`,
+    hint: `<span>Any branch, tag, or commit ref · <span class="key">b/c</span> base/compare · <span class="key">j/k</span> files · <span class="key">J/K</span> preview · <span class="key">v</span> viewed · <span class="key">o</span> edit</span>`,
     panes: [
       {
         title: "Source · ref pair", name: "ref pair and changed files",
@@ -1081,6 +1081,16 @@ window.addEventListener("keydown", async event => {
     event.preventDefault();
     await moveHistoryFile(-1);
     return;
+  }
+  if (state.component === "compare" && (event.key === "b" || event.key === "c")) {
+    const input = document.querySelector(
+      `#ref-form input[name="${event.key === "b" ? "base" : "target"}"]`);
+    if (input) {
+      event.preventDefault();
+      input.focus();
+      input.select();
+      return;
+    }
   }
   if (state.component === "compare" && state.pane === 0 && event.key === "v") {
     event.preventDefault();

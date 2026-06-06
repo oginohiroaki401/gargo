@@ -14,7 +14,7 @@
 - [x] explorer(editor) : gg to go head, gh to head, G to top
 - [x] compare : j,k to scroll in compare preview not working
 - [x] tree view : alt enter, cmd tab to open that file in new tab
-- [ ] in compare, b to focus input field for base branch, c for compare
+- [x] in compare, b to focus input field for base branch, c for compare
 - [ ] `?` to show keybinding and help
 - [ ] in exlorer or editor, cmd shift f to global search. refer to old impl for what it should do
 
