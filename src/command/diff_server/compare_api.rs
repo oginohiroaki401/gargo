@@ -201,31 +201,34 @@ pub(crate) async fn handle_api_compare_file_request(
         None => return bad_request(format!("invalid path: {}", path_raw)),
     };
 
-    let file = match load_compare_diff_file(&state.project_root, &base, &compare, &path).await {
-        Ok(file) => file,
-        Err(e) => return bad_request(e),
-    };
-
-    match file {
-        Some(file) => {
-            let html = render_highlighted(&file);
-            ok_json(serde_json::json!({
-                "path": file.path,
-                "status": file.status.as_str(),
-                "additions": file.additions,
-                "deletions": file.deletions,
-                "binary": file.binary,
-                "html": html,
-            }))
+    // `base...compare` for a fixed pair of object ids is immutable, so render
+    // once and cache by resolved OIDs. Resolution, the cache lookup, the gix
+    // diff and the syntax highlighting all run on the blocking pool.
+    let root = state.project_root.clone();
+    let cache = state.diff_cache.clone();
+    let (base_c, compare_c, path_c) = (base.clone(), compare.clone(), path.clone());
+    let result = tokio::task::spawn_blocking(move || -> Option<serde_json::Value> {
+        let oids = crate::command::git_backend::resolve_oids(&root, &[&base_c, &compare_c])?;
+        let key = format!("cmp\u{1f}{}\u{1f}{}\u{1f}{}", oids[0], oids[1], path_c);
+        if let Some(hit) = cache.get(&key) {
+            return Some(hit);
         }
-        None => ok_json(serde_json::json!({
-            "path": path,
-            "status": "modified",
-            "additions": 0,
-            "deletions": 0,
-            "binary": false,
-            "html": empty_diff_html(),
-        })),
+        let diff = crate::command::git_backend::compare_diff_text(
+            &root,
+            &base_c,
+            &compare_c,
+            Some(&path_c),
+        )?;
+        let value = file_diff_json_from_text(&diff, &path_c, "modified");
+        cache.insert(key, value.clone());
+        Some(value)
+    })
+    .await;
+
+    match result {
+        Ok(Some(value)) => ok_json(value),
+        Ok(None) => bad_request("invalid base/compare ref"),
+        Err(e) => bad_request(e.to_string()),
     }
 }
 

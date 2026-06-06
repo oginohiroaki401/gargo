@@ -183,14 +183,19 @@ impl GargoServerWorker {
             cursor_line: None,
         }));
         self.preview_state = Some(preview_state.clone());
+        // One render cache shared by the compare (diff_state) and commit
+        // (github_state) file endpoints; both key by immutable object ids.
+        let diff_cache = Arc::new(diff_server::DiffRenderCache::new());
         let diff_state = Arc::new(DiffServerState {
             project_root: repo_root.clone(),
             viewed: ViewedStore::open(),
+            diff_cache: diff_cache.clone(),
         });
         let github_state = Arc::new(GargoServerState {
             repo_root,
             files_cache: std::sync::Mutex::new(None),
             fs_generation: std::sync::atomic::AtomicU64::new(0),
+            diff_cache,
         });
 
         self.tokio_runtime.spawn(async move {
@@ -388,6 +393,9 @@ pub(crate) struct GargoServerState {
     /// Bumped by filesystem-mutating editor handlers (create/rename/delete/save)
     /// so `files_cache` is invalidated immediately rather than waiting for the TTL.
     pub(crate) fs_generation: std::sync::atomic::AtomicU64,
+    /// In-memory cache of rendered immutable (commit) file diffs, shared with the
+    /// compare endpoint's `DiffServerState`.
+    pub(crate) diff_cache: Arc<diff_server::DiffRenderCache>,
 }
 
 async fn run_server(

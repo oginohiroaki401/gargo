@@ -161,6 +161,7 @@ impl DiffServerWorker {
         let server_state = Arc::new(DiffServerState {
             project_root: std::fs::canonicalize(&project_root).unwrap_or(project_root),
             viewed,
+            diff_cache: Arc::new(DiffRenderCache::new()),
         });
         let event_tx = self.event_tx.clone();
         self.tokio_runtime.spawn(async move {
@@ -186,6 +187,8 @@ pub(crate) struct DiffServerState {
     pub(crate) project_root: PathBuf,
     /// On-disk persistence for per-file "Viewed" checkboxes.
     pub(crate) viewed: ViewedStore,
+    /// In-memory cache of rendered immutable (compare/commit) file diffs.
+    pub(crate) diff_cache: Arc<DiffRenderCache>,
 }
 
 impl DiffServerState {

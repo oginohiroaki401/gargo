@@ -1,15 +1,94 @@
 //! Diff rendering, syntax highlighting, and viewed-state persistence.
 
 use super::*;
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex};
 
 use crate::diff_render::{
-    DiffFile, DiffHighlights, LineKind, content_hash_of, render_file_body_html,
+    DiffFile, DiffHighlights, LineKind, content_hash_of, parse_unified_diff, render_file_body_html,
     render_file_body_html_with_highlights,
 };
 use crate::syntax::highlight::highlight_text;
 use crate::syntax::language::{LanguageDef, LanguageRegistry};
+
+/// Bounded LRU cache of fully-rendered single-file diff JSON responses.
+///
+/// Keyed by a content-addressed string built from resolved git object ids
+/// (commit / tree OIDs) plus the file path. A diff between two immutable objects
+/// never changes, so cached entries are always valid — the only eviction is the
+/// LRU bound, which simply caps memory as the user browses many files. This skips
+/// the whole git-diff + tree-sitter-highlight pipeline (~200ms for large files)
+/// on a hit. It is deliberately NOT used for working-tree (status) diffs, whose
+/// output depends on mutable on-disk content.
+pub(crate) struct DiffRenderCache {
+    inner: Mutex<DiffRenderCacheInner>,
+    capacity: usize,
+}
+
+struct DiffRenderCacheInner {
+    order: VecDeque<String>,
+    entries: HashMap<String, serde_json::Value>,
+}
+
+impl DiffRenderCache {
+    pub(crate) fn new() -> Self {
+        Self {
+            inner: Mutex::new(DiffRenderCacheInner {
+                order: VecDeque::new(),
+                entries: HashMap::new(),
+            }),
+            capacity: 256,
+        }
+    }
+
+    /// Return the cached response for `key`, marking it most-recently-used.
+    pub(crate) fn get(&self, key: &str) -> Option<serde_json::Value> {
+        let mut inner = self.inner.lock().ok()?;
+        let value = inner.entries.get(key).cloned()?;
+        if let Some(pos) = inner.order.iter().position(|k| k == key)
+            && let Some(k) = inner.order.remove(pos)
+        {
+            inner.order.push_back(k);
+        }
+        Some(value)
+    }
+
+    /// Insert (or refresh) `key`, evicting the least-recently-used entries once
+    /// the capacity is exceeded.
+    pub(crate) fn insert(&self, key: String, value: serde_json::Value) {
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
+        if let Some(pos) = inner.order.iter().position(|k| *k == key) {
+            inner.order.remove(pos);
+        }
+        inner.entries.insert(key.clone(), value);
+        inner.order.push_back(key);
+        while inner.order.len() > self.capacity {
+            if let Some(old) = inner.order.pop_front() {
+                inner.entries.remove(&old);
+            } else {
+                break;
+            }
+        }
+    }
+}
+
+impl Default for DiffRenderCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Debug for DiffRenderCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let len = self.inner.lock().map(|i| i.entries.len()).unwrap_or(0);
+        f.debug_struct("DiffRenderCache")
+            .field("len", &len)
+            .field("capacity", &self.capacity)
+            .finish()
+    }
+}
 
 pub(crate) fn file_metadata_json(file: &DiffFile, viewed: bool) -> serde_json::Value {
     serde_json::json!({
@@ -81,6 +160,35 @@ pub(crate) fn diff_file_is_viewed(viewed: &ViewedMap, section: &str, file: &Diff
 pub(crate) fn empty_diff_html() -> String {
     r#"<div class="gr-diff-body"><div class="gr-line gr-line-hunk"><span class="gr-ln"></span><span class="gr-lnr"></span><span class="gr-sign"></span><span class="gr-text">(no content changes)</span></div></div>"#
         .to_string()
+}
+
+/// Build the standard single-file diff JSON response from unified-diff text:
+/// parse the first file, syntax-highlight it, and serialize the metadata + HTML.
+/// `fallback_status` is used for the empty-diff shape when `diff_text` contains
+/// no change for the path. Shared by the compare and commit file endpoints.
+pub(crate) fn file_diff_json_from_text(
+    diff_text: &str,
+    path: &str,
+    fallback_status: &str,
+) -> serde_json::Value {
+    match parse_unified_diff(diff_text).into_iter().next() {
+        Some(file) => serde_json::json!({
+            "path": file.path,
+            "status": file.status.as_str(),
+            "additions": file.additions,
+            "deletions": file.deletions,
+            "binary": file.binary,
+            "html": render_highlighted(&file),
+        }),
+        None => serde_json::json!({
+            "path": path,
+            "status": fallback_status,
+            "additions": 0,
+            "deletions": 0,
+            "binary": false,
+            "html": empty_diff_html(),
+        }),
+    }
 }
 
 /// Render `file` to HTML, applying tree-sitter syntax highlighting when
@@ -180,6 +288,32 @@ pub(crate) fn compute_diff_highlights(file: &DiffFile, lang: &LanguageDef) -> Di
 mod tests {
     use super::*;
     use crate::diff_render::parse_unified_diff;
+
+    #[test]
+    fn diff_cache_round_trips_and_evicts_lru() {
+        let cache = DiffRenderCache {
+            inner: Mutex::new(DiffRenderCacheInner {
+                order: VecDeque::new(),
+                entries: HashMap::new(),
+            }),
+            capacity: 2,
+        };
+        assert!(cache.get("a").is_none());
+        cache.insert("a".into(), serde_json::json!({"v": 1}));
+        cache.insert("b".into(), serde_json::json!({"v": 2}));
+        assert_eq!(cache.get("a"), Some(serde_json::json!({"v": 1})));
+
+        // Touching "a" makes "b" the least-recently-used, so inserting "c"
+        // (over capacity 2) evicts "b" and keeps "a".
+        cache.insert("c".into(), serde_json::json!({"v": 3}));
+        assert!(cache.get("b").is_none());
+        assert_eq!(cache.get("a"), Some(serde_json::json!({"v": 1})));
+        assert_eq!(cache.get("c"), Some(serde_json::json!({"v": 3})));
+
+        // Re-inserting an existing key refreshes its value without growing.
+        cache.insert("a".into(), serde_json::json!({"v": 9}));
+        assert_eq!(cache.get("a"), Some(serde_json::json!({"v": 9})));
+    }
 
     #[test]
     fn render_highlighted_emits_syntax_classes_for_rust_diff() {

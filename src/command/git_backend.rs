@@ -720,6 +720,20 @@ pub(crate) fn commit_diff_text(root: &Path, rev: &str, only_path: Option<&str>) 
     ))
 }
 
+/// Resolve each revspec to its full hex object id, opening the repo once.
+/// Returns `None` if the repo can't be opened or any revspec fails to resolve —
+/// used to build content-addressed cache keys (a moved branch resolves to a new
+/// id, so stale entries are never served).
+pub(crate) fn resolve_oids(root: &Path, revs: &[&str]) -> Option<Vec<String>> {
+    let repo = shared_repo(root)?.to_thread_local();
+    let mut out = Vec::with_capacity(revs.len());
+    for rev in revs {
+        let id = repo.rev_parse_single(rev.as_bytes().as_bstr()).ok()?;
+        out.push(id.detach().to_hex().to_string());
+    }
+    Some(out)
+}
+
 /// `git diff <base>...<compare>` patch text: the merge-base of `base` and
 /// `compare` against `compare`. `None` if either side can't resolve.
 pub(crate) fn compare_diff_text(

@@ -194,32 +194,29 @@ pub(crate) async fn handle_api_commit_file(
     let Some(path) = diff_server::parse_diff_path(path_raw) else {
         return diff_server::bad_request("invalid path");
     };
-    // In-process gix diff for just this file (no `git show -- <path>` subprocess).
+    // A commit's diff for a file is immutable, so render once and cache by the
+    // resolved commit OID + path. In-process gix diff (no `git show` subprocess).
     let repo_root = state.repo_root.clone();
+    let cache = state.diff_cache.clone();
     let hash_c = hash.clone();
     let path_c = path.clone();
-    let diff = tokio::task::spawn_blocking(move || {
-        crate::command::git_backend::commit_diff_text(&repo_root, &hash_c, Some(&path_c))
-            .unwrap_or_default()
+    let value = tokio::task::spawn_blocking(move || -> serde_json::Value {
+        let key = crate::command::git_backend::resolve_oids(&repo_root, &[&hash_c])
+            .map(|oids| format!("cmt\u{1f}{}\u{1f}{}", oids[0], path_c));
+        if let Some(key) = &key
+            && let Some(hit) = cache.get(key)
+        {
+            return hit;
+        }
+        let diff = crate::command::git_backend::commit_diff_text(&repo_root, &hash_c, Some(&path_c))
+            .unwrap_or_default();
+        let value = diff_server::file_diff_json_from_text(&diff, &path_c, "modified");
+        if let Some(key) = key {
+            cache.insert(key, value.clone());
+        }
+        value
     })
     .await
-    .unwrap_or_default();
-    match parse_unified_diff(&diff).into_iter().next() {
-        Some(file) => diff_server::ok_json(serde_json::json!({
-            "path": file.path,
-            "status": file.status.as_str(),
-            "additions": file.additions,
-            "deletions": file.deletions,
-            "binary": file.binary,
-            "html": diff_server::render_highlighted(&file),
-        })),
-        None => diff_server::ok_json(serde_json::json!({
-            "path": path,
-            "status": "modified",
-            "additions": 0,
-            "deletions": 0,
-            "binary": false,
-            "html": diff_server::empty_diff_html(),
-        })),
-    }
+    .unwrap_or_else(|_| diff_server::file_diff_json_from_text("", &path, "modified"));
+    diff_server::ok_json(value)
 }
