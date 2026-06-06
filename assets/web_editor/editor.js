@@ -29,6 +29,8 @@ const state = {
   editorMode: "readonly",
   previewMode: false,
   gitGutter: {},
+  multiRanges: [],
+  multiWord: "",
   highlightLines: {},
   commits: [],
   historyCommit: 0,
@@ -84,7 +86,7 @@ const HELP_SECTIONS = [
       ["t", "Open file tree"],
       ["i / Enter", "Edit (insert) mode"],
       ["Esc", "Back to app focus"],
-      ["⌘D", "Select word / next occurrence"],
+      ["⌘D", "Add cursor: word / next match (multi-cursor)"],
       ["⌘Z / ⌘⇧Z", "Undo / redo"],
       ["j / k", "Scroll"],
       ["g g", "Jump to head of file"],
@@ -365,6 +367,8 @@ async function openFile(path, line = null, col = 0) {
   state.fileHash = data.hash;
   state.editorMode = "readonly";
   state.gitGutter = {};
+  state.multiRanges = [];
+  state.multiWord = "";
   stopStatusPolling();
   stopHistoryPolling();
   await api("/api/last-file", {
@@ -422,9 +426,12 @@ async function renderCodeSurface(container, options) {
     return;
   }
   body.innerHTML = `<div class="editor-wrap"><pre class="highlight-layer"></pre>
-    <textarea class="editor-input" spellcheck="false" aria-label="Editor"></textarea></div>`;
+    <textarea class="editor-input" spellcheck="false" aria-label="Editor"></textarea>
+    <div class="multi-overlay"></div></div>`;
   const input = body.querySelector(".editor-input");
   const layer = body.querySelector(".highlight-layer");
+  state.multiRanges = [];
+  state.multiWord = "";
   input.value = options.content || "";
   input.tabIndex = -1;
   input.readOnly = state.editorMode !== "insert";
@@ -432,7 +439,9 @@ async function renderCodeSurface(container, options) {
   input.style.height = `${Math.max(input.scrollHeight, body.clientHeight)}px`;
   input.dataset.lines = String(input.value.split("\n").length);
   fetchGitGutter(options.path, input.value);
+  input.addEventListener("keydown", onEditorKeyDown);
   input.addEventListener("input", async () => {
+    if (state.multiRanges.length) clearMultiCursors(); // a native edit exits multi-cursor
     state.fileContent = input.value;
     // The visible glyphs are the highlight layer (the textarea text is
     // transparent), so paint plain text synchronously for zero-lag feedback;
@@ -456,6 +465,8 @@ async function renderCodeSurface(container, options) {
     if (state.editorMode === "readonly") {
       event.preventDefault();
       setFocus("app", 0);
+    } else {
+      clearMultiCursors();
     }
   });
   input.addEventListener("blur", updateEditorModeIndicator);
@@ -496,6 +507,7 @@ function enterEditorInsertMode() {
 }
 
 function leaveEditorInsertMode() {
+  clearMultiCursors();
   const input = app.querySelector(".editor-input");
   if (input) input.readOnly = true;
   state.editorMode = "readonly";
@@ -557,28 +569,180 @@ function scrollEditorToCursor(behavior = "smooth") {
   }
 }
 
-// Cmd+D: with no selection, expand to the word under the caret; with a word
-// already selected, jump the selection to the next occurrence (wrapping). A
-// single moving selection is the textarea-compatible subset of VSCode's Cmd+D
-// (true multi-cursor isn't possible in a <textarea>).
+// ---- Multi-cursor (item 38) ------------------------------------------------
+//
+// A <textarea> has a single native caret, so multi-cursor is emulated: a set of
+// ranges in `state.multiRanges`, an overlay drawing the extra carets/selection
+// bands, and a keydown interceptor that applies typing/Backspace/Enter to every
+// range at once. Cmd+D seeds the word under the caret, then adds the next match
+// on each press (the textarea-native single-selection case stays native).
 const WORD_CHAR = /[A-Za-z0-9_]/;
-function selectWordOrNext(input) {
+const EDITOR_PAD_LEFT = 58;
+const EDITOR_PAD_TOP = 12;
+const EDITOR_LINE_H = 20;
+const EDITOR_TAB = 4;
+let editorCharW = 0;
+
+function editorCharWidth() {
+  if (editorCharW) return editorCharW;
+  const probe = document.createElement("span");
+  probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre;font:13px/20px var(--font)";
+  probe.textContent = "0".repeat(80);
+  document.body.appendChild(probe);
+  editorCharW = probe.getBoundingClientRect().width / 80 || 7.8;
+  probe.remove();
+  return editorCharW;
+}
+
+// Visual line + column for a string offset, expanding tabs so overlay carets
+// line up with the rendered (tab-size 4) text.
+function offsetToVisual(value, offset) {
+  const before = value.slice(0, offset);
+  const nl = before.lastIndexOf("\n");
+  const line = (before.match(/\n/g) || []).length;
+  let vcol = 0;
+  for (let i = nl + 1; i < offset; i++) {
+    vcol += value[i] === "\t" ? EDITOR_TAB - (vcol % EDITOR_TAB) : 1;
+  }
+  return { line, vcol };
+}
+
+function renderMultiCursors() {
+  const overlay = app.querySelector(".multi-overlay");
+  if (!overlay) return;
+  const input = app.querySelector(".editor-input");
+  if (!input || !state.multiRanges.length) { overlay.innerHTML = ""; return; }
   const value = input.value;
-  const { selectionStart: start, selectionEnd: end } = input;
-  if (start === end) {
-    let s = start, e = start;
-    while (s > 0 && WORD_CHAR.test(value[s - 1])) s--;
-    while (e < value.length && WORD_CHAR.test(value[e])) e++;
-    if (e > s) input.setSelectionRange(s, e);
+  const cw = editorCharWidth();
+  overlay.innerHTML = state.multiRanges.map(range => {
+    const a = offsetToVisual(value, range.start);
+    const top = EDITOR_PAD_TOP + a.line * EDITOR_LINE_H;
+    const left = EDITOR_PAD_LEFT + a.vcol * cw;
+    if (range.start === range.end) {
+      return `<div class="multi-caret" style="top:${top}px;left:${left}px"></div>`;
+    }
+    const b = offsetToVisual(value, range.end);
+    const width = Math.max(2, (b.vcol - a.vcol) * cw);
+    return `<div class="multi-band" style="top:${top}px;left:${left}px;width:${width}px"></div>`;
+  }).join("");
+}
+
+function clearMultiCursors() {
+  if (!state.multiRanges.length) return;
+  state.multiRanges = [];
+  state.multiWord = "";
+  renderMultiCursors();
+}
+
+// Cmd+D: seed from the current selection/word, or add the next occurrence of the
+// seeded word as another cursor.
+function multiCursorAddNext() {
+  const input = app.querySelector(".editor-input");
+  if (!input || input.readOnly) return;
+  const value = input.value;
+  if (!state.multiRanges.length) {
+    let { selectionStart: s, selectionEnd: e } = input;
+    if (s === e) {
+      while (s > 0 && WORD_CHAR.test(value[s - 1])) s--;
+      while (e < value.length && WORD_CHAR.test(value[e])) e++;
+      if (e <= s) return;
+    }
+    state.multiWord = value.slice(s, e);
+    state.multiRanges = [{ start: s, end: e }];
+    input.setSelectionRange(s, e);
+    renderMultiCursors();
     return;
   }
-  const selected = value.slice(start, end);
-  if (!selected) return;
-  let idx = value.indexOf(selected, end);
-  if (idx < 0) idx = value.indexOf(selected); // wrap to the first match
-  if (idx >= 0) {
-    input.setSelectionRange(idx, idx + selected.length);
-    scrollEditorToCursor("auto");
+  const word = state.multiWord;
+  if (!word) return;
+  const maxEnd = Math.max(...state.multiRanges.map(r => r.end));
+  let idx = value.indexOf(word, maxEnd);
+  if (idx < 0) idx = value.indexOf(word); // wrap
+  if (idx < 0 || state.multiRanges.some(r => r.start === idx)) { notify("No more matches"); return; }
+  state.multiRanges.push({ start: idx, end: idx + word.length });
+  state.multiRanges.sort((a, b) => a.start - b.start);
+  input.setSelectionRange(idx, idx + word.length);
+  scrollEditorToCursor("auto");
+  renderMultiCursors();
+}
+
+// Apply one edit per cursor. `op(selText, range)` returns the absolute span
+// `{from,to}` to replace with `text`; ranges collapse to carets after the edit.
+function applyMultiEdit(op) {
+  const input = app.querySelector(".editor-input");
+  if (!input) return;
+  const value = input.value;
+  const edits = state.multiRanges.map(range => op(value.slice(range.start, range.end), range))
+    .sort((a, b) => a.from - b.from);
+  let out = "", cursor = 0;
+  const next = [];
+  for (const edit of edits) {
+    if (edit.from < cursor) continue; // skip overlaps defensively
+    out += value.slice(cursor, edit.from) + edit.text;
+    next.push({ start: out.length, end: out.length });
+    cursor = edit.to;
+  }
+  out += value.slice(cursor);
+  input.value = out;
+  state.multiRanges = next;
+  const last = next[next.length - 1];
+  if (last) input.setSelectionRange(last.start, last.start);
+  repaintEditorAfterEdit();
+}
+
+// Mirror the input-listener side effects for programmatic (multi-cursor) edits,
+// which don't fire the textarea's `input` event.
+function repaintEditorAfterEdit() {
+  const input = app.querySelector(".editor-input");
+  const layer = app.querySelector("#explorer-surface .highlight-layer");
+  if (!input || !layer) return;
+  state.fileContent = input.value;
+  layer.innerHTML = numberedPlainText(input.value);
+  applyGitGutter(layer);
+  const body = layer.closest(".code-body");
+  input.dataset.lines = String(input.value.split("\n").length);
+  input.style.height = "auto";
+  input.style.height = `${Math.max(input.scrollHeight, body?.clientHeight || 0)}px`;
+  updateDirtyIndicator();
+  clearTimeout(input.highlightTimer);
+  input.highlightTimer = setTimeout(() => updateHighlightLayer(layer, state.currentFile, input.value), 90);
+  scheduleGitGutter(state.currentFile, input.value);
+  renderMultiCursors();
+}
+
+// Intercept keys while multi-cursor is active; runs on the textarea before the
+// window handler (which it stops for Escape so the editor isn't also exited).
+function onEditorKeyDown(event) {
+  if (!state.multiRanges.length) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    clearMultiCursors();
+    return;
+  }
+  if (event.metaKey && event.key.toLowerCase() === "d") return; // global adds next match
+  if (event.metaKey || event.ctrlKey || event.altKey
+      || event.key.startsWith("Arrow") || ["Home", "End", "PageUp", "PageDown"].includes(event.key)) {
+    clearMultiCursors();
+    return;
+  }
+  if (state.multiRanges.length < 2) return; // single range → let native editing run
+  if (event.key === "Backspace") {
+    event.preventDefault();
+    applyMultiEdit((sel, r) => sel.length
+      ? { from: r.start, to: r.end, text: "" }
+      : { from: Math.max(0, r.start - 1), to: r.start, text: "" });
+    return;
+  }
+  if (event.key === "Enter") {
+    event.preventDefault();
+    applyMultiEdit((sel, r) => ({ from: r.start, to: r.end, text: "\n" }));
+    return;
+  }
+  if (event.key.length === 1) {
+    event.preventDefault();
+    const ch = event.key;
+    applyMultiEdit((sel, r) => ({ from: r.start, to: r.end, text: ch }));
   }
 }
 
@@ -1688,7 +1852,7 @@ window.addEventListener("keydown", async event => {
   if (event.metaKey && !event.shiftKey && event.key.toLowerCase() === "d"
       && event.target.classList?.contains("editor-input")) {
     event.preventDefault();
-    selectWordOrNext(event.target);
+    multiCursorAddNext();
     return;
   }
   // Cmd+Z / Cmd+Shift+Z fall through to the textarea's native undo/redo; map
