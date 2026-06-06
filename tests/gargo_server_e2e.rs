@@ -140,7 +140,11 @@ fn unified_gargo_server_serves_code_diffs_compare_commits_and_events() {
     assert!(root_html.contains(r#"["l", "r"].includes(event.key.toLowerCase())"#));
     assert!(root_html.contains("enterEditorInsertMode"));
     assert!(root_html.contains("toggleStatusViewed"));
-    assert!(root_html.contains("openStatusFileInEditor"));
+    assert!(root_html.contains("toggleCompareViewed"));
+    assert!(root_html.contains("openSelectedDiffFileInEditor"));
+    assert!(root_html.contains("moveHistoryFile"));
+    assert!(root_html.contains("scrollExplorer"));
+    assert!(root_html.contains(r#"input.readOnly = state.editorMode !== "insert""#));
     assert!(root_html.contains(r#"state.component === "compare" && event.shiftKey"#));
     assert!(!root_html.contains("id=\"sidebar\""));
 

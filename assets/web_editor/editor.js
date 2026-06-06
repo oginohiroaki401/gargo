@@ -13,7 +13,7 @@ const toast = document.getElementById("toast");
 const COMPONENTS = ["explorer", "history", "compare", "status"];
 const state = {
   component: "explorer",
-  focusLevel: "pane",
+  focusLevel: "app",
   pane: 0,
   gPending: false,
   files: [],
@@ -22,7 +22,7 @@ const state = {
   fileContent: "",
   fileBaseContent: "",
   fileHash: "",
-  editorMode: "normal",
+  editorMode: "readonly",
   highlightLines: {},
   commits: [],
   historyCommit: 0,
@@ -83,7 +83,14 @@ function setFocus(level, pane = state.pane) {
   state.pane = Math.max(0, pane);
   document.querySelectorAll(".pane.focused").forEach(el => el.classList.remove("focused"));
   document.querySelectorAll("#header button.focused").forEach(el => el.classList.remove("focused"));
-  if (level === "pane") {
+  if (level === "editor") {
+    const input = app.querySelector(".editor-input");
+    if (input) {
+      input.readOnly = false;
+      state.editorMode = "insert";
+      input.focus({ preventScroll: true });
+    }
+  } else if (level === "pane") {
     const paneEl = activePane();
     paneEl?.classList.add("focused");
     paneEl?.focus({ preventScroll: true });
@@ -93,6 +100,7 @@ function setFocus(level, pane = state.pane) {
   } else {
     app.focus({ preventScroll: true });
   }
+  updateEditorModeIndicator();
   updateFocusChrome();
 }
 
@@ -109,14 +117,14 @@ async function switchComponent(component) {
   if (!COMPONENTS.includes(component)) return;
   state.component = component;
   state.pane = 0;
-  state.focusLevel = "pane";
-  state.editorMode = "normal";
+  state.focusLevel = component === "explorer" ? "app" : "pane";
+  state.editorMode = "readonly";
   location.hash = component;
   if (component === "explorer") await renderExplorer();
   if (component === "history") await renderHistory();
   if (component === "compare") await renderCompare();
   if (component === "status") await renderStatus();
-  setFocus("pane", 0);
+  setFocus(component === "explorer" ? "app" : "pane", 0);
 }
 
 function componentBar(title, hint) {
@@ -165,7 +173,7 @@ async function openFile(path, line = null, col = 0) {
   state.fileContent = data.content;
   state.fileBaseContent = data.content;
   state.fileHash = data.hash;
-  state.editorMode = "normal";
+  state.editorMode = "readonly";
   await api("/api/last-file", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ path }),
@@ -178,9 +186,9 @@ async function openFile(path, line = null, col = 0) {
     const lines = input.value.split("\n");
     const offset = lines.slice(0, line).reduce((n, value) => n + value.length + 1, 0) + col;
     input.setSelectionRange(offset, offset);
-    state.editorMode = "insert";
-    updateEditorModeIndicator();
-    input.focus();
+    setFocus("editor", 0);
+  } else {
+    setFocus("app", 0);
   }
 }
 
@@ -225,6 +233,7 @@ async function renderCodeSurface(container, options) {
   const layer = body.querySelector(".highlight-layer");
   input.value = options.content || "";
   input.tabIndex = -1;
+  input.readOnly = state.editorMode !== "insert";
   await updateHighlightLayer(layer, options.path, input.value);
   input.style.height = `${Math.max(input.scrollHeight, body.clientHeight)}px`;
   input.addEventListener("input", async () => {
@@ -238,9 +247,11 @@ async function renderCodeSurface(container, options) {
   input.addEventListener("scroll", () => {
     layer.style.transform = `translate(${-input.scrollLeft}px, ${-input.scrollTop}px)`;
   });
-  input.addEventListener("focus", () => {
-    state.editorMode = "insert";
-    updateEditorModeIndicator();
+  input.addEventListener("mousedown", event => {
+    if (state.editorMode === "readonly") {
+      event.preventDefault();
+      setFocus("app", 0);
+    }
   });
   input.addEventListener("blur", updateEditorModeIndicator);
   updateDirtyIndicator();
@@ -258,13 +269,26 @@ function updateEditorModeIndicator() {
 }
 
 function enterEditorInsertMode() {
-  if (state.component !== "explorer" || state.focusLevel !== "pane" || state.pane !== 0) return false;
+  if (state.component !== "explorer" || state.focusLevel !== "app") return false;
   const input = app.querySelector(".editor-input");
   if (!input) return false;
-  state.editorMode = "insert";
+  input.readOnly = false;
   updateEditorModeIndicator();
-  input.focus();
+  setFocus("editor", 0);
   return true;
+}
+
+function leaveEditorInsertMode() {
+  const input = app.querySelector(".editor-input");
+  if (input) input.readOnly = true;
+  state.editorMode = "readonly";
+  setFocus("app", 0);
+}
+
+function scrollExplorer(direction) {
+  const surface = app.querySelector("#explorer-surface .code-surface")
+    || app.querySelector("#explorer-surface");
+  surface?.scrollBy({ top: direction * 40, behavior: "smooth" });
 }
 
 function numberedPlainText(content) {
@@ -315,7 +339,7 @@ async function renderHistory() {
   await renderDiffView({
     kind: "history",
     title: "History",
-    hint: `<span><span class="key">j/k</span> select · <span class="key">l/Tab</span> right · <span class="key">h/Esc</span> left</span>`,
+    hint: `<span><span class="key">j/k</span> select · <span class="key">J/K</span> changed files · <span class="key">l/Tab</span> right · <span class="key">h/Esc</span> left</span>`,
     panes: [
       {
         title: "Commit log", name: "commit log",
@@ -387,7 +411,7 @@ async function renderCompare() {
   await renderDiffView({
     kind: "compare",
     title: "Compare",
-    hint: `<span>Any branch, tag, or commit ref · <span class="key">j/k</span> files · <span class="key">J/K</span> preview</span>`,
+    hint: `<span>Any branch, tag, or commit ref · <span class="key">j/k</span> files · <span class="key">J/K</span> preview · <span class="key">v</span> viewed · <span class="key">o</span> edit</span>`,
     panes: [
       {
         title: "Source · ref pair", name: "ref pair and changed files",
@@ -398,7 +422,7 @@ async function renderCompare() {
           <button class="small-button" type="submit">Load</button>
           <datalist id="refs">${options}</datalist>
         </form>
-        ${fileList(state.compareFiles, state.compareFile)}`,
+        ${fileList(state.compareFiles, state.compareFile, { viewed: true })}`,
       },
       { title: "Preview", name: "preview", body: diffSurfaceHtml() },
     ],
@@ -527,6 +551,18 @@ async function moveSelection(delta) {
   app.querySelector(".list li.selected")?.scrollIntoView({ block: "nearest" });
 }
 
+async function moveHistoryFile(delta) {
+  const files = state.historyData?.files || [];
+  if (!files.length) return;
+  const focusLevel = state.focusLevel;
+  const pane = state.pane;
+  state.historyFile = (state.historyFile + delta + files.length) % files.length;
+  await renderHistory();
+  setFocus(focusLevel, pane);
+  app.querySelector('.pane[data-pane="1"] .list li.selected')
+    ?.scrollIntoView({ block: "nearest" });
+}
+
 async function refreshComponent() {
   if (state.component === "history") { state.commits = []; state.historyData = null; }
   if (state.component === "compare") state.compareFiles = [];
@@ -555,13 +591,39 @@ async function toggleStatusViewed() {
   }
 }
 
-async function openStatusFileInEditor() {
-  if (state.component !== "status" || state.pane !== 0) return;
-  const file = state.statusFiles[state.statusFile];
+async function toggleCompareViewed() {
+  if (state.component !== "compare" || state.pane !== 0) return;
+  const file = state.compareFiles[state.compareFile];
+  if (!file) return;
+  try {
+    const data = await api("/api/compare/viewed", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        base: state.compareBase,
+        compare: state.compareTarget,
+        path: file.path,
+        viewed: !file.viewed,
+      }),
+    });
+    file.viewed = Boolean(data.viewed);
+    await renderCompare();
+    setFocus("pane", 0);
+  } catch (error) {
+    notify(`Viewed toggle failed: ${error.message}`);
+  }
+}
+
+async function openSelectedDiffFileInEditor() {
+  let file = null;
+  if (state.component === "status" && state.pane === 0) {
+    file = state.statusFiles[state.statusFile];
+  } else if (state.component === "compare" && state.pane === 0) {
+    file = state.compareFiles[state.compareFile];
+  }
   if (!file) return;
   try {
     await openFile(file.path);
-    setFocus("pane", 0);
   } catch (error) {
     notify(`Cannot open ${file.path}: ${error.message}`);
   }
@@ -881,15 +943,19 @@ window.addEventListener("keydown", async event => {
     return;
   }
   if (event.key === "Escape") {
-    event.preventDefault();
     if (isText && event.target.classList.contains("editor-input")) {
-      state.editorMode = "normal";
-      setFocus("app", 0);
+      event.preventDefault();
+      leaveEditorInsertMode();
+    } else if (state.component === "explorer" && state.focusLevel === "app") {
+      return;
     } else if (state.focusLevel === "pane" && state.pane > 0) {
+      event.preventDefault();
       setFocus("pane", state.pane - 1);
     } else if (state.focusLevel === "pane") {
+      event.preventDefault();
       setFocus("component", 0);
     } else {
+      event.preventDefault();
       setFocus("app", 0);
     }
     return;
@@ -916,6 +982,12 @@ window.addEventListener("keydown", async event => {
     event.preventDefault();
     return;
   }
+  if (state.component === "explorer" && state.focusLevel === "app"
+      && (event.key === "j" || event.key === "k")) {
+    event.preventDefault();
+    scrollExplorer(event.key === "j" ? 1 : -1);
+    return;
+  }
   if (state.component === "compare" && event.shiftKey && event.key === "J") {
     event.preventDefault();
     scrollPreview(1, 0.25);
@@ -926,6 +998,26 @@ window.addEventListener("keydown", async event => {
     scrollPreview(-1, 0.25);
     return;
   }
+  if (state.component === "history" && event.shiftKey && event.key === "J") {
+    event.preventDefault();
+    await moveHistoryFile(1);
+    return;
+  }
+  if (state.component === "history" && event.shiftKey && event.key === "K") {
+    event.preventDefault();
+    await moveHistoryFile(-1);
+    return;
+  }
+  if (state.component === "compare" && state.pane === 0 && event.key === "v") {
+    event.preventDefault();
+    await toggleCompareViewed();
+    return;
+  }
+  if (state.component === "compare" && state.pane === 0 && event.key === "o") {
+    event.preventDefault();
+    await openSelectedDiffFileInEditor();
+    return;
+  }
   if (state.component === "status" && state.pane === 0 && event.key === "v") {
     event.preventDefault();
     await toggleStatusViewed();
@@ -933,7 +1025,7 @@ window.addEventListener("keydown", async event => {
   }
   if (state.component === "status" && state.pane === 0 && event.key === "o") {
     event.preventDefault();
-    await openStatusFileInEditor();
+    await openSelectedDiffFileInEditor();
     return;
   }
   if (event.key === "r") {
