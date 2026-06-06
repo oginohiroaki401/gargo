@@ -509,8 +509,19 @@ function smoothScrollBy(el, delta) {
   el._scrollRAF = requestAnimationFrame(step);
 }
 
+// The scrollable element behind the explorer keys: the preview iframe's
+// document when previewing (item 39), otherwise the code surface.
+function explorerScrollTarget() {
+  if (state.previewMode) {
+    const doc = app.querySelector(".preview-frame")?.contentDocument;
+    const el = doc?.scrollingElement || doc?.documentElement;
+    if (el) return el;
+  }
+  return editorScroller();
+}
+
 function scrollExplorer(direction) {
-  smoothScrollBy(editorScroller(), direction * 80);
+  smoothScrollBy(explorerScrollTarget(), direction * 80);
 }
 
 function editorScroller() {
@@ -563,10 +574,10 @@ function selectWordOrNext(input) {
 // Jump the explorer surface (and caret, if present) to the top or bottom of
 // the file — `gg` goes to the head, `G` to the tail.
 function gotoEditorEdge(edge) {
-  const surface = editorScroller();
+  const surface = explorerScrollTarget();
   if (!surface) return;
   const input = app.querySelector(".editor-input");
-  if (input) {
+  if (input && !state.previewMode) {
     const offset = edge === "top" ? 0 : input.value.length;
     input.setSelectionRange(offset, offset);
   }

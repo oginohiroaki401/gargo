@@ -36,7 +36,7 @@
 - [x] make status view real time
 - [x] make history real time
 - [ ] multi cursor support(also, cmd d should be select word or select next match also)
-- [ ] preview in editor should be able to be scrolled with key to
+- [x] preview in editor should be able to be scrolled with key to
 - [ ] (if possible) when entering insert mode, want to add cursor at position where peek is on. e.g. when L140 - L180 is shown, add cursor on L140
 - [x] in editor, when typing, it has little bit of lag before shown in editor.
 - [x] when selected in insert mode, cannot see text selected
