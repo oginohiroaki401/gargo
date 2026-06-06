@@ -1,0 +1,8 @@
+{
+  "additions": 1,
+  "binary": false,
+  "deletions": 0,
+  "html": "<div class=\"gr-diff-body\"><div class=\"gr-line gr-line-hunk\"><span class=\"gr-ln\"></span><span class=\"gr-lnr\"></span><span class=\"gr-sign\"></span><span class=\"gr-text\">@@ -1,1 +1,2 @@</span></div><div class=\"gr-line gr-line-context\"><span class=\"gr-ln\">1</span><span class=\"gr-lnr\">1</span><span class=\"gr-sign\"> </span><span class=\"gr-text\"><span class=\"gr-hl-keyword\">pub</span> <span class=\"gr-hl-keyword\">fn</span> <span class=\"gr-hl-function\">base</span><span class=\"gr-hl-punctuation gr-hl-punctuation-bracket\">()</span> <span class=\"gr-hl-punctuation gr-hl-punctuation-bracket\">{}</span></span></div><div class=\"gr-line gr-line-add\"><span class=\"gr-ln\"></span><span class=\"gr-lnr\">2</span><span class=\"gr-sign\">+</span><span class=\"gr-text\"><span class=\"gr-hl-keyword\">pub</span> <span class=\"gr-hl-keyword\">fn</span> <span class=\"gr-hl-function\">feature</span><span class=\"gr-hl-punctuation gr-hl-punctuation-bracket\">()</span> <span class=\"gr-hl-punctuation gr-hl-punctuation-bracket\">{}</span></span></div></div>",
+  "path": "src/lib.rs",
+  "status": "modified"
+}

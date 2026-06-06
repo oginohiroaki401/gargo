@@ -1,0 +1,5 @@
+{
+  "content": "pub fn base() {}\npub fn local() {}\n",
+  "html": "<div class=\"code-view\"><table class=\"code-table\"><tbody><tr id=\"L1\" class=\"code-line\"><td class=\"code-ln\" data-line-number=\"1\"></td><td class=\"code-text\"><span class=\"gr-hl-keyword\">pub</span> <span class=\"gr-hl-keyword\">fn</span> <span class=\"gr-hl-function\">base</span><span class=\"gr-hl-punctuation gr-hl-punctuation-bracket\">()</span> <span class=\"gr-hl-punctuation gr-hl-punctuation-bracket\">{}</span></td></tr><tr id=\"L2\" class=\"code-line\"><td class=\"code-ln\" data-line-number=\"2\"></td><td class=\"code-text\"><span class=\"gr-hl-keyword\">pub</span> <span class=\"gr-hl-keyword\">fn</span> <span class=\"gr-hl-function\">local</span><span class=\"gr-hl-punctuation gr-hl-punctuation-bracket\">()</span> <span class=\"gr-hl-punctuation gr-hl-punctuation-bracket\">{}</span></td></tr><tr id=\"L3\" class=\"code-line\"><td class=\"code-ln\" data-line-number=\"3\"></td><td class=\"code-text\"></td></tr></tbody></table></div>",
+  "path": "src/lib.rs"
+}

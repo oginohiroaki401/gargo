@@ -1,0 +1,15 @@
+{
+  "base": "master",
+  "compare": "feature",
+  "files": [
+    {
+      "additions": 1,
+      "binary": false,
+      "deletions": 0,
+      "old_path": null,
+      "path": "src/lib.rs",
+      "status": "modified",
+      "viewed": false
+    }
+  ]
+}

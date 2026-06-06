@@ -1,0 +1,10 @@
+{
+  "entries": [
+    {
+      "kind": "file",
+      "name": "lib.rs",
+      "path": "src/lib.rs"
+    }
+  ],
+  "path": "src"
+}

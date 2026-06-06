@@ -1,0 +1,35 @@
+{
+  "staged": [
+    {
+      "additions": 1,
+      "binary": false,
+      "deletions": 0,
+      "old_path": null,
+      "path": "added.rs",
+      "status": "added",
+      "viewed": false
+    }
+  ],
+  "unstaged": [
+    {
+      "additions": 1,
+      "binary": false,
+      "deletions": 0,
+      "old_path": null,
+      "path": "src/lib.rs",
+      "status": "modified",
+      "viewed": false
+    }
+  ],
+  "untracked": [
+    {
+      "additions": 1,
+      "binary": false,
+      "deletions": 0,
+      "old_path": null,
+      "path": "untracked.txt",
+      "status": "untracked",
+      "viewed": false
+    }
+  ]
+}

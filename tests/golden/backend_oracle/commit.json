@@ -1,0 +1,38 @@
+{
+  "author": "gargo-test",
+  "author_email": "gargo-test@example.com",
+  "date": "2021-06-01",
+  "diff_files": [
+    {
+      "additions": 3,
+      "binary": false,
+      "deletions": 0,
+      "old_path": null,
+      "path": "README.md",
+      "status": "added",
+      "viewed": false
+    },
+    {
+      "additions": 1,
+      "binary": false,
+      "deletions": 0,
+      "old_path": null,
+      "path": "src/lib.rs",
+      "status": "added",
+      "viewed": false
+    }
+  ],
+  "files": [
+    {
+      "path": "README.md",
+      "status": "A"
+    },
+    {
+      "path": "src/lib.rs",
+      "status": "A"
+    }
+  ],
+  "full_hash": "<HASH>",
+  "hash": "<HASH>",
+  "message": "initial commit\n"
+}

@@ -1,0 +1,9 @@
+{
+  "branches": [
+    "feature",
+    "master"
+  ],
+  "current": "master",
+  "default": "master",
+  "remotes": []
+}
