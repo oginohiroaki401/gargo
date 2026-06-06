@@ -31,10 +31,10 @@ pub fn status_map(project_root: &Path) -> HashMap<String, GitFileStatus> {
         None => return map,
     };
 
-    let work_dir = match repo.workdir() {
-        Some(dir) => dir.to_path_buf(),
-        None => return map,
-    };
+    // Bare repos have no working tree, so there's nothing to diff against.
+    if repo.workdir().is_none() {
+        return map;
+    }
 
     let status_platform = match repo.status(gix::progress::Discard) {
         Ok(status) => status
@@ -91,11 +91,6 @@ pub fn status_map(project_root: &Path) -> HashMap<String, GitFileStatus> {
             }
             _ => {}
         }
-    }
-
-    if map.is_empty() {
-        // Keep behavior resilient when gix status iterator cannot emit paths.
-        let _ = work_dir;
     }
 
     map

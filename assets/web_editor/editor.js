@@ -41,7 +41,6 @@ const state = {
   multiWord: "",
   multiGoalCol: 0,
   editorHistory: null,
-  highlightLines: {},
   commits: [],
   historyCommit: 0,
   historyFile: 0,

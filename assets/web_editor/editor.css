@@ -156,13 +156,6 @@ button { color: inherit; }
   font: inherit;
 }
 .ref-button:hover, .ref-button:focus { border-color: var(--accent); }
-.small-button {
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  padding: 4px 9px;
-  background: var(--panel-2);
-  cursor: pointer;
-}
 
 .code-surface { position: relative; overflow: auto; background: var(--bg); }
 .code-toolbar {
