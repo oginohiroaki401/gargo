@@ -239,6 +239,77 @@ button { color: inherit; }
 .multi-overlay { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
 .multi-caret { position: absolute; width: 2px; height: 18px; background: var(--accent); }
 .multi-band { position: absolute; height: 20px; background: color-mix(in srgb, var(--accent) 32%, transparent); }
+
+/* In-file find: translucent bands over every match (current one stronger),
+   layered above the transparent textarea but below the multi-cursor overlay. */
+.find-overlay { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.find-band { position: absolute; height: 20px; border-radius: 2px;
+  background: color-mix(in srgb, var(--yellow) 26%, transparent); }
+.find-band.current { background: color-mix(in srgb, var(--accent) 40%, transparent);
+  outline: 1px solid var(--accent); }
+
+/* The find/replace widget floats over the top-right of the editor pane. */
+#explorer-surface { position: relative; }
+#find {
+  position: absolute;
+  top: 6px;
+  right: 18px;
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  padding: 4px 6px 4px 2px;
+  z-index: 50;
+}
+#find[hidden] { display: none; }
+.find-rows { display: flex; flex-direction: column; gap: 4px; }
+.find-row { display: flex; align-items: center; gap: 4px; }
+/* Replace row only shows once expanded (chevron / Cmd+Alt+F). */
+#find:not(.with-replace) #replace-row { display: none; }
+#find-input, #replace-input {
+  border: 1px solid var(--panel-border);
+  outline: none;
+  background: var(--bg);
+  color: var(--fg);
+  font: var(--font);
+  font-size: 13px;
+  padding: 3px 6px;
+  border-radius: 3px;
+  width: 200px;
+}
+#find-input:focus, #replace-input:focus { border-color: var(--accent); }
+#find-count {
+  color: var(--muted);
+  font-size: 12px;
+  min-width: 74px;
+  text-align: center;
+  white-space: nowrap;
+}
+#find button {
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 3px;
+}
+#find button:hover { background: var(--hover-bg); }
+#find button.toggle.on { background: var(--sel); color: #fff; }
+#find button u { text-decoration: underline; }
+/* The expand chevron sits in its own left column, full widget height. */
+#find-expand {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  color: var(--muted);
+}
+#find.with-replace #find-expand { transform: rotate(90deg); }
+
 .diff-preview { min-width: max-content; padding-bottom: 30px; }
 .diff-preview .gr-diff-body, .diff-preview .code-view { border: 0 !important; }
 
@@ -343,6 +414,17 @@ button { color: inherit; }
   box-shadow: 0 8px 30px rgba(0,0,0,.4);
 }
 #toast[hidden] { display: none; }
+
+#conn-banner {
+  flex: none;
+  padding: 6px 12px;
+  text-align: center;
+  font-weight: 600;
+  color: var(--bg);
+  background: var(--red);
+  border-bottom: 1px solid var(--red);
+}
+#conn-banner[hidden] { display: none; }
 
 #help-backdrop {
   position: fixed;

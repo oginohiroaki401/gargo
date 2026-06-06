@@ -11,6 +11,7 @@ const popup = document.getElementById("popup");
 const popupPreview = document.getElementById("popup-preview");
 const popupHint = document.getElementById("popup-hint");
 const toast = document.getElementById("toast");
+const connBanner = document.getElementById("conn-banner");
 const helpBackdrop = document.getElementById("help-backdrop");
 const helpBody = document.getElementById("help-body");
 const repoLink = document.getElementById("repo-link");
@@ -27,6 +28,7 @@ const commitCancel = document.getElementById("commit-cancel");
 const COMPONENTS = ["explorer", "history", "compare", "status"];
 const state = {
   component: "explorer",
+  connected: true,
   focusLevel: "app",
   pane: 0,
   gPending: false,
@@ -83,6 +85,16 @@ const state = {
   quickSymbolsLoaded: false,
   quickMode: "files",
   menuActions: [],
+  find: {
+    open: false,
+    replace: false,
+    matches: [],   // [{start, end}] offsets into the textarea value
+    index: -1,     // current match
+    caseSensitive: false,
+    wholeWord: false,
+    regex: false,
+    pendingCaret: null, // where the next i/Enter should drop the caret (last match)
+  },
 };
 
 const HELP_SECTIONS = [
@@ -101,6 +113,7 @@ const HELP_SECTIONS = [
     title: "Explorer / Editor", keys: [
       ["t", "Open file tree"],
       ["i / Enter", "Edit (insert) mode"],
+      ["⌘F / ⌘⌥F", "Find / Find & replace in file"],
       ["Esc", "Back to app focus"],
       ["⌘D", "Add cursor: word / next match (multi-cursor)"],
       ["⌥⌘↓ / ⌥⌘↑", "Add a cursor below / above"],
@@ -168,11 +181,40 @@ function escapeHtml(value) {
   })[c]);
 }
 
+// Reflect whether the backend is reachable. `fetch` only rejects on a
+// network-level failure (server gone, connection refused) — an HTTP error
+// status still means the server is alive — so flipping to disconnected here is
+// a reliable "the CLI died / was killed" signal. Recovers automatically once a
+// later request (or the heartbeat) succeeds.
+function setConnected(ok) {
+  if (state.connected === ok) return;
+  state.connected = ok;
+  connBanner.hidden = ok;
+  updateTitle();
+}
+
 async function api(url, options) {
-  const response = await fetch(url, { cache: "no-store", ...options });
+  let response;
+  try {
+    response = await fetch(url, { cache: "no-store", ...options });
+  } catch (error) {
+    setConnected(false);
+    throw error;
+  }
+  setConnected(true);
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || `${response.status} ${response.statusText}`);
   return data;
+}
+
+// Cheap poll so an idle tab still notices the server dying even when no
+// component is actively refreshing. setConnected (via api) does the work.
+async function heartbeat() {
+  try {
+    await api("/api/repo-info");
+  } catch (_) {
+    // Connection state already updated in api(); nothing else to do.
+  }
 }
 
 function notify(message) {
@@ -235,7 +277,9 @@ function updateTitle() {
   const detail = state.component === "explorer" && state.currentFile
     ? state.currentFile
     : state.component.charAt(0).toUpperCase() + state.component.slice(1);
-  document.title = `${repo}/${detail}`;
+  document.title = state.connected
+    ? `${repo}/${detail}`
+    : `⚠ Disconnected · ${repo}`;
 }
 
 function activePane() {
@@ -319,7 +363,7 @@ async function ensureFiles() {
 
 async function renderExplorer() {
   app.innerHTML = `<section class="component">
-    ${componentBar("Explorer", `<span><span class="key">t</span> tree · <span class="key">⌘P</span> files · <span class="key">⌘⇧P</span> commands · <span class="key">⌘@</span> symbols · <span class="key">⌘⇧F</span> search · <span class="key">p</span> preview · <span class="key">?</span> help</span>`)}
+    ${componentBar("Explorer", `<span><span class="key">t</span> tree · <span class="key">⌘P</span> files · <span class="key">⌘⇧P</span> commands · <span class="key">⌘@</span> symbols · <span class="key">⌘F</span> find · <span class="key">⌘⇧F</span> search · <span class="key">p</span> preview · <span class="key">?</span> help</span>`)}
     <div id="explorer-surface" class="pane focused" tabindex="-1" data-pane="0" data-name="editor"></div>
   </section>`;
   if (!state.currentFile) {
@@ -475,50 +519,56 @@ async function renderCodeSurface(container, options) {
   }
   body.innerHTML = `<div class="editor-wrap"><pre class="highlight-layer"></pre>
     <textarea class="editor-input" spellcheck="false" aria-label="Editor"></textarea>
+    <div class="find-overlay"></div>
     <div class="multi-overlay"></div></div>`;
   const input = body.querySelector(".editor-input");
   const layer = body.querySelector(".highlight-layer");
   state.multiRanges = [];
   state.multiWord = "";
+  resetFindState(); // the find bar is recreated hidden below
   input.value = options.content || "";
   input.tabIndex = -1;
   input.readOnly = state.editorMode !== "insert";
-  await updateHighlightLayer(layer, options.path, input.value);
+  await updateHighlightLayer(layer, options.path, input.value, input);
   input.style.height = `${Math.max(input.scrollHeight, body.clientHeight)}px`;
   input.dataset.lines = String(input.value.split("\n").length);
   fetchGitGutter(options.path, input.value);
   editorHistoryInit(input.value);
   input.addEventListener("keydown", onEditorKeyDown);
-  input.addEventListener("input", async () => {
+  // Track IME composition: while composing (notably Japanese/Chinese), the buffer
+  // churns through many intermediate states. We still repaint plain glyphs each
+  // step (the textarea text is transparent, so the layer is the only thing the
+  // user sees), but we hold off on history snapshots and the async syntax pass —
+  // painting a stale highlight response over the composing text is what made it
+  // flash/disappear. `compositionend` does the catch-up once the text commits.
+  input.addEventListener("compositionstart", () => { input.composing = true; });
+  input.addEventListener("compositionend", () => {
+    input.composing = false;
+    paintEditorPlain(input, layer);
+    reflowEditorHeight(input, layer, body);
+    updateDirtyIndicator();
+    if (state.find.open) runFind(false);
+    editorHistoryPush(false); // a finished composition is one undo step
+    scheduleHighlight(input, layer, options.path);
+    scheduleGitGutter(options.path, input.value);
+  });
+  input.addEventListener("input", event => {
     if (state.multiRanges.length) clearMultiCursors(); // a native edit exits multi-cursor
     state.fileContent = input.value;
-    editorHistoryPush(true);
     // The visible glyphs are the highlight layer (the textarea text is
     // transparent), so paint plain text synchronously for zero-lag feedback;
     // the server syntax pass refines it a beat later.
-    layer.innerHTML = numberedPlainText(input.value);
-    applyGitGutter(layer);
-    // Re-measure height only when the line count changes — `scrollHeight`
-    // forces a reflow, so skipping it on intra-line edits keeps typing snappy.
-    const lines = input.value.split("\n").length;
-    if (String(lines) !== input.dataset.lines) {
-      // Resetting the height to `auto` collapses the surface and clamps its
-      // scrollTop, which yanks the viewport on every line added/removed. Pin the
-      // scroll position across the reflow so the view only moves when the caret
-      // actually leaves the viewport (handled by scrollEditorToCursor below).
-      const surface = editorScroller();
-      const keepTop = surface ? surface.scrollTop : 0;
-      input.dataset.lines = String(lines);
-      input.style.height = "auto";
-      input.style.height = `${Math.max(input.scrollHeight, body.clientHeight)}px`;
-      if (surface) surface.scrollTop = keepTop;
-      scrollEditorToCursor("auto");
-    }
+    paintEditorPlain(input, layer);
+    reflowEditorHeight(input, layer, body);
     updateDirtyIndicator();
-    clearTimeout(input.highlightTimer);
-    input.highlightTimer = setTimeout(() => updateHighlightLayer(layer, options.path, input.value), 90);
+    if (state.find.open) runFind(false);
+    if (event.isComposing || input.composing) return; // IME → defer to compositionend
+    editorHistoryPush(true);
+    scheduleHighlight(input, layer, options.path);
     scheduleGitGutter(options.path, input.value);
   });
+  container.insertAdjacentHTML("beforeend", FIND_BAR_HTML);
+  wireFindBar();
   input.addEventListener("mousedown", () => {
     if (state.editorMode === "readonly") {
       // Click into a read-only editor → enter insert mode with the caret where
@@ -549,8 +599,19 @@ function enterEditorInsertMode() {
   const input = app.querySelector(".editor-input");
   if (!input) return false;
   input.readOnly = false;
-  // Drop the caret on the first visible line so entering edit mode keeps the
-  // viewport where the user was reading instead of jumping to the old caret.
+  // Just searched? Drop the caret at the start of the match the find bar left us
+  // on, instead of the first visible line.
+  const pending = state.find.pendingCaret;
+  state.find.pendingCaret = null;
+  if (pending != null) {
+    input.setSelectionRange(pending, pending);
+    updateEditorModeIndicator();
+    setFocus("editor", 0);
+    scrollEditorToCursor("auto");
+    return true;
+  }
+  // Otherwise drop the caret on the first visible line so entering edit mode keeps
+  // the viewport where the user was reading instead of jumping to the old caret.
   // Line height is 20px with 12px top padding (see editor.css).
   const surface = editorScroller();
   if (surface) {
@@ -604,6 +665,7 @@ function explorerScrollTarget() {
 }
 
 function scrollExplorer(direction) {
+  state.find.pendingCaret = null; // moved away from the match → drop the find caret
   smoothScrollBy(explorerScrollTarget(), direction * 80);
 }
 
@@ -900,10 +962,313 @@ function repaintEditorAfterEdit() {
   input.style.height = "auto";
   input.style.height = `${Math.max(input.scrollHeight, body?.clientHeight || 0)}px`;
   updateDirtyIndicator();
-  clearTimeout(input.highlightTimer);
-  input.highlightTimer = setTimeout(() => updateHighlightLayer(layer, state.currentFile, input.value), 90);
+  scheduleHighlight(input, layer, state.currentFile);
   scheduleGitGutter(state.currentFile, input.value);
   renderMultiCursors();
+  if (state.find.open) runFind(false);
+}
+
+// ---- In-file find / replace ------------------------------------------------
+//
+// Cmd+F (Cmd+Alt+F for the replace row). Matches are computed against the
+// textarea value and drawn as translucent bands in `.find-overlay`; the current
+// match is also set as the textarea selection so Enter/Esc leave the caret on it
+// (the "move cursor to the match" behaviour). Search options (case / whole word /
+// regex) persist across opens in `state.find`.
+const FIND_BAR_HTML = `<div id="find" hidden>
+  <button id="find-expand" title="Toggle Replace (Cmd+Alt+F)">▸</button>
+  <div class="find-rows">
+    <div class="find-row">
+      <input id="find-input" type="text" placeholder="Find"
+        autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+      <button id="find-case" class="toggle" title="Match Case">Aa</button>
+      <button id="find-word" class="toggle" title="Match Whole Word"><u>ab</u></button>
+      <button id="find-regex" class="toggle" title="Use Regular Expression">.*</button>
+      <span id="find-count"></span>
+      <button id="find-prev" title="Previous match (Shift+Enter)">↑</button>
+      <button id="find-next" title="Next match (Enter)">↓</button>
+      <button id="find-close" title="Close (Esc)">✕</button>
+    </div>
+    <div class="find-row" id="replace-row">
+      <input id="replace-input" type="text" placeholder="Replace"
+        autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+      <button id="replace-one" title="Replace (Enter)">↪</button>
+      <button id="replace-all" title="Replace All (Cmd+Enter)">⇉</button>
+    </div>
+  </div>
+</div>`;
+
+function resetFindState() {
+  state.find.open = false;
+  state.find.matches = [];
+  state.find.index = -1;
+  state.find.pendingCaret = null;
+}
+
+function findBar() { return app.querySelector("#find"); }
+
+function wireFindBar() {
+  const bar = findBar();
+  if (!bar) return;
+  const f = state.find;
+  bar.classList.toggle("with-replace", f.replace);
+  bar.querySelector("#find-case").classList.toggle("on", f.caseSensitive);
+  bar.querySelector("#find-word").classList.toggle("on", f.wholeWord);
+  bar.querySelector("#find-regex").classList.toggle("on", f.regex);
+  bar.querySelector("#find-input").addEventListener("input", () => runFind(true));
+  bar.querySelector("#find-input").addEventListener("keydown", onFindKeyDown);
+  bar.querySelector("#replace-input").addEventListener("keydown", onReplaceKeyDown);
+  bar.querySelector("#find-expand").addEventListener("click", () => toggleReplaceRow());
+  bar.querySelector("#find-case").addEventListener("click", () => toggleFindOption("caseSensitive"));
+  bar.querySelector("#find-word").addEventListener("click", () => toggleFindOption("wholeWord"));
+  bar.querySelector("#find-regex").addEventListener("click", () => toggleFindOption("regex"));
+  bar.querySelector("#find-prev").addEventListener("click", () => findPrev());
+  bar.querySelector("#find-next").addEventListener("click", () => findNext());
+  bar.querySelector("#find-close").addEventListener("click", () => closeFind());
+  bar.querySelector("#replace-one").addEventListener("click", () => replaceOne());
+  bar.querySelector("#replace-all").addEventListener("click", () => replaceAll());
+}
+
+function openFind(withReplace) {
+  const input = app.querySelector(".editor-input");
+  const bar = findBar();
+  if (!input || !bar) return;
+  const f = state.find;
+  f.open = true;
+  if (withReplace) f.replace = true;
+  bar.hidden = false;
+  bar.classList.toggle("with-replace", f.replace);
+  const findInput = bar.querySelector("#find-input");
+  // Prefill with the current single-line selection (VSCode behaviour).
+  const sel = input.value.slice(input.selectionStart, input.selectionEnd);
+  if (sel && !sel.includes("\n")) findInput.value = sel;
+  runFind(true);
+  findInput.focus();
+  findInput.select();
+}
+
+function closeFind() {
+  const f = state.find;
+  if (!f.open) return;
+  f.open = false;
+  const bar = findBar();
+  if (bar) bar.hidden = true;
+  const input = app.querySelector(".editor-input");
+  // Remember the current match's start so a follow-up i/Enter can drop the caret
+  // there. Only meaningful when closing over a read-only editor — in insert mode
+  // we keep the textarea focused and Enter types a newline.
+  f.pendingCaret = (input && f.matches.length && state.editorMode !== "insert")
+    ? input.selectionStart : null;
+  f.matches = [];
+  f.index = -1;
+  renderFindMatches();
+  if (!input) return;
+  if (state.editorMode === "insert") {
+    input.focus({ preventScroll: true });
+  } else {
+    // Hand focus back to the pane (the editor's resting state) so j/k and Enter
+    // work as usual; Enter is what enters insert mode at pendingCaret.
+    setFocus("app", 0);
+  }
+}
+
+function toggleReplaceRow() {
+  const bar = findBar();
+  if (!bar) return;
+  state.find.replace = !state.find.replace;
+  bar.classList.toggle("with-replace", state.find.replace);
+  bar.querySelector("#find-input").focus();
+}
+
+function toggleFindOption(key) {
+  state.find[key] = !state.find[key];
+  const bar = findBar();
+  if (!bar) return;
+  const map = { caseSensitive: "#find-case", wholeWord: "#find-word", regex: "#find-regex" };
+  bar.querySelector(map[key]).classList.toggle("on", state.find[key]);
+  runFind(true);
+  bar.querySelector("#find-input").focus();
+}
+
+// Build the search regex. Non-regex queries are escaped to a literal; whole-word
+// wraps the pattern in \b…\b. Always global so we can scan for every match.
+function findPattern(query) {
+  const f = state.find;
+  let pattern = f.regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (f.wholeWord) pattern = `\\b(?:${pattern})\\b`;
+  return new RegExp(pattern, f.caseSensitive ? "g" : "gi");
+}
+
+function computeFindMatches(value, query) {
+  const re = findPattern(query);
+  const out = [];
+  let m;
+  while ((m = re.exec(value))) {
+    if (m[0] === "") { re.lastIndex++; continue; } // skip zero-width matches
+    out.push({ start: m.index, end: m.index + m[0].length });
+    if (out.length >= 5000) break; // sanity cap
+  }
+  return out;
+}
+
+// Recompute matches for the current query. When `jump`, also move to the match
+// at/after the caret; otherwise keep the current index (used after edits that
+// shift offsets around).
+function runFind(jump) {
+  const input = app.querySelector(".editor-input");
+  const bar = findBar();
+  if (!input || !bar) return;
+  const f = state.find;
+  const query = bar.querySelector("#find-input").value;
+  if (!query) {
+    f.matches = [];
+    f.index = -1;
+    updateFindCount();
+    renderFindMatches();
+    return;
+  }
+  try { f.matches = computeFindMatches(input.value, query); }
+  catch (_) { f.matches = []; } // invalid regex while typing
+  if (!f.matches.length) {
+    f.index = -1;
+    updateFindCount();
+    renderFindMatches();
+    return;
+  }
+  if (jump) {
+    const off = input.selectionStart;
+    let idx = f.matches.findIndex(m => m.start >= off);
+    if (idx < 0) idx = 0;
+    gotoMatch(idx);
+  } else {
+    if (f.index < 0 || f.index >= f.matches.length) f.index = 0;
+    updateFindCount();
+    renderFindMatches();
+  }
+}
+
+// Select + scroll to the match at `idx`, wrapping around.
+function gotoMatch(idx) {
+  const f = state.find;
+  const input = app.querySelector(".editor-input");
+  if (!input || !f.matches.length) return;
+  f.index = (idx + f.matches.length) % f.matches.length;
+  const m = f.matches[f.index];
+  input.setSelectionRange(m.start, m.end);
+  scrollEditorToCursor("auto");
+  updateFindCount();
+  renderFindMatches();
+}
+
+function findNext() { if (state.find.matches.length) gotoMatch(state.find.index + 1); }
+function findPrev() { if (state.find.matches.length) gotoMatch(state.find.index - 1); }
+
+function updateFindCount() {
+  const bar = findBar();
+  if (!bar) return;
+  const f = state.find;
+  const el = bar.querySelector("#find-count");
+  if (!bar.querySelector("#find-input").value) el.textContent = "";
+  else if (!f.matches.length) el.textContent = "No results";
+  else el.textContent = `${f.index + 1} of ${f.matches.length}`;
+}
+
+// Draw a band over every match; the current one gets a stronger tint. Mirrors the
+// multi-cursor overlay's tab-expanded positioning so bands line up with glyphs.
+function renderFindMatches() {
+  const overlay = app.querySelector(".find-overlay");
+  if (!overlay) return;
+  const input = app.querySelector(".editor-input");
+  const f = state.find;
+  if (!input || !f.open || !f.matches.length) { overlay.innerHTML = ""; return; }
+  const value = input.value;
+  const cw = editorCharWidth();
+  overlay.innerHTML = f.matches.map((m, i) => {
+    const a = offsetToVisual(value, m.start);
+    const b = offsetToVisual(value, m.end);
+    if (a.line !== b.line) return ""; // skip the rare match that spans lines
+    const top = EDITOR_PAD_TOP + a.line * EDITOR_LINE_H;
+    const left = EDITOR_PAD_LEFT + a.vcol * cw;
+    const width = Math.max(2, (b.vcol - a.vcol) * cw);
+    const cls = i === f.index ? "find-band current" : "find-band";
+    return `<div class="${cls}" style="top:${top}px;left:${left}px;width:${width}px"></div>`;
+  }).join("");
+}
+
+// Make sure the editor is writable before a replace (find can be opened over a
+// read-only view) so the edit sticks and Cmd+S can save it.
+function ensureEditableForReplace(input) {
+  if (state.editorMode === "insert") return;
+  input.readOnly = false;
+  state.editorMode = "insert";
+  updateEditorModeIndicator();
+}
+
+function replaceOne() {
+  const f = state.find;
+  const input = app.querySelector(".editor-input");
+  const bar = findBar();
+  if (!input || !bar || f.index < 0 || f.index >= f.matches.length) return;
+  ensureEditableForReplace(input);
+  const m = f.matches[f.index];
+  const repl = bar.querySelector("#replace-input").value;
+  input.value = input.value.slice(0, m.start) + repl + input.value.slice(m.end);
+  const caret = m.start + repl.length;
+  input.setSelectionRange(caret, caret);
+  editorHistoryPush(false);
+  repaintEditorAfterEdit();
+  // The edit shifted offsets; recompute and jump to the next match at/after the
+  // caret (which now sits just past the replacement).
+  runFind(true);
+  bar.querySelector("#replace-input").focus();
+}
+
+function replaceAll() {
+  const f = state.find;
+  const input = app.querySelector(".editor-input");
+  const bar = findBar();
+  if (!input || !bar) return;
+  const query = bar.querySelector("#find-input").value;
+  if (!query) return;
+  ensureEditableForReplace(input);
+  const repl = bar.querySelector("#replace-input").value;
+  let re;
+  try { re = findPattern(query); } catch (_) { return; }
+  let count = 0;
+  const next = input.value.replace(re, match => {
+    if (match === "") return match; // never substitute a zero-width match
+    count++;
+    return repl;
+  });
+  if (!count) { updateFindCount(); return; }
+  input.value = next;
+  input.setSelectionRange(input.selectionStart, input.selectionStart);
+  editorHistoryPush(false);
+  repaintEditorAfterEdit();
+  runFind(false);
+  bar.querySelector("#find-count").textContent = `Replaced ${count}`;
+}
+
+function onFindKeyDown(e) {
+  if (e.key === "Escape") { e.preventDefault(); closeFind(); return; }
+  if (e.key === "Enter") {
+    e.preventDefault();
+    if (e.shiftKey) findPrev(); else findNext();
+    return;
+  }
+  // Cmd+Alt+F toggles the replace row; Cmd+F re-selects the query (VSCode-style).
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f") {
+    e.preventDefault();
+    if (e.altKey) toggleReplaceRow(); else e.target.select();
+  }
+}
+
+function onReplaceKeyDown(e) {
+  if (e.key === "Escape") { e.preventDefault(); closeFind(); return; }
+  if (e.key === "Enter") {
+    e.preventDefault();
+    if (e.metaKey || e.altKey) replaceAll(); else replaceOne();
+  }
 }
 
 // Intercept keys on the textarea. Add-cursor chords (⌥⌘ + arrows) work whether or
@@ -969,6 +1334,7 @@ function onEditorKeyDown(event) {
 // Jump the explorer surface (and caret, if present) to the top or bottom of
 // the file — `gg` goes to the head, `G` to the tail.
 function gotoEditorEdge(edge) {
+  state.find.pendingCaret = null; // jumped to head/tail → drop the find caret
   const surface = explorerScrollTarget();
   if (!surface) return;
   const input = app.querySelector(".editor-input");
@@ -985,21 +1351,61 @@ function numberedPlainText(content) {
   ).join("\n");
 }
 
-async function updateHighlightLayer(layer, path, content) {
+// Paint plain (un-highlighted) glyphs into the layer immediately — the textarea
+// itself is transparent, so this is what the user actually sees while typing.
+function paintEditorPlain(input, layer) {
+  layer.innerHTML = numberedPlainText(input.value);
+  applyGitGutter(layer);
+  if (state.find.open) renderFindMatches();
+}
+
+// Re-measure the textarea height only when the line count changes — `scrollHeight`
+// forces a reflow, so skipping it on intra-line edits keeps typing snappy.
+function reflowEditorHeight(input, layer, body) {
+  const lines = input.value.split("\n").length;
+  if (String(lines) === input.dataset.lines) return;
+  // Resetting the height to `auto` collapses the surface and clamps its
+  // scrollTop, which yanks the viewport on every line added/removed. Pin the
+  // scroll position across the reflow so the view only moves when the caret
+  // actually leaves the viewport (handled by scrollEditorToCursor below).
+  const surface = editorScroller();
+  const keepTop = surface ? surface.scrollTop : 0;
+  const measure = body || layer.closest(".code-body");
+  input.dataset.lines = String(lines);
+  input.style.height = "auto";
+  input.style.height = `${Math.max(input.scrollHeight, measure?.clientHeight || 0)}px`;
+  if (surface) surface.scrollTop = keepTop;
+  scrollEditorToCursor("auto");
+}
+
+function scheduleHighlight(input, layer, path) {
+  clearTimeout(input.highlightTimer);
+  input.highlightTimer = setTimeout(() => updateHighlightLayer(layer, path, input.value, input), 90);
+}
+
+async function updateHighlightLayer(layer, path, content, input) {
   // Very large files: skip the server round-trip + per-token markup and render
   // plain numbered text, so editing stays responsive (master virtualizes; this
   // is the lightweight equivalent for the textarea surface).
   if (content.length > 200000) {
     layer.innerHTML = numberedPlainText(content);
     applyGitGutter(layer);
+    if (state.find.open) renderFindMatches();
     return;
   }
   try {
-    layer.innerHTML = await highlightedTextHtml(path, content);
+    const html = await highlightedTextHtml(path, content);
+    // Discard a stale pass: if the buffer moved on (or an IME composition is in
+    // flight) since the request went out, painting this would flash older text
+    // into view — the root of the "Japanese text briefly disappears" bug.
+    if (input && (input.value !== content || input.composing)) return;
+    layer.innerHTML = html;
   } catch (_) {
+    if (input && input.value !== content) return;
     layer.innerHTML = numberedPlainText(content);
   }
   applyGitGutter(layer);
+  if (state.find.open) renderFindMatches();
 }
 
 // Git change gutter: per-line added/modified/deleted status from
@@ -2305,7 +2711,7 @@ helpBackdrop.addEventListener("mousedown", event => {
 // own focus), are ignored.
 document.addEventListener("mousedown", event => {
   if (state.editorMode !== "insert") return;
-  if (event.target.closest(".editor-input, #popup-backdrop, #help-backdrop")) return;
+  if (event.target.closest(".editor-input, #find, #popup-backdrop, #help-backdrop")) return;
   leaveEditorInsertMode();
 });
 
@@ -2319,6 +2725,10 @@ window.addEventListener("keydown", async event => {
     return;
   }
   if (state.popup) return;
+
+  // The find bar owns every key while one of its inputs is focused (Esc / Enter /
+  // Cmd+F / Cmd+Alt+F are handled there); don't let the global shortcuts fire.
+  if (event.target.closest?.("#find")) return;
 
   // Commit dialog: Cmd/Ctrl+Enter commits, Esc cancels; every other key falls
   // through to the textarea so the message types normally.
@@ -2339,6 +2749,14 @@ window.addEventListener("keydown", async event => {
   if (event.metaKey && event.shiftKey && event.key.toLowerCase() === "f") {
     event.preventDefault();
     openSearchPopup();
+    return;
+  }
+  // Cmd+F: in-file find; Cmd+Alt+F: find & replace. Only over the editable editor;
+  // elsewhere it falls through to the browser's native find.
+  if (event.metaKey && !event.shiftKey && event.key.toLowerCase() === "f"
+      && state.component === "explorer" && app.querySelector(".editor-input")) {
+    event.preventDefault();
+    openFind(event.altKey);
     return;
   }
   if (event.metaKey && event.key.toLowerCase() === "p") {
@@ -2568,6 +2986,7 @@ async function boot() {
   try {
     loadRepoInfo();
     checkForUpdate();
+    setInterval(heartbeat, 4000);
     const last = await api("/api/last-file").catch(() => ({ path: null }));
     if (last.path) {
       const data = await api(`/api/file?path=${encodeURIComponent(last.path)}`);
