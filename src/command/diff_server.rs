@@ -389,6 +389,9 @@ const DIFF_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             border: 1px solid #d0d7de;
             border-radius: 6px;
             margin-bottom: 12px;
+            /* Offset anchor jumps so the wrapper lands below the sticky app-rail
+             * (and its own sticky header), instead of behind them. */
+            scroll-margin-top: calc(var(--app-rail-height, 46px) + 12px);
             /* No overflow:hidden here — it would trap the sticky header in a
              * non-scrolling box and stop it pinning. Corners are rounded on the
              * header (top) and body (bottom) instead. */
@@ -1780,6 +1783,9 @@ const COMPARE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             border: 1px solid #d0d7de;
             border-radius: 6px;
             margin-bottom: 12px;
+            /* Offset anchor jumps so the wrapper lands below the sticky app-rail
+             * (and its own sticky header), instead of behind them. */
+            scroll-margin-top: calc(var(--app-rail-height, 46px) + 12px);
             /* No overflow:hidden here — it would trap the sticky header in a
              * non-scrolling box and stop it pinning. Corners are rounded on the
              * header (top) and body (bottom) instead. */
