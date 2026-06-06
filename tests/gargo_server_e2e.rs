@@ -134,7 +134,25 @@ fn unified_gargo_server_serves_code_diffs_compare_commits_and_events() {
     assert!(root_html.contains("function renderCompare"));
     assert!(root_html.contains("function renderStatus"));
     assert!(root_html.contains("openTreePicker"));
+    assert!(root_html.contains("function buildTree"));
+    assert!(root_html.contains("function updateTreePreview"));
+    assert!(root_html.contains(r#"state.focusLevel === "app" && event.key === "t""#));
+    assert!(root_html.contains(r#"["l", "r"].includes(event.key.toLowerCase())"#));
+    assert!(root_html.contains("enterEditorInsertMode"));
+    assert!(root_html.contains("toggleStatusViewed"));
+    assert!(root_html.contains("openStatusFileInEditor"));
+    assert!(root_html.contains(r#"state.component === "compare" && event.shiftKey"#));
     assert!(!root_html.contains("id=\"sidebar\""));
+
+    let files = get_json_with_retry(&format!("{base_url}/api/files"));
+    let readme = files["entries"]
+        .as_array()
+        .expect("file entries")
+        .iter()
+        .find(|entry| entry["path"] == "README.md")
+        .expect("README metadata");
+    assert_eq!(readme["changed"], true);
+    assert!(readme["mtime"].as_u64().unwrap_or(0) > 0);
 
     let blob_html = get_text_with_retry(&format!("{base_url}/aplio/gargo/blob/master/README.md"));
     assert!(blob_html.contains("Test Repo"));

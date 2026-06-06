@@ -380,9 +380,17 @@ fn bridge_preview_events(
 pub(crate) struct GargoServerState {
     pub(crate) repo_root: PathBuf,
     /// Short-lived cache for the `/api/files` listing (`git ls-files`), which the
-    /// editor hits on every Cmd+P open. Holds `(generation, cached_at, files)`;
-    /// reused while the generation matches and the entry is within the TTL.
-    pub(crate) files_cache: std::sync::Mutex<Option<(u64, std::time::Instant, Vec<String>)>>,
+    /// editor hits on every Cmd+P open. Holds
+    /// `(generation, cached_at, files, (path, mtime, changed) entries)`; reused
+    /// while the generation matches and the entry is within the TTL.
+    pub(crate) files_cache: std::sync::Mutex<
+        Option<(
+            u64,
+            std::time::Instant,
+            Vec<String>,
+            Vec<(String, u64, bool)>,
+        )>,
+    >,
     /// Bumped by filesystem-mutating editor handlers (create/rename/delete/save)
     /// so `files_cache` is invalidated immediately rather than waiting for the TTL.
     pub(crate) fs_generation: std::sync::atomic::AtomicU64,

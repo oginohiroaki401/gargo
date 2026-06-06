@@ -5,6 +5,9 @@ const popupBackdrop = document.getElementById("popup-backdrop");
 const popupTitle = document.getElementById("popup-title");
 const popupInput = document.getElementById("popup-input");
 const popupList = document.getElementById("popup-list");
+const popup = document.getElementById("popup");
+const popupPreview = document.getElementById("popup-preview");
+const popupHint = document.getElementById("popup-hint");
 const toast = document.getElementById("toast");
 
 const COMPONENTS = ["explorer", "history", "compare", "status"];
@@ -14,10 +17,12 @@ const state = {
   pane: 0,
   gPending: false,
   files: [],
+  fileEntries: [],
   currentFile: "",
   fileContent: "",
   fileBaseContent: "",
   fileHash: "",
+  editorMode: "normal",
   highlightLines: {},
   commits: [],
   historyCommit: 0,
@@ -34,6 +39,9 @@ const state = {
   popupItems: [],
   popupFiltered: [],
   popupIndex: 0,
+  treeRoot: null,
+  treeExpanded: new Set(),
+  treePreviewToken: 0,
 };
 
 const COMMANDS = [
@@ -102,6 +110,7 @@ async function switchComponent(component) {
   state.component = component;
   state.pane = 0;
   state.focusLevel = "pane";
+  state.editorMode = "normal";
   location.hash = component;
   if (component === "explorer") await renderExplorer();
   if (component === "history") await renderHistory();
@@ -130,11 +139,12 @@ async function ensureFiles() {
   if (state.files.length) return;
   const data = await api("/api/files");
   state.files = data.files || [];
+  state.fileEntries = data.entries || state.files.map(path => ({ path, mtime: 0, changed: false }));
 }
 
 async function renderExplorer() {
   app.innerHTML = `<section class="component">
-    ${componentBar("Explorer", `<span><span class="key">t</span> tree · <span class="key">⌘P</span> files · <span class="key">⌘⇧P</span> commands · <span class="key">⌘@</span> symbols</span>`)}
+    ${componentBar("Explorer", `<span><span class="key">app:t</span> tree · <span class="key">⌘P</span> files · <span class="key">⌘⇧P</span> commands · <span class="key">⌘@</span> symbols</span>`)}
     <div id="explorer-surface" class="pane focused" tabindex="-1" data-pane="0" data-name="editor"></div>
   </section>`;
   if (!state.currentFile) {
@@ -155,17 +165,21 @@ async function openFile(path, line = null, col = 0) {
   state.fileContent = data.content;
   state.fileBaseContent = data.content;
   state.fileHash = data.hash;
+  state.editorMode = "normal";
   await api("/api/last-file", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ path }),
   }).catch(() => {});
   state.component = "explorer";
+  location.hash = "explorer";
   await renderExplorer();
   const input = app.querySelector(".editor-input");
   if (input && line !== null) {
     const lines = input.value.split("\n");
     const offset = lines.slice(0, line).reduce((n, value) => n + value.length + 1, 0) + col;
     input.setSelectionRange(offset, offset);
+    state.editorMode = "insert";
+    updateEditorModeIndicator();
     input.focus();
   }
 }
@@ -194,7 +208,7 @@ async function renderCodeSurface(container, options) {
   container.innerHTML = `<div class="code-surface">
     <div class="code-toolbar"><span class="path">${escapeHtml(options.path || "Preview")}</span>
       <span class="grow"></span><span class="dirty"></span>
-      ${options.editable ? `<span>Esc app focus · Cmd+S save</span>` : `<span>read only</span>`}
+      ${options.editable ? `<span class="editor-mode"></span><span>i/Enter edit · Esc app focus · Cmd+S save</span>` : `<span>read only</span>`}
     </div><div class="code-body"></div></div>`;
   const body = container.querySelector(".code-body");
   if (options.diffHtml !== undefined) {
@@ -210,6 +224,7 @@ async function renderCodeSurface(container, options) {
   const input = body.querySelector(".editor-input");
   const layer = body.querySelector(".highlight-layer");
   input.value = options.content || "";
+  input.tabIndex = -1;
   await updateHighlightLayer(layer, options.path, input.value);
   input.style.height = `${Math.max(input.scrollHeight, body.clientHeight)}px`;
   input.addEventListener("input", async () => {
@@ -223,12 +238,33 @@ async function renderCodeSurface(container, options) {
   input.addEventListener("scroll", () => {
     layer.style.transform = `translate(${-input.scrollLeft}px, ${-input.scrollTop}px)`;
   });
+  input.addEventListener("focus", () => {
+    state.editorMode = "insert";
+    updateEditorModeIndicator();
+  });
+  input.addEventListener("blur", updateEditorModeIndicator);
   updateDirtyIndicator();
+  updateEditorModeIndicator();
 }
 
 function updateDirtyIndicator() {
   const dirty = app.querySelector(".code-toolbar .dirty");
   if (dirty) dirty.textContent = state.fileContent !== state.fileBaseContent ? "modified" : "";
+}
+
+function updateEditorModeIndicator() {
+  const indicator = app.querySelector(".code-toolbar .editor-mode");
+  if (indicator) indicator.textContent = state.editorMode;
+}
+
+function enterEditorInsertMode() {
+  if (state.component !== "explorer" || state.focusLevel !== "pane" || state.pane !== 0) return false;
+  const input = app.querySelector(".editor-input");
+  if (!input) return false;
+  state.editorMode = "insert";
+  updateEditorModeIndicator();
+  input.focus();
+  return true;
 }
 
 function numberedPlainText(content) {
@@ -239,25 +275,34 @@ function numberedPlainText(content) {
 
 async function updateHighlightLayer(layer, path, content) {
   try {
-    const data = await api("/api/highlight", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ path, content }),
-    });
-    layer.innerHTML = content.split("\n").map((line, index) => {
-      const spans = data.lines?.[String(index)] || [];
-      let out = "";
-      let cursor = 0;
-      for (const span of spans) {
-        out += escapeHtml(Array.from(line).slice(cursor, span.start).join(""));
-        out += `<span class="gr-hl-${escapeHtml(span.scope)}">${escapeHtml(Array.from(line).slice(span.start, span.end).join(""))}</span>`;
-        cursor = span.end;
-      }
-      out += escapeHtml(Array.from(line).slice(cursor).join(""));
-      return `<span class="line-number">${index + 1}</span>${out}`;
-    }).join("\n");
+    layer.innerHTML = await highlightedTextHtml(path, content);
   } catch (_) {
     layer.innerHTML = numberedPlainText(content);
   }
+}
+
+async function highlightedTextHtml(path, content) {
+  const data = await api("/api/highlight", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path, content }),
+  });
+  return content.split("\n").map((line, index) => {
+    const spans = [...(data.lines?.[String(index)] || [])]
+      .sort((a, b) => a.start - b.start || a.end - b.end);
+    const chars = Array.from(line);
+    let out = "";
+    let cursor = 0;
+    for (const span of spans) {
+      const start = Math.max(cursor, span.start);
+      const end = Math.max(start, span.end);
+      if (end <= cursor) continue;
+      out += escapeHtml(chars.slice(cursor, start).join(""));
+      out += `<span class="gr-hl-${escapeHtml(span.scope)}">${escapeHtml(chars.slice(start, end).join(""))}</span>`;
+      cursor = end;
+    }
+    out += escapeHtml(chars.slice(cursor).join(""));
+    return `<span class="line-number">${index + 1}</span>${out}`;
+  }).join("\n");
 }
 
 async function renderHistory() {
@@ -291,9 +336,10 @@ async function loadHistoryCommit() {
   state.historyFile = Math.min(state.historyFile, Math.max(0, (state.historyData.files || []).length - 1));
 }
 
-function fileList(files, selected) {
+function fileList(files, selected, options = {}) {
   return listHtml(files, selected, file =>
-    `<span class="status-badge status-${statusName(file.status)}">${statusLetter(file.status)}</span>
+    `${options.viewed ? `<span class="viewed-box ${file.viewed ? "checked" : ""}" title="${file.viewed ? "Viewed" : "Not viewed"}">${file.viewed ? "[x]" : "[ ]"}</span>` : ""}
+     <span class="status-badge status-${statusName(file.status)}">${statusLetter(file.status)}</span>
      <span class="primary">${escapeHtml(file.path)}</span>
      <span class="secondary">${stats(file)}</span>`);
 }
@@ -309,6 +355,19 @@ function statusLetter(status) {
 function stats(file) {
   const add = Number(file.additions || 0), del = Number(file.deletions || 0);
   return add || del ? `+${add} -${del}` : "";
+}
+
+function previewScroller() {
+  return app.querySelector(".pane:last-child .code-surface")
+    || app.querySelector(".pane:last-child");
+}
+
+function scrollPreview(direction, amount = 0.7) {
+  const preview = previewScroller();
+  preview?.scrollBy({
+    top: direction * preview.clientHeight * amount,
+    behavior: "smooth",
+  });
 }
 
 async function ensureRefs() {
@@ -328,7 +387,7 @@ async function renderCompare() {
   await renderDiffView({
     kind: "compare",
     title: "Compare",
-    hint: `<span>Any branch, tag, or commit ref · <span class="key">j/k</span> files</span>`,
+    hint: `<span>Any branch, tag, or commit ref · <span class="key">j/k</span> files · <span class="key">J/K</span> preview</span>`,
     panes: [
       {
         title: "Source · ref pair", name: "ref pair and changed files",
@@ -388,9 +447,9 @@ async function renderStatus() {
   await renderDiffView({
     kind: "status",
     title: "Status",
-    hint: `<span>Worktree vs HEAD · <span class="key">j/k</span> files · <span class="key">Ctrl-d/u</span> preview page</span>`,
+    hint: `<span>Worktree vs HEAD · <span class="key">j/k</span> files · <span class="key">v</span> viewed · <span class="key">o</span> edit · <span class="key">Ctrl-d/u</span> preview</span>`,
     panes: [
-      { title: "Changed files", name: "changed files", body: fileList(state.statusFiles, state.statusFile) },
+      { title: "Changed files", name: "changed files", body: fileList(state.statusFiles, state.statusFile, { viewed: true }) },
       { title: "Preview", name: "preview", body: diffSurfaceHtml() },
     ],
   });
@@ -474,6 +533,40 @@ async function refreshComponent() {
   await switchComponent(state.component);
 }
 
+async function toggleStatusViewed() {
+  if (state.component !== "status" || state.pane !== 0) return;
+  const file = state.statusFiles[state.statusFile];
+  if (!file) return;
+  try {
+    const data = await api("/api/status/viewed", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        section: file.section,
+        path: file.path,
+        viewed: !file.viewed,
+      }),
+    });
+    file.viewed = Boolean(data.viewed);
+    await renderStatus();
+    setFocus("pane", 0);
+  } catch (error) {
+    notify(`Viewed toggle failed: ${error.message}`);
+  }
+}
+
+async function openStatusFileInEditor() {
+  if (state.component !== "status" || state.pane !== 0) return;
+  const file = state.statusFiles[state.statusFile];
+  if (!file) return;
+  try {
+    await openFile(file.path);
+    setFocus("pane", 0);
+  } catch (error) {
+    notify(`Cannot open ${file.path}: ${error.message}`);
+  }
+}
+
 function fuzzyScore(text, query) {
   text = text.toLowerCase();
   query = query.toLowerCase();
@@ -494,64 +587,182 @@ function showPopup(kind, title, items, placeholder = "") {
   popupTitle.textContent = title;
   popupInput.placeholder = placeholder;
   popupInput.value = "";
+  popupInput.hidden = kind === "tree";
+  popup.classList.toggle("tree-popup", kind === "tree");
+  popupPreview.hidden = kind !== "tree";
+  popupHint.textContent = kind === "tree"
+    ? "j/k move · h/l collapse/expand · Enter open · / filter · J/K preview · Esc close"
+    : "arrows move · Enter select · Esc close";
+  if (kind !== "tree") popupPreview.innerHTML = "";
   popupBackdrop.hidden = false;
   filterPopup();
-  popupInput.focus();
+  if (kind === "tree") popup.focus();
+  else popupInput.focus();
 }
 
 function closePopup() {
   state.popup = null;
+  state.treePreviewToken++;
   popupBackdrop.hidden = true;
+  popupInput.hidden = false;
   setFocus(state.focusLevel, state.pane);
 }
 
 function filterPopup() {
   const query = popupInput.value.trim();
-  state.popupFiltered = state.popupItems
-    .map(item => ({ ...item, score: fuzzyScore(item.search || item.label, query) }))
-    .filter(item => item.score >= 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 300);
+  if (state.popup === "tree") {
+    state.popupItems = treePopupItems(query);
+  }
+  state.popupFiltered = query
+    ? state.popupItems
+      .map(item => ({ ...item, score: fuzzyScore(item.search || item.label, query) }))
+      .filter(item => item.score >= 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 300)
+    : state.popupItems.slice(0, 300);
   state.popupIndex = Math.min(state.popupIndex, Math.max(0, state.popupFiltered.length - 1));
   popupList.innerHTML = state.popupFiltered.map((item, index) =>
     `<li data-index="${index}" class="${index === state.popupIndex ? "selected" : ""}">
-      ${escapeHtml(item.label)}${item.hint ? `<span class="hint">${escapeHtml(item.hint)}</span>` : ""}
+      ${item.html || escapeHtml(item.label)}${item.hint && !item.html ? `<span class="hint">${escapeHtml(item.hint)}</span>` : ""}
     </li>`).join("") || `<li>No matches</li>`;
   popupList.querySelectorAll("[data-index]").forEach(li => li.addEventListener("click", () => choosePopup(Number(li.dataset.index))));
+  popupList.querySelector(".selected")?.scrollIntoView({ block: "nearest" });
+  if (state.popup === "tree") updateTreePreview();
 }
 
 async function choosePopup(index = state.popupIndex) {
   const item = state.popupFiltered[index];
   if (!item) return;
-  closePopup();
+  if (!item.keepOpen) closePopup();
   await item.run();
 }
 
 async function openFilePicker() {
   await ensureFiles();
-  showPopup("files", "File picker", state.files.map(path => ({
-    label: path, run: () => openFile(path),
+  const entries = [...state.fileEntries].sort((a, b) =>
+    Number(b.changed) - Number(a.changed)
+    || Number(b.mtime || 0) - Number(a.mtime || 0)
+    || a.path.localeCompare(b.path)
+  );
+  showPopup("files", "File picker", entries.map(entry => ({
+    label: entry.path,
+    hint: entry.changed ? "changed" : "",
+    run: () => openFile(entry.path),
   })), "Search files");
 }
 
 async function openTreePicker() {
   await ensureFiles();
-  const items = state.files.map(path => {
-    const parts = path.split("/");
-    return {
-      label: `${"  ".repeat(parts.length - 1)}${parts.length > 1 ? "└ " : ""}${parts.at(-1)}`,
-      hint: path,
-      search: path,
-      run: () => openFile(path),
-    };
-  });
-  showPopup("tree", "Explorer · file tree", items, "Filter tree");
+  state.treeRoot = buildTree(state.fileEntries);
+  showPopup("tree", "Explorer", treePopupItems(""), "Filter tree");
 }
 
 function openCommandPicker() {
-  showPopup("commands", "Command picker", COMMANDS.map(command => ({
+  const commands = [...COMMANDS].sort((a, b) => a.label.localeCompare(b.label));
+  showPopup("commands", "Command picker", commands.map(command => ({
     label: command.label, hint: command.hint, run: command.run,
   })), "Run command");
+}
+
+function buildTree(entries) {
+  const root = { name: "", path: "", type: "dir", children: new Map(), changed: false, depth: -1 };
+  for (const entry of entries) {
+    let current = root;
+    const parts = entry.path.split("/");
+    if (parts.some(part => part.startsWith("."))) continue;
+    parts.forEach((name, index) => {
+      const path = parts.slice(0, index + 1).join("/");
+      const type = index === parts.length - 1 ? "file" : "dir";
+      if (!current.children.has(name)) {
+        current.children.set(name, {
+          name, path, type, children: new Map(), changed: false, depth: index,
+        });
+      }
+      current = current.children.get(name);
+      current.changed ||= Boolean(entry.changed);
+    });
+  }
+  return root;
+}
+
+function sortedTreeChildren(node) {
+  return [...node.children.values()].sort((a, b) =>
+    Number(a.type === "file") - Number(b.type === "file")
+    || a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+  );
+}
+
+function allTreeNodes(node, output = []) {
+  for (const child of sortedTreeChildren(node)) {
+    output.push(child);
+    if (child.type === "dir") allTreeNodes(child, output);
+  }
+  return output;
+}
+
+function visibleTreeNodes(node, output = []) {
+  for (const child of sortedTreeChildren(node)) {
+    output.push(child);
+    if (child.type === "dir" && state.treeExpanded.has(child.path)) {
+      visibleTreeNodes(child, output);
+    }
+  }
+  return output;
+}
+
+function treePopupItems(query) {
+  if (!state.treeRoot) return [];
+  const nodes = query ? allTreeNodes(state.treeRoot) : visibleTreeNodes(state.treeRoot);
+  return nodes.map(node => {
+    const expanded = node.type === "dir" && state.treeExpanded.has(node.path);
+    const indent = query ? 0 : node.depth;
+    const icon = node.type === "dir" ? (expanded ? "▾" : "▸") : "·";
+    return {
+      label: node.path,
+      search: node.path,
+      node,
+      keepOpen: node.type === "dir",
+      html: `<span class="tree-indent" style="width:${indent * 16}px"></span>
+        <span class="tree-icon">${icon}</span>
+        <span class="tree-name ${node.changed ? "status-modified" : ""}">${escapeHtml(node.name)}</span>
+        ${query ? `<span class="tree-path">${escapeHtml(node.path)}</span>` : ""}`,
+      run: async () => {
+        if (node.type === "dir") {
+          if (state.treeExpanded.has(node.path)) state.treeExpanded.delete(node.path);
+          else state.treeExpanded.add(node.path);
+          filterPopup();
+        } else {
+          await openFile(node.path);
+        }
+      },
+    };
+  });
+}
+
+async function updateTreePreview() {
+  const item = state.popupFiltered[state.popupIndex];
+  const node = item?.node;
+  const token = ++state.treePreviewToken;
+  if (!node) {
+    popupPreview.innerHTML = `<div class="empty">No selection</div>`;
+    return;
+  }
+  if (node.type === "dir") {
+    popupPreview.innerHTML = `<div class="preview-title">${escapeHtml(node.path)}/</div>
+      <div class="empty">${node.children.size} entries · ${state.treeExpanded.has(node.path) ? "expanded" : "collapsed"}</div>`;
+    return;
+  }
+  popupPreview.innerHTML = `<div class="preview-title">${escapeHtml(node.path)}</div><div class="loading">Loading preview…</div>`;
+  try {
+    const data = await api(`/api/file?path=${encodeURIComponent(node.path)}`);
+    const previewContent = data.content.split("\n").slice(0, 200).join("\n");
+    const html = await highlightedTextHtml(node.path, previewContent);
+    if (token !== state.treePreviewToken || state.popup !== "tree") return;
+    popupPreview.innerHTML = `<div class="preview-title">${escapeHtml(node.path)}</div><pre>${html}</pre>`;
+  } catch (error) {
+    if (token !== state.treePreviewToken || state.popup !== "tree") return;
+    popupPreview.innerHTML = `<div class="preview-title">${escapeHtml(node.path)}</div><div class="error">${escapeHtml(error.message)}</div>`;
+  }
 }
 
 async function openSymbolPicker() {
@@ -568,12 +779,21 @@ async function openSymbolPicker() {
 
 popupInput.addEventListener("input", filterPopup);
 popupInput.addEventListener("keydown", event => {
-  if (event.key === "Escape") { event.preventDefault(); closePopup(); }
-  else if (event.key === "ArrowDown" || (event.key === "j" && !event.metaKey && !event.ctrlKey)) {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    if (state.popup === "tree") {
+      popupInput.value = "";
+      popupInput.hidden = true;
+      filterPopup();
+      popup.focus();
+    } else {
+      closePopup();
+    }
+  } else if (event.key === "ArrowDown" || (event.ctrlKey && event.key === "n")) {
     event.preventDefault();
     state.popupIndex = Math.min(state.popupIndex + 1, state.popupFiltered.length - 1);
     filterPopup();
-  } else if (event.key === "ArrowUp" || (event.key === "k" && !event.metaKey && !event.ctrlKey)) {
+  } else if (event.key === "ArrowUp" || (event.ctrlKey && event.key === "p")) {
     event.preventDefault();
     state.popupIndex = Math.max(0, state.popupIndex - 1);
     filterPopup();
@@ -583,6 +803,56 @@ popupInput.addEventListener("keydown", event => {
   }
 });
 
+popup.addEventListener("keydown", event => {
+  if (state.popup !== "tree" || !popupInput.hidden) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closePopup();
+  } else if (event.key === "/" || event.key === "f") {
+    event.preventDefault();
+    popupInput.hidden = false;
+    popupInput.focus();
+  } else if (event.key === "j" || event.key === "ArrowDown") {
+    event.preventDefault();
+    state.popupIndex = Math.min(state.popupIndex + 1, state.popupFiltered.length - 1);
+    filterPopup();
+  } else if (event.key === "k" || event.key === "ArrowUp") {
+    event.preventDefault();
+    state.popupIndex = Math.max(0, state.popupIndex - 1);
+    filterPopup();
+  } else if (event.key === "l" || event.key === "ArrowRight" || event.key === "Enter") {
+    event.preventDefault();
+    choosePopup();
+  } else if (event.key === "h" || event.key === "ArrowLeft") {
+    event.preventDefault();
+    collapseTreeSelection();
+  } else if (event.shiftKey && event.key === "J") {
+    event.preventDefault();
+    popupPreview.scrollBy({ top: popupPreview.clientHeight * 0.25, behavior: "smooth" });
+  } else if (event.shiftKey && event.key === "K") {
+    event.preventDefault();
+    popupPreview.scrollBy({ top: -popupPreview.clientHeight * 0.25, behavior: "smooth" });
+  }
+});
+
+function collapseTreeSelection() {
+  const item = state.popupFiltered[state.popupIndex];
+  const node = item?.node;
+  if (!node) return;
+  if (node.type === "dir" && state.treeExpanded.has(node.path)) {
+    state.treeExpanded.delete(node.path);
+    filterPopup();
+    return;
+  }
+  const parentPath = node.path.includes("/") ? node.path.slice(0, node.path.lastIndexOf("/")) : "";
+  if (!parentPath) return;
+  const parentIndex = state.popupFiltered.findIndex(candidate => candidate.node?.path === parentPath);
+  if (parentIndex >= 0) {
+    state.popupIndex = parentIndex;
+    filterPopup();
+  }
+}
+
 header.addEventListener("click", event => {
   const button = event.target.closest("[data-component]");
   if (button) switchComponent(button.dataset.component);
@@ -591,6 +861,9 @@ header.addEventListener("click", event => {
 window.addEventListener("keydown", async event => {
   const isText = event.target.matches("textarea, input");
   if (state.popup) return;
+
+  // Preserve native browser focus-location and reload shortcuts.
+  if (event.metaKey && ["l", "r"].includes(event.key.toLowerCase())) return;
 
   if (event.metaKey && event.key.toLowerCase() === "p") {
     event.preventDefault();
@@ -610,6 +883,7 @@ window.addEventListener("keydown", async event => {
   if (event.key === "Escape") {
     event.preventDefault();
     if (isText && event.target.classList.contains("editor-input")) {
+      state.editorMode = "normal";
       setFocus("app", 0);
     } else if (state.focusLevel === "pane" && state.pane > 0) {
       setFocus("pane", state.pane - 1);
@@ -632,11 +906,35 @@ window.addEventListener("keydown", async event => {
     event.preventDefault();
     state.gPending = true;
     focusPath.textContent = "g …";
-    setTimeout(() => { state.gPending = false; updateFocusChrome(); }, 900);
+    setTimeout(() => { state.gPending = false; updateFocusChrome(); }, 10000);
     return;
   }
-  if (state.component === "explorer" && event.key === "t") {
+  if (state.focusLevel === "app" && event.key === "t") {
     event.preventDefault(); openTreePicker(); return;
+  }
+  if ((event.key === "i" || event.key === "Enter") && enterEditorInsertMode()) {
+    event.preventDefault();
+    return;
+  }
+  if (state.component === "compare" && event.shiftKey && event.key === "J") {
+    event.preventDefault();
+    scrollPreview(1, 0.25);
+    return;
+  }
+  if (state.component === "compare" && event.shiftKey && event.key === "K") {
+    event.preventDefault();
+    scrollPreview(-1, 0.25);
+    return;
+  }
+  if (state.component === "status" && state.pane === 0 && event.key === "v") {
+    event.preventDefault();
+    await toggleStatusViewed();
+    return;
+  }
+  if (state.component === "status" && state.pane === 0 && event.key === "o") {
+    event.preventDefault();
+    await openStatusFileInEditor();
+    return;
   }
   if (event.key === "r") {
     event.preventDefault(); await refreshComponent(); return;
@@ -657,9 +955,7 @@ window.addEventListener("keydown", async event => {
   }
   if (event.ctrlKey && (event.key === "d" || event.key === "u")) {
     event.preventDefault();
-    const preview = app.querySelector(".pane:last-child .code-surface")
-      || app.querySelector(".pane:last-child");
-    preview?.scrollBy({ top: (event.key === "d" ? 1 : -1) * preview.clientHeight * .7, behavior: "smooth" });
+    scrollPreview(event.key === "d" ? 1 : -1);
   }
 });
 

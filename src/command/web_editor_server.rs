@@ -114,6 +114,14 @@ pub(crate) async fn handle_api_file(
 #[derive(Serialize)]
 struct FilesResponse {
     files: Vec<String>,
+    entries: Vec<FileEntryResponse>,
+}
+
+#[derive(Serialize)]
+struct FileEntryResponse {
+    path: String,
+    mtime: u64,
+    changed: bool,
 }
 
 /// How long a cached `/api/files` listing stays fresh. The editor fires this on
@@ -144,13 +152,11 @@ pub(crate) async fn handle_api_files(State(state): State<Arc<GargoServerState>>)
     // Fast path: return the cached listing if it's the current generation and
     // still within the TTL.
     if let Ok(guard) = state.files_cache.lock()
-        && let Some((cached_gen, cached_at, files)) = guard.as_ref()
+        && let Some((cached_gen, cached_at, files, entries)) = guard.as_ref()
         && *cached_gen == generation
         && cached_at.elapsed() < FILES_CACHE_TTL
     {
-        return ok_json(&FilesResponse {
-            files: files.clone(),
-        });
+        return files_response(files.clone(), entries.clone());
     }
 
     // Miss: `collect_files` shells out to git synchronously, so run it off the
@@ -159,11 +165,47 @@ pub(crate) async fn handle_api_files(State(state): State<Arc<GargoServerState>>)
     let files = tokio::task::spawn_blocking(move || crate::project::collect_files(&repo_root))
         .await
         .unwrap_or_default();
+    let entries = collect_file_entries(&state.repo_root, files.clone()).await;
 
     if let Ok(mut guard) = state.files_cache.lock() {
-        *guard = Some((generation, std::time::Instant::now(), files.clone()));
+        *guard = Some((
+            generation,
+            std::time::Instant::now(),
+            files.clone(),
+            entries.clone(),
+        ));
     }
-    ok_json(&FilesResponse { files })
+    files_response(files, entries)
+}
+
+async fn collect_file_entries(repo_root: &Path, files: Vec<String>) -> Vec<(String, u64, bool)> {
+    let root = repo_root.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let changed = crate::command::git_backend::status_map(&root);
+        files
+            .into_iter()
+            .map(|path| {
+                let full = root.join(&path);
+                let mtime = mtime_ms(&full);
+                let is_changed = changed.contains_key(&path);
+                (path, mtime, is_changed)
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap_or_default()
+}
+
+fn files_response(files: Vec<String>, entries: Vec<(String, u64, bool)>) -> Response {
+    let entries = entries
+        .into_iter()
+        .map(|(path, mtime, changed)| FileEntryResponse {
+            path,
+            mtime,
+            changed,
+        })
+        .collect();
+    ok_json(&FilesResponse { files, entries })
 }
 
 #[derive(Serialize)]

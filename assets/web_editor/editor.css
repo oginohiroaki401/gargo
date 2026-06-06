@@ -112,6 +112,8 @@ button { color: inherit; }
 .list .stack { min-width: 0; }
 .list .stack .secondary { display: block; margin: 1px 0 0; }
 .status-badge { width: 1.4em; flex: 0 0 1.4em; text-align: center; font-weight: 700; }
+.viewed-box { width: 2.4em; flex: 0 0 2.4em; color: var(--muted); }
+.viewed-box.checked { color: var(--accent); }
 .status-added, .status-untracked { color: var(--green); }
 .status-deleted { color: var(--red); }
 .status-modified, .status-renamed { color: var(--yellow); }
@@ -212,7 +214,9 @@ button { color: inherit; }
   border-radius: 6px;
   background: var(--panel);
   box-shadow: 0 18px 60px rgba(0,0,0,.5);
+  outline: none;
 }
+#popup.tree-popup { width: min(1080px, calc(100vw - 32px)); }
 #popup-title { padding: 8px 11px; color: var(--muted); font-size: 11px; text-transform: uppercase; }
 #popup-input {
   margin: 0 9px 8px;
@@ -224,11 +228,35 @@ button { color: inherit; }
   color: var(--text);
 }
 #popup-input:focus { border-color: var(--accent); }
-#popup-list { overflow: auto; list-style: none; margin: 0; padding: 4px; }
+#popup-main { min-height: 0; display: flex; flex: 1 1 auto; }
+#popup-list { flex: 1 1 auto; overflow: auto; list-style: none; margin: 0; padding: 4px; }
 #popup-list li { padding: 6px 9px; border-radius: 3px; white-space: pre; cursor: default; }
 #popup-list li.selected { background: var(--accent-dim); color: var(--text); }
 #popup-list .match { color: var(--accent); font-weight: 700; }
 #popup-list .hint { float: right; color: var(--muted); }
+.tree-popup #popup-list { flex: 0 0 42%; border-right: 1px solid var(--line); }
+.tree-popup #popup-list li { display: flex; align-items: center; gap: 7px; }
+.tree-indent { display: inline-block; flex: 0 0 auto; }
+.tree-icon { width: 1.2em; flex: 0 0 1.2em; color: var(--muted); text-align: center; }
+.tree-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tree-path { margin-left: auto; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; }
+#popup-preview {
+  flex: 1 1 58%;
+  min-width: 0;
+  overflow: auto;
+  background: var(--bg);
+}
+#popup-preview[hidden] { display: none; }
+#popup-preview .preview-title {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--muted);
+}
+#popup-preview pre { min-width: max-content; margin: 0; padding: 10px 14px 30px 52px; font: 12px/19px var(--font); }
 #popup-hint { padding: 7px 10px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
 
 #toast {

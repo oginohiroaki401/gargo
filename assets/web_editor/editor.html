@@ -26,11 +26,14 @@
     <div id="toast" role="status" hidden></div>
 
     <div id="popup-backdrop" hidden>
-      <section id="popup" role="dialog" aria-modal="true">
+      <section id="popup" role="dialog" aria-modal="true" tabindex="-1">
         <div id="popup-title"></div>
         <input id="popup-input" autocomplete="off" autocorrect="off"
           autocapitalize="off" spellcheck="false">
-        <ol id="popup-list"></ol>
+        <div id="popup-main">
+          <ol id="popup-list"></ol>
+          <div id="popup-preview" hidden></div>
+        </div>
         <div id="popup-hint">j/k or arrows to move · Enter to select · Esc to close</div>
       </section>
     </div>
