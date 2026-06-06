@@ -225,15 +225,11 @@ impl GargoServerWorker {
         let Some(port) = self.port else {
             return;
         };
-        let Some(state) = &self.preview_state else {
+        if self.preview_state.is_none() {
             return;
-        };
-        let Ok(state) = state.lock() else {
-            return;
-        };
-        let path = route.path(&state.url_ctx);
+        }
         let _ = self.event_tx.send(GargoServerEvent::Opened {
-            url: format!("http://127.0.0.1:{}{}", port, path),
+            url: format!("http://127.0.0.1:{}{}", port, route.path()),
         });
     }
 
@@ -344,7 +340,7 @@ impl GargoServerWorker {
 }
 
 impl GargoServerRoute {
-    fn path(&self, _ctx: &gargo_preview_server::RepoUrlContext) -> String {
+    fn path(&self) -> String {
         match self {
             Self::Root | Self::Tree { .. } | Self::Blob { .. } => "/#explorer".to_string(),
             Self::Changes => "/#status".to_string(),
@@ -376,21 +372,19 @@ fn bridge_preview_events(
     tx
 }
 
+/// One `/api/files` entry: `(path, mtime_ms, changed)`.
+pub(crate) type FileEntry = (String, u64, bool);
+
+/// A cached `/api/files` listing: `(generation, cached_at, files, entries)`,
+/// reused while the generation matches and the entry is within the TTL.
+type FilesCache = (u64, std::time::Instant, Vec<String>, Vec<FileEntry>);
+
 #[derive(Debug)]
 pub(crate) struct GargoServerState {
     pub(crate) repo_root: PathBuf,
     /// Short-lived cache for the `/api/files` listing (`git ls-files`), which the
-    /// editor hits on every Cmd+P open. Holds
-    /// `(generation, cached_at, files, (path, mtime, changed) entries)`; reused
-    /// while the generation matches and the entry is within the TTL.
-    pub(crate) files_cache: std::sync::Mutex<
-        Option<(
-            u64,
-            std::time::Instant,
-            Vec<String>,
-            Vec<(String, u64, bool)>,
-        )>,
-    >,
+    /// editor hits on every Cmd+P open.
+    pub(crate) files_cache: std::sync::Mutex<Option<FilesCache>>,
     /// Bumped by filesystem-mutating editor handlers (create/rename/delete/save)
     /// so `files_cache` is invalidated immediately rather than waiting for the TTL.
     pub(crate) fs_generation: std::sync::atomic::AtomicU64,

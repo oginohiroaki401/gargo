@@ -24,12 +24,12 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::command::gargo_server::GargoServerState;
+use crate::command::gargo_server::{FileEntry, GargoServerState};
 
-/// The browser application defined by `MEMO.md`. Its Explorer editor and the
-/// read-only previews used by History, Compare, and Status share one client-side
-/// code-surface implementation. Assets stay embedded so `gargo` remains a
-/// self-contained binary.
+/// The browser application: a keyboard-driven code and Git browser. Its Explorer
+/// editor and the read-only previews used by History, Compare, and Status share
+/// one client-side code-surface implementation. Assets stay embedded so `gargo`
+/// remains a self-contained binary.
 const EDITOR_HTML: &str = include_str!("../../assets/web_editor/editor.html");
 const EDITOR_CSS: &str = include_str!("../../assets/web_editor/editor.css");
 const EDITOR_JS: &str = include_str!("../../assets/web_editor/editor.js");
@@ -178,7 +178,7 @@ pub(crate) async fn handle_api_files(State(state): State<Arc<GargoServerState>>)
     files_response(files, entries)
 }
 
-async fn collect_file_entries(repo_root: &Path, files: Vec<String>) -> Vec<(String, u64, bool)> {
+async fn collect_file_entries(repo_root: &Path, files: Vec<String>) -> Vec<FileEntry> {
     let root = repo_root.to_path_buf();
     tokio::task::spawn_blocking(move || {
         let changed = crate::command::git_backend::status_map(&root);
@@ -196,7 +196,7 @@ async fn collect_file_entries(repo_root: &Path, files: Vec<String>) -> Vec<(Stri
     .unwrap_or_default()
 }
 
-fn files_response(files: Vec<String>, entries: Vec<(String, u64, bool)>) -> Response {
+fn files_response(files: Vec<String>, entries: Vec<FileEntry>) -> Response {
     let entries = entries
         .into_iter()
         .map(|(path, mtime, changed)| FileEntryResponse {

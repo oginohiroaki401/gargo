@@ -158,6 +158,18 @@ fn unified_gargo_server_serves_code_diffs_compare_commits_and_events() {
     assert_eq!(readme["changed"], true);
     assert!(readme["mtime"].as_u64().unwrap_or(0) > 0);
 
+    // The editor header and "open" menu read repo identity from /api/repo-info.
+    let repo_info = get_json_with_retry(&format!("{base_url}/api/repo-info"));
+    assert_eq!(repo_info["owner"], "aplio");
+    assert_eq!(repo_info["repo"], "gargo");
+    assert_eq!(repo_info["branch"], "master");
+    assert_eq!(repo_info["remote_url"], "https://github.com/aplio/gargo");
+    assert!(
+        repo_info["root"]
+            .as_str()
+            .is_some_and(|root| !root.is_empty())
+    );
+
     let blob_html = get_text_with_retry(&format!("{base_url}/aplio/gargo/blob/master/README.md"));
     assert!(blob_html.contains("Test Repo"));
     assert!(blob_html.contains(r#"<pre class="mermaid">"#));
