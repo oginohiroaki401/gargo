@@ -264,7 +264,7 @@ button { color: inherit; }
   box-shadow: 0 18px 60px rgba(0,0,0,.5);
   outline: none;
 }
-#popup.tree-popup { width: min(1080px, calc(100vw - 32px)); }
+#popup.tree-popup { width: min(1080px, calc(100vw - 32px)); height: min(680px, 76vh); }
 #popup-title { padding: 8px 11px; color: var(--muted); font-size: 11px; text-transform: uppercase; }
 #popup-input {
   margin: 0 9px 8px;
