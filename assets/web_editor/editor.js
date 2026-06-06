@@ -660,6 +660,18 @@ async function toggleCompareViewed() {
   }
 }
 
+// Open a file in a fresh browser tab. boot() reads the `?path=` query param
+// and loads that file, so the new tab lands directly on it.
+function openFileInNewTab(path) {
+  window.open(`/editor?path=${encodeURIComponent(path)}`, "_blank");
+}
+
+function openTreeSelectionInNewTab() {
+  const node = state.popupFiltered[state.popupIndex]?.node;
+  if (!node || node.type !== "file") return;
+  openFileInNewTab(node.path);
+}
+
 async function openSelectedDiffFileInEditor() {
   let file = null;
   if (state.component === "status" && state.pane === 0) {
@@ -699,7 +711,7 @@ function showPopup(kind, title, items, placeholder = "") {
   popup.classList.toggle("tree-popup", kind === "tree");
   popupPreview.hidden = kind !== "tree";
   popupHint.textContent = kind === "tree"
-    ? "j/k move · h/l collapse/expand · Enter open · / filter · J/K preview · Esc close"
+    ? "j/k move · h/l collapse/expand · Enter open · ⌥/⌘Enter new tab · / filter · J/K preview · Esc close"
     : "arrows move · Enter select · Esc close";
   if (kind !== "tree") popupPreview.innerHTML = "";
   popupBackdrop.hidden = false;
@@ -905,6 +917,9 @@ popupInput.addEventListener("keydown", event => {
     event.preventDefault();
     state.popupIndex = Math.max(0, state.popupIndex - 1);
     filterPopup();
+  } else if (event.key === "Enter" && state.popup === "tree" && (event.altKey || event.metaKey)) {
+    event.preventDefault();
+    openTreeSelectionInNewTab();
   } else if (event.key === "Enter") {
     event.preventDefault();
     choosePopup();
@@ -928,6 +943,9 @@ popup.addEventListener("keydown", event => {
     event.preventDefault();
     state.popupIndex = Math.max(0, state.popupIndex - 1);
     filterPopup();
+  } else if (event.key === "Enter" && (event.altKey || event.metaKey)) {
+    event.preventDefault();
+    openTreeSelectionInNewTab();
   } else if (event.key === "l" || event.key === "ArrowRight" || event.key === "Enter") {
     event.preventDefault();
     choosePopup();
@@ -1129,6 +1147,11 @@ async function boot() {
       : "explorer";
     const requested = location.hash.slice(1) || pathComponent;
     await switchComponent(COMPONENTS.includes(requested) ? requested : "explorer");
+    const fileParam = new URLSearchParams(location.search).get("path");
+    if (fileParam) {
+      await openFile(fileParam)
+        .catch(error => notify(`Cannot open ${fileParam}: ${error.message}`));
+    }
   } catch (error) {
     app.innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
   }
