@@ -68,11 +68,29 @@ pub(crate) async fn handle_api_branches_request(
 
     let default = resolve_default_from(origin_head, &list.branches);
 
+    // Per-branch tip info keyed by name, so the picker can show each ref's
+    // last commit (hash · subject · date) without another request.
+    let info: serde_json::Map<String, serde_json::Value> = list
+        .tips
+        .iter()
+        .map(|t| {
+            (
+                t.name.clone(),
+                serde_json::json!({
+                    "hash": t.hash,
+                    "message": t.summary,
+                    "time": t.time,
+                }),
+            )
+        })
+        .collect();
+
     ok_json(serde_json::json!({
         "current": list.current,
         "default": default,
         "branches": list.branches,
         "remotes": list.remotes,
+        "info": info,
     }))
 }
 

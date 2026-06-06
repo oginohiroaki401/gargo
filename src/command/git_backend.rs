@@ -428,6 +428,18 @@ pub(crate) struct BranchList {
     pub branches: Vec<String>,
     pub remotes: Vec<String>,
     pub current: Option<String>,
+    /// Per-branch tip commit info (short hash, summary, author unix time),
+    /// aligned with `branches` by name. Lets the picker show what each ref
+    /// points at without a second round-trip.
+    pub tips: Vec<BranchTip>,
+}
+
+/// The commit a branch/ref points at, for the picker's secondary line.
+pub(crate) struct BranchTip {
+    pub name: String,
+    pub hash: String,
+    pub summary: String,
+    pub time: i64,
 }
 
 pub(crate) fn list_branches(root: &Path) -> Option<BranchList> {
@@ -438,9 +450,9 @@ pub(crate) fn list_branches(root: &Path) -> Option<BranchList> {
         .flatten()
         .map(|n| n.shorten().to_str_lossy().into_owned());
 
-    // (full refname, short name, is_remote) — sorted by full name to reproduce
-    // `git for-each-ref refs/heads/ refs/remotes/` ordering.
-    let mut entries: Vec<(String, String, bool)> = Vec::new();
+    // (full refname, short name, is_remote, tip) — sorted by full name to
+    // reproduce `git for-each-ref refs/heads/ refs/remotes/` ordering.
+    let mut entries: Vec<(String, String, bool, BranchTip)> = Vec::new();
     for reference in repo.references().ok()?.all().ok()?.flatten() {
         let full = reference.name().as_bstr().to_str_lossy().into_owned();
         let is_head = full.starts_with("refs/heads/");
@@ -452,22 +464,45 @@ pub(crate) fn list_branches(root: &Path) -> Option<BranchList> {
         if short.ends_with("/HEAD") {
             continue;
         }
-        entries.push((full, short, is_remote));
+        // Peel the ref to its commit so the picker can show the tip's hash,
+        // subject and date. Best-effort: a ref we can't peel still lists.
+        let mut tip = BranchTip {
+            name: short.clone(),
+            hash: String::new(),
+            summary: String::new(),
+            time: 0,
+        };
+        if let Ok(id) = reference.into_fully_peeled_id() {
+            tip.hash = id.shorten_or_id().to_string();
+            if let Ok(commit) = repo.find_commit(id.detach()) {
+                if let Ok(author) = commit.author() {
+                    tip.time = author.time().map(|t| t.seconds).unwrap_or(0);
+                }
+                tip.summary = commit
+                    .message()
+                    .map(|m| m.summary().to_str_lossy().into_owned())
+                    .unwrap_or_default();
+            }
+        }
+        entries.push((full, short, is_remote, tip));
     }
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut branches = Vec::new();
     let mut remotes = Vec::new();
-    for (_full, short, is_remote) in entries {
+    let mut tips = Vec::new();
+    for (_full, short, is_remote, tip) in entries {
         if is_remote {
             remotes.push(short.clone());
         }
+        tips.push(tip);
         branches.push(short);
     }
     Some(BranchList {
         branches,
         remotes,
         current,
+        tips,
     })
 }
 

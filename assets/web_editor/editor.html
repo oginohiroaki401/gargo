@@ -34,6 +34,22 @@
       </section>
     </div>
 
+    <div id="commit-backdrop" hidden>
+      <section id="commit-dialog" role="dialog" aria-modal="true" aria-label="Commit" tabindex="-1">
+        <div id="commit-title">Commit<span class="grow"></span><span id="commit-branch"></span></div>
+        <div id="commit-summary"></div>
+        <textarea id="commit-message" rows="5" placeholder="Commit message…"
+          autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
+        <label id="commit-amend-row" hidden><input type="checkbox" id="commit-amend"> Amend previous commit</label>
+        <div id="commit-actions">
+          <span id="commit-hint"><span class="key">⌘↵</span> commit · <span class="key">Esc</span> cancel</span>
+          <span class="grow"></span>
+          <button type="button" id="commit-cancel">Cancel</button>
+          <button type="button" id="commit-submit">Commit</button>
+        </div>
+      </section>
+    </div>
+
     <div id="popup-backdrop" hidden>
       <section id="popup" role="dialog" aria-modal="true" tabindex="-1">
         <div id="popup-title"></div>

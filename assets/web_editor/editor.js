@@ -13,6 +13,14 @@ const helpBackdrop = document.getElementById("help-backdrop");
 const helpBody = document.getElementById("help-body");
 const repoLink = document.getElementById("repo-link");
 const repoSep = document.getElementById("repo-sep");
+const commitBackdrop = document.getElementById("commit-backdrop");
+const commitBranch = document.getElementById("commit-branch");
+const commitSummary = document.getElementById("commit-summary");
+const commitMessage = document.getElementById("commit-message");
+const commitAmendRow = document.getElementById("commit-amend-row");
+const commitAmend = document.getElementById("commit-amend");
+const commitSubmit = document.getElementById("commit-submit");
+const commitCancel = document.getElementById("commit-cancel");
 
 const COMPONENTS = ["explorer", "history", "compare", "status"];
 const state = {
@@ -41,6 +49,8 @@ const state = {
   historySignature: "",
   historyPollTimer: null,
   refs: [],
+  refInfo: {},
+  commit: null,
   compareBase: "",
   compareTarget: "",
   refPickerWhich: "base",
@@ -48,6 +58,7 @@ const state = {
   compareFile: 0,
   statusFiles: [],
   statusFile: 0,
+  statusBranch: "",
   statusSignature: "",
   statusPollTimer: null,
   popup: null,
@@ -115,6 +126,14 @@ const HELP_SECTIONS = [
     title: "History / Compare", keys: [
       ["J / K", "History: prev/next changed file · Compare: scroll preview"],
       ["B / C", "Compare: pick base / compare ref (fuzzy)"],
+    ],
+  },
+  {
+    title: "Status", keys: [
+      ["u", "Stage / unstage selected file"],
+      ["C", "Open commit dialog (message + staged summary)"],
+      ["v", "Toggle viewed"],
+      ["Cmd+Enter / Esc", "Commit dialog: commit / cancel"],
     ],
   },
   {
@@ -1097,8 +1116,25 @@ async function ensureRefs() {
   if (state.refs.length) return;
   const data = await api("/api/branches");
   state.refs = data.branches || [];
+  state.refInfo = data.info || {};
   state.compareBase ||= data.default || data.current || state.refs[0] || "HEAD";
   state.compareTarget ||= data.current || state.refs[1] || "HEAD";
+}
+
+// Compact "time ago" for branch tips: seconds is a unix timestamp (author
+// time). Returns "" for a missing/zero stamp so the picker can omit it.
+function relativeTime(seconds) {
+  const value = Number(seconds);
+  if (!value) return "";
+  const delta = Math.max(0, Math.floor(Date.now() / 1000 - value));
+  const units = [
+    [31536000, "y"], [2592000, "mo"], [604800, "w"],
+    [86400, "d"], [3600, "h"], [60, "m"],
+  ];
+  for (const [size, label] of units) {
+    if (delta >= size) return `${Math.floor(delta / size)}${label} ago`;
+  }
+  return "just now";
 }
 
 async function renderCompare() {
@@ -1137,11 +1173,18 @@ async function openRefPicker(which) {
   await ensureRefs();
   state.refPickerWhich = which;
   const current = which === "base" ? state.compareBase : state.compareTarget;
-  const items = state.refs.map(ref => ({
-    label: ref, search: ref,
-    hint: ref === current ? "current" : "",
-    run: () => applyRef(which, ref),
-  }));
+  const items = state.refs.map(ref => {
+    const tip = state.refInfo[ref];
+    const meta = tip && (tip.hash || tip.message || tip.time)
+      ? `${escapeHtml(tip.hash || "")}${tip.message ? ` · ${escapeHtml(String(tip.message).split("\n")[0])}` : ""}${tip.time ? ` · ${escapeHtml(relativeTime(tip.time))}` : ""}`
+      : "";
+    return {
+      label: ref, search: ref, cls: "ref-row",
+      run: () => applyRef(which, ref),
+      html: `<div class="stack"><div class="primary">${escapeHtml(ref)}${ref === current ? ` <span class="hint">current</span>` : ""}</div>`
+        + (meta ? `<span class="secondary">${meta}</span>` : "") + `</div>`,
+    };
+  });
   showPopup("ref", which === "base" ? "Select base ref" : "Select compare ref",
     items, "Filter branches, tags, refs…");
 }
@@ -1180,14 +1223,17 @@ async function loadCompare() {
   state.compareFile = Math.min(state.compareFile, Math.max(0, state.compareFiles.length - 1));
 }
 
+// Flatten the status payload into one selectable list, staged first so the
+// "Changes to be committed" section sits at the top (the grouped renderer
+// relies on this section order to map each row back to its global index).
 function statusFilesFrom(data) {
-  return ["unstaged", "staged", "untracked"].flatMap(section =>
+  return ["staged", "unstaged", "untracked"].flatMap(section =>
     (data[section] || []).map(file => ({ ...file, section }))
   );
 }
 
-function statusSignature(files) {
-  return files.map(file =>
+function statusSignature(files, branch) {
+  return `${branch || ""}\n` + files.map(file =>
     `${file.section}:${file.path}:${file.status}:${file.additions || 0}:${file.deletions || 0}:${file.viewed ? 1 : 0}`
   ).join("|");
 }
@@ -1195,18 +1241,52 @@ function statusSignature(files) {
 async function renderStatus() {
   const data = await api("/api/status");
   state.statusFiles = statusFilesFrom(data);
+  state.statusBranch = data.branch || "";
   state.statusFile = Math.min(state.statusFile, Math.max(0, state.statusFiles.length - 1));
-  state.statusSignature = statusSignature(state.statusFiles);
+  state.statusSignature = statusSignature(state.statusFiles, state.statusBranch);
   await renderStatusView();
+}
+
+// Render the status list as git-status-style sections (branch header + staged /
+// unstaged / untracked groups). Each file row keeps its global index into
+// `state.statusFiles` so j/k navigation, clicks and the preview stay in sync.
+function statusFileListHtml() {
+  const branch = state.statusBranch
+    ? `On branch ${escapeHtml(state.statusBranch)}`
+    : "Detached HEAD";
+  const SECTIONS = [
+    { key: "staged", title: "Changes to be committed:" },
+    { key: "unstaged", title: "Changes not staged for commit:" },
+    { key: "untracked", title: "Untracked files:" },
+  ];
+  const parts = [`<div class="status-branch">${branch}</div>`];
+  let index = 0;
+  for (const section of SECTIONS) {
+    const files = state.statusFiles.filter(file => file.section === section.key);
+    parts.push(`<div class="status-section-head status-section-${section.key}">${section.title}</div>`);
+    if (!files.length) {
+      parts.push(`<div class="status-section-empty">(no files)</div>`);
+      continue;
+    }
+    parts.push(`<ol class="list">` + files.map(file => {
+      const i = index++;
+      return `<li data-index="${i}" class="${i === state.statusFile ? "selected" : ""}">`
+        + `<span class="viewed-box ${file.viewed ? "checked" : ""}" title="${file.viewed ? "Viewed" : "Not viewed"}">${file.viewed ? "[x]" : "[ ]"}</span>`
+        + `<span class="status-badge status-${statusName(file.status)}">${statusLetter(file.status)}</span>`
+        + `<span class="primary">${escapeHtml(file.path)}</span>`
+        + `<span class="secondary">${stats(file)}</span></li>`;
+    }).join("") + `</ol>`);
+  }
+  return parts.join("");
 }
 
 async function renderStatusView() {
   await renderDiffView({
     kind: "status",
     title: "Status",
-    hint: `<span>Worktree vs HEAD · live · <span class="key">j/k</span> files · <span class="key">v</span> viewed · <span class="key">o</span> edit · <span class="key">O</span> menu · <span class="key">Ctrl-d/u</span> preview</span>`,
+    hint: `<span>Worktree vs HEAD · live · <span class="key">j/k</span> files · <span class="key">u</span> stage · <span class="key">C</span> commit · <span class="key">v</span> viewed · <span class="key">o</span> edit · <span class="key">O</span> menu · <span class="key">Ctrl-d/u</span> preview</span>`,
     panes: [
-      { title: "Changed files", name: "changed files", body: fileList(state.statusFiles, state.statusFile, { viewed: true }) },
+      { title: "Changed files", name: "changed files", body: statusFileListHtml() },
       { title: "Preview", name: "preview", body: diffSurfaceHtml() },
     ],
   });
@@ -1233,10 +1313,12 @@ async function refreshStatusIfChanged() {
   try { data = await api("/api/status"); } catch (_) { return; }
   if (state.component !== "status" || state.popup || state.help) return;
   const files = statusFilesFrom(data);
-  const signature = statusSignature(files);
+  const branch = data.branch || "";
+  const signature = statusSignature(files, branch);
   if (signature === state.statusSignature) return;
   const focusLevel = state.focusLevel, pane = state.pane;
   state.statusFiles = files;
+  state.statusBranch = branch;
   state.statusFile = Math.min(state.statusFile, Math.max(0, files.length - 1));
   state.statusSignature = signature;
   await renderStatusView();
@@ -1392,6 +1474,119 @@ async function toggleStatusViewed() {
   } catch (error) {
     notify(`Viewed toggle failed: ${error.message}`);
   }
+}
+
+// Stage (git add) or unstage (git reset) the selected status file, then reload
+// the list so it hops between the Changes / Staged sections. The selection
+// follows the same path across the move so `j u j u` keeps flowing.
+async function toggleStatusStage() {
+  if (state.component !== "status" || state.pane !== 0) return;
+  const file = state.statusFiles[state.statusFile];
+  if (!file) return;
+  const staged = file.section === "staged";
+  const endpoint = staged ? "/api/status/unstage" : "/api/status/stage";
+  try {
+    await api(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: file.path }),
+    });
+  } catch (error) {
+    notify(`${staged ? "Unstage" : "Stage"} failed: ${error.message}`);
+    return;
+  }
+  const keepPath = file.path;
+  await renderStatus();
+  const idx = state.statusFiles.findIndex(other => other.path === keepPath);
+  if (idx >= 0 && idx !== state.statusFile) {
+    state.statusFile = idx;
+    await renderStatusView();
+  }
+  setFocus("pane", 0);
+}
+
+// Commit dialog: a staged-file summary plus a message form. Opened with `C`
+// from the Status view. Backed by /api/status/commit-prepare (summary + the
+// HEAD message for amend) and /api/status/commit (the actual commit).
+async function openCommitDialog() {
+  let data;
+  try {
+    data = await api("/api/status/commit-prepare");
+  } catch (error) {
+    notify(`Commit unavailable: ${error.message}`);
+    return;
+  }
+  const staged = data.staged || [];
+  state.commit = {
+    open: true,
+    lastMessage: data.last_message || "",
+    hasHead: Boolean(data.has_head),
+    stagedCount: staged.length,
+  };
+  commitBranch.textContent = data.branch ? `on ${data.branch}` : "";
+  commitSummary.innerHTML = staged.length
+    ? `<div class="commit-summary-head">${staged.length} staged file${staged.length === 1 ? "" : "s"}</div>`
+      + `<ol class="list commit-files">` + staged.map(file =>
+        `<li><span class="status-badge status-${statusName(file.status)}">${statusLetter(file.status)}</span>`
+        + `<span class="primary">${escapeHtml(file.path)}</span>`
+        + `<span class="secondary">${stats(file)}</span></li>`).join("")
+      + `</ol>`
+    : `<div class="empty">No staged changes — stage files with <span class="key">u</span> first.</div>`;
+  commitMessage.value = "";
+  commitAmendRow.hidden = !state.commit.hasHead;
+  commitAmend.checked = false;
+  updateCommitSubmitState();
+  commitBackdrop.hidden = false;
+  commitMessage.focus();
+}
+
+// The commit button is enabled when there's a message and either staged
+// changes or an amend in progress (amend can rewrite the message alone).
+function updateCommitSubmitState() {
+  if (!state.commit) return;
+  const hasMessage = commitMessage.value.trim().length > 0;
+  const hasWork = state.commit.stagedCount > 0 || commitAmend.checked;
+  commitSubmit.disabled = !(hasMessage && hasWork);
+}
+
+function closeCommitDialog() {
+  state.commit = null;
+  commitBackdrop.hidden = true;
+  setFocus(state.focusLevel, state.pane);
+}
+
+async function submitCommit() {
+  if (!state.commit) return;
+  const message = commitMessage.value.trim();
+  const amend = commitAmend.checked;
+  if (!message) {
+    notify("Commit message must not be empty");
+    commitMessage.focus();
+    return;
+  }
+  if (state.commit.stagedCount === 0 && !amend) {
+    notify("No staged changes to commit");
+    return;
+  }
+  commitSubmit.disabled = true;
+  try {
+    await api("/api/status/commit", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message, amend }),
+    });
+  } catch (error) {
+    notify(`Commit failed: ${error.message}`);
+    updateCommitSubmitState();
+    return;
+  }
+  closeCommitDialog();
+  notify(amend ? "Amended commit" : "Committed");
+  // The history log is now stale; drop it so the next visit refetches.
+  state.commits = [];
+  state.historyData = null;
+  await renderStatus();
+  setFocus("pane", 0);
 }
 
 async function toggleCompareViewed() {
@@ -2066,6 +2261,19 @@ window.addEventListener("keydown", async event => {
   }
   if (state.popup) return;
 
+  // Commit dialog: Cmd/Ctrl+Enter commits, Esc cancels; every other key falls
+  // through to the textarea so the message types normally.
+  if (state.commit && state.commit.open) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeCommitDialog();
+    } else if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+      event.preventDefault();
+      await submitCommit();
+    }
+    return;
+  }
+
   // Preserve native browser focus-location and reload shortcuts.
   if (event.metaKey && ["l", "r"].includes(event.key.toLowerCase())) return;
 
@@ -2235,6 +2443,16 @@ window.addEventListener("keydown", async event => {
     await openSelectedDiffFileInEditor();
     return;
   }
+  if (state.component === "status" && state.pane === 0 && event.key === "u") {
+    event.preventDefault();
+    await toggleStatusStage();
+    return;
+  }
+  if (state.component === "status" && event.key === "C") {
+    event.preventDefault();
+    await openCommitDialog();
+    return;
+  }
   if (event.key === "r") {
     event.preventDefault(); await refreshComponent(); return;
   }
@@ -2261,6 +2479,22 @@ window.addEventListener("keydown", async event => {
     event.preventDefault();
     scrollPreview(event.key === "d" ? 1 : -1);
   }
+});
+
+// Commit dialog wiring: backdrop click cancels, the buttons commit/cancel, and
+// the message + amend toggle keep the submit button's enabled state in sync.
+// Amend prefills the previous message when the box is still empty.
+commitBackdrop.addEventListener("click", event => {
+  if (event.target === commitBackdrop) closeCommitDialog();
+});
+commitCancel.addEventListener("click", () => closeCommitDialog());
+commitSubmit.addEventListener("click", () => { submitCommit(); });
+commitMessage.addEventListener("input", updateCommitSubmitState);
+commitAmend.addEventListener("change", () => {
+  if (commitAmend.checked && state.commit && !commitMessage.value.trim()) {
+    commitMessage.value = state.commit.lastMessage;
+  }
+  updateCommitSubmitState();
 });
 
 // Warn before closing/reloading the tab while the open file has unsaved edits.

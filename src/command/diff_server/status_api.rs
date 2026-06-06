@@ -94,6 +94,7 @@ pub(crate) async fn handle_api_status_request(
     };
 
     ok_json(serde_json::json!({
+        "branch": git_backend::current_branch(repo_root).unwrap_or_default(),
         "unstaged": unstaged_files,
         "staged": staged_files,
         "untracked": untracked_files,
