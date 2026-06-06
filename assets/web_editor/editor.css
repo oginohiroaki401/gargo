@@ -195,6 +195,10 @@ button { color: inherit; }
   text-align: right;
   user-select: none;
 }
+/* Git change gutter bars (box-shadow keeps them out of the text flow). */
+.line-number.gutter-added { box-shadow: inset 2px 0 0 var(--git-added); }
+.line-number.gutter-modified { box-shadow: inset 2px 0 0 var(--git-modified); }
+.line-number.gutter-deleted { box-shadow: inset 0 -2px 0 var(--git-deleted); }
 .preview-surface .code-body { height: calc(100% - 31px); min-height: 0; padding: 0; }
 .preview-frame { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
 .diff-preview { min-width: max-content; padding-bottom: 30px; }

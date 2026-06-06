@@ -28,6 +28,7 @@ const state = {
   fileHash: "",
   editorMode: "readonly",
   previewMode: false,
+  gitGutter: {},
   highlightLines: {},
   commits: [],
   historyCommit: 0,
@@ -353,6 +354,7 @@ async function openFile(path, line = null, col = 0) {
   state.fileBaseContent = data.content;
   state.fileHash = data.hash;
   state.editorMode = "readonly";
+  state.gitGutter = {};
   await api("/api/last-file", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ path }),
@@ -416,13 +418,22 @@ async function renderCodeSurface(container, options) {
   input.readOnly = state.editorMode !== "insert";
   await updateHighlightLayer(layer, options.path, input.value);
   input.style.height = `${Math.max(input.scrollHeight, body.clientHeight)}px`;
+  input.dataset.lines = String(input.value.split("\n").length);
+  fetchGitGutter(options.path, input.value);
   input.addEventListener("input", async () => {
     state.fileContent = input.value;
-    input.style.height = "auto";
-    input.style.height = `${Math.max(input.scrollHeight, body.clientHeight)}px`;
+    // Re-measure height only when the line count changes — `scrollHeight`
+    // forces a reflow, so skipping it on intra-line edits keeps typing snappy.
+    const lines = input.value.split("\n").length;
+    if (String(lines) !== input.dataset.lines) {
+      input.dataset.lines = String(lines);
+      input.style.height = "auto";
+      input.style.height = `${Math.max(input.scrollHeight, body.clientHeight)}px`;
+    }
     updateDirtyIndicator();
     clearTimeout(input.highlightTimer);
-    input.highlightTimer = setTimeout(() => updateHighlightLayer(layer, options.path, input.value), 120);
+    input.highlightTimer = setTimeout(() => updateHighlightLayer(layer, options.path, input.value), 140);
+    scheduleGitGutter(options.path, input.value);
   });
   input.addEventListener("scroll", () => {
     layer.style.transform = `translate(${-input.scrollLeft}px, ${-input.scrollTop}px)`;
@@ -519,6 +530,39 @@ async function updateHighlightLayer(layer, path, content) {
   } catch (_) {
     layer.innerHTML = numberedPlainText(content);
   }
+  applyGitGutter(layer);
+}
+
+// Git change gutter (items 28/33): per-line added/modified/deleted status from
+// `/api/git-gutter`, painted as colored bars on the line-number column. Only the
+// editable code view renders line numbers, so the gutter is scoped to it.
+function scheduleGitGutter(path, content) {
+  clearTimeout(scheduleGitGutter.timer);
+  scheduleGitGutter.timer = setTimeout(() => fetchGitGutter(path, content), 280);
+}
+
+async function fetchGitGutter(path, content) {
+  try {
+    const data = await api("/api/git-gutter", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path, content }),
+    });
+    const next = {};
+    for (const [line, status] of Object.entries(data.lines || {})) next[Number(line)] = status;
+    state.gitGutter = next;
+  } catch (_) {
+    state.gitGutter = {};
+  }
+  applyGitGutter(app.querySelector("#explorer-surface .highlight-layer"));
+}
+
+function applyGitGutter(layer) {
+  if (!layer) return;
+  layer.querySelectorAll(".line-number").forEach((el, index) => {
+    el.classList.remove("gutter-added", "gutter-modified", "gutter-deleted");
+    const status = state.gitGutter[index];
+    if (status) el.classList.add(`gutter-${status}`);
+  });
 }
 
 async function highlightedTextHtml(path, content) {
