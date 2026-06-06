@@ -185,7 +185,9 @@ button { color: inherit; }
   caret-color: var(--text);
   -webkit-text-fill-color: transparent;
 }
-.editor-input::selection { background: var(--sel); }
+/* Translucent so the (transparent-text) selection reveals the highlight layer
+   behind it — an opaque band would hide the selected glyphs. */
+.editor-input::selection { background: color-mix(in srgb, var(--accent) 32%, transparent); }
 .line-number {
   display: inline-block;
   width: 38px;
