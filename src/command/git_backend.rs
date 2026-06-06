@@ -1312,7 +1312,11 @@ mod tests {
             let mut it = line.splitn(3, '|');
             let full = it.next().unwrap_or("").trim().to_string();
             let short = it.next().unwrap_or("").trim().to_string();
-            if short.is_empty() || short.ends_with("/HEAD") {
+            // Skip the remote HEAD pointer (`refs/remotes/origin/HEAD`). Filter on
+            // the FULL refname: git shortens it to just `origin` (not `origin/HEAD`),
+            // so a `short.ends_with("/HEAD")` check would miss it and wrongly list
+            // `origin` as a branch — which `list_branches` (gix) correctly omits.
+            if short.is_empty() || full.ends_with("/HEAD") {
                 continue;
             }
             expected.push((full, short));
