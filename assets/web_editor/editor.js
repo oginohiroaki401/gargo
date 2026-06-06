@@ -476,7 +476,12 @@ function stats(file) {
 }
 
 function previewScroller() {
-  return app.querySelector(".pane:last-child .code-surface")
+  // The diff preview nests a `.code-surface` inside `#diff-surface` (itself a
+  // `.code-surface`); only the innermost one actually overflows and scrolls,
+  // so prefer the innermost scrollable surface over the first match.
+  const surfaces = [...app.querySelectorAll(".pane:last-child .code-surface")];
+  return surfaces.reverse().find(el => el.scrollHeight > el.clientHeight)
+    || surfaces[0]
     || app.querySelector(".pane:last-child");
 }
 
