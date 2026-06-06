@@ -1820,6 +1820,24 @@ function renderPopupList(emptyText = "No matches") {
   popupList.querySelector(".selected")?.scrollIntoView({ block: "nearest" });
 }
 
+// Move the selection highlight without re-rendering the list. A full
+// renderPopupList() rebuilds every <li> and re-binds its click handler, which is
+// O(n) per keystroke — janky for large result sets (e.g. global search with
+// hundreds of hits). Arrow navigation only changes which row is selected, so
+// shift the `selected` class between two rows and scroll the new one into view.
+function movePopupSelection(delta) {
+  const max = state.popupFiltered.length - 1;
+  if (max < 0) return;
+  const next = Math.max(0, Math.min(state.popupIndex + delta, max));
+  if (next !== state.popupIndex) {
+    popupList.children[state.popupIndex]?.classList.remove("selected");
+    state.popupIndex = next;
+    popupList.children[next]?.classList.add("selected");
+  }
+  popupList.children[state.popupIndex]?.scrollIntoView({ block: "nearest" });
+  if (state.popup === "tree") updateTreePreview();
+}
+
 function filterPopup() {
   const raw = popupInput.value;
   if (state.popup === "search") {
@@ -2152,12 +2170,10 @@ popupInput.addEventListener("keydown", event => {
     }
   } else if (event.key === "ArrowDown" || (event.ctrlKey && event.key === "n")) {
     event.preventDefault();
-    state.popupIndex = Math.min(state.popupIndex + 1, state.popupFiltered.length - 1);
-    filterPopup();
+    movePopupSelection(1);
   } else if (event.key === "ArrowUp" || (event.ctrlKey && event.key === "p")) {
     event.preventDefault();
-    state.popupIndex = Math.max(0, state.popupIndex - 1);
-    filterPopup();
+    movePopupSelection(-1);
   } else if (state.popup === "search" && (event.key === "ArrowRight" || event.key === "ArrowLeft")) {
     const item = state.popupFiltered[state.popupIndex];
     if (item?.kind === "file" && (event.key === "ArrowRight") === state.searchCollapsed.has(item.path)) {
@@ -2185,12 +2201,10 @@ popup.addEventListener("keydown", event => {
     popupInput.focus();
   } else if (event.key === "j" || event.key === "ArrowDown") {
     event.preventDefault();
-    state.popupIndex = Math.min(state.popupIndex + 1, state.popupFiltered.length - 1);
-    filterPopup();
+    movePopupSelection(1);
   } else if (event.key === "k" || event.key === "ArrowUp") {
     event.preventDefault();
-    state.popupIndex = Math.max(0, state.popupIndex - 1);
-    filterPopup();
+    movePopupSelection(-1);
   } else if (event.key === "Enter" && (event.altKey || event.metaKey)) {
     event.preventDefault();
     openTreeSelectionInNewTab();
