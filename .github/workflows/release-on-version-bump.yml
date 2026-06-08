@@ -85,11 +85,10 @@ jobs:
           - os: macos-latest
             cargo_target: aarch64-apple-darwin
             asset_suffix: aarch64-apple-darwin
-          # Intel macOS: macos-latest is Apple Silicon, so build x86_64 on the
-          # last Intel-based runner image.
-          - os: macos-13
-            cargo_target: x86_64-apple-darwin
-            asset_suffix: x86_64-apple-darwin
+          # Intel macOS (x86_64-apple-darwin) support was dropped: GitHub's
+          # macos-13 Intel runners no longer get scheduled reliably and left
+          # release jobs hanging in the queue for ~24h until force-cancelled,
+          # which blocked publishing. Apple Silicon is the only supported mac.
     steps:
       - name: Checkout
         uses: actions/checkout@v6
