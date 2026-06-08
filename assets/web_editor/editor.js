@@ -730,6 +730,48 @@ function leaveEditorInsertMode() {
   setFocus("app", 0);
 }
 
+// A cursor-motion key: arrows, or the macOS emacs motions Ctrl+N/P/F/B/A/E.
+// (Plain Cmd/Alt combos are not motions.)
+function isCursorMotionKey(event) {
+  if (event.metaKey || event.altKey) return false;
+  const k = event.key.toLowerCase();
+  if (k === "arrowleft" || k === "arrowright" || k === "arrowup" || k === "arrowdown") return true;
+  return event.ctrlKey && ["n", "p", "f", "b", "a", "e"].includes(k);
+}
+
+// New caret offset for a motion key applied at the current caret. Vertical moves
+// keep the column; Ctrl+A/E go to line start/end.
+function motionCaretTarget(input, event) {
+  const value = input.value;
+  const lines = value.split("\n");
+  const at = input.selectionStart;
+  const k = event.key.toLowerCase();
+  const ctrl = event.ctrlKey;
+  if (k === "arrowleft" || (ctrl && k === "b")) return Math.max(0, at - 1);
+  if (k === "arrowright" || (ctrl && k === "f")) return Math.min(value.length, at + 1);
+  if (ctrl && k === "a") return value.lastIndexOf("\n", at - 1) + 1;
+  if (ctrl && k === "e") { const nl = value.indexOf("\n", at); return nl < 0 ? value.length : nl; }
+  const { line, col } = offsetLineCol(value, at);
+  if (k === "arrowup" || (ctrl && k === "p")) return line === 0 ? at : lineColToOffset(lines, line - 1, col);
+  return line >= lines.length - 1 ? at : lineColToOffset(lines, line + 1, col); // ArrowDown / Ctrl+N
+}
+
+// When the editor view is showing (explorer, app focus, not preview) but the
+// textarea isn't focused, a cursor-motion key wakes the editor: it focuses and
+// applies that one motion, so e.g. `p` out of preview then Ctrl+N just works.
+// Later motions land on the now-focused textarea (native on macOS). Returns
+// true when it handled the key.
+function wakeEditorWithMotion(event) {
+  if (state.component !== "explorer" || state.focusLevel !== "app" || state.previewMode) return false;
+  if (!isCursorMotionKey(event)) return false;
+  const input = app.querySelector(".editor-input");
+  if (!input || !enterEditorInsertMode()) return false;
+  const target = motionCaretTarget(input, event); // from the caret enterEditorInsertMode placed
+  input.setSelectionRange(target, target);
+  scrollEditorToCursor("auto");
+  return true;
+}
+
 // Accumulating smooth scroll: repeated key presses extend a single target and
 // ease toward it on rAF, instead of each press starting a fresh `behavior:
 // "smooth"` animation from a mid-flight position (the source of the "rattle").
@@ -3029,6 +3071,10 @@ window.addEventListener("keydown", async event => {
     event.preventDefault(); openTreePicker(); return;
   }
   if ((event.key === "i" || event.key === "Enter") && enterEditorInsertMode()) {
+    event.preventDefault();
+    return;
+  }
+  if (wakeEditorWithMotion(event)) {
     event.preventDefault();
     return;
   }
