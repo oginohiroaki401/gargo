@@ -1931,8 +1931,15 @@ async function openRefPicker(which) {
 async function applyRef(which, ref) {
   ref = String(ref || "").trim();
   if (!ref) return;
-  if (which === "base") state.compareBase = ref;
-  else state.compareTarget = ref;
+  // Picking a ref equal to the other one would diff a ref against itself; swap
+  // instead so the old value of the picked side moves to the other side.
+  if (which === "base") {
+    if (ref === state.compareTarget) state.compareTarget = state.compareBase;
+    state.compareBase = ref;
+  } else {
+    if (ref === state.compareBase) state.compareBase = state.compareTarget;
+    state.compareTarget = ref;
+  }
   state.compareFiles = [];
   state.compareFile = 0;
   await loadCompare().catch(error => notify(error.message));

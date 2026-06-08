@@ -35,13 +35,26 @@ pub enum GargoServerRoute {
 
 #[derive(Debug, Clone)]
 pub enum GargoServerCommand {
-    Start { repo_root: PathBuf },
+    Start {
+        repo_root: PathBuf,
+        /// Explicit port to bind; `None` requests an OS-assigned ephemeral port.
+        port: Option<u16>,
+    },
     Stop,
-    OpenRoute { route: GargoServerRoute },
-    SetActivePath { rel_path: Option<String> },
+    OpenRoute {
+        route: GargoServerRoute,
+    },
+    SetActivePath {
+        rel_path: Option<String>,
+    },
     RefreshActive,
-    UpdateBufferContent { content: String, cursor_line: usize },
-    UpdateCursorLine { line: usize },
+    UpdateBufferContent {
+        content: String,
+        cursor_line: usize,
+    },
+    UpdateCursorLine {
+        line: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -101,7 +114,9 @@ impl GargoServerWorker {
     fn run(mut self) {
         loop {
             match self.command_rx.recv() {
-                Ok(GargoServerCommand::Start { repo_root }) => self.handle_start(repo_root),
+                Ok(GargoServerCommand::Start { repo_root, port }) => {
+                    self.handle_start(repo_root, port)
+                }
                 Ok(GargoServerCommand::Stop) => self.handle_stop(),
                 Ok(GargoServerCommand::OpenRoute { route }) => self.handle_open_route(route),
                 Ok(GargoServerCommand::SetActivePath { rel_path }) => {
@@ -120,7 +135,7 @@ impl GargoServerWorker {
         }
     }
 
-    fn handle_start(&mut self, repo_root: PathBuf) {
+    fn handle_start(&mut self, repo_root: PathBuf, port: Option<u16>) {
         if self.server_shutdown_tx.is_some() {
             let _ = self.event_tx.send(GargoServerEvent::Error(
                 "Server already running".to_string(),
@@ -128,15 +143,16 @@ impl GargoServerWorker {
             return;
         }
 
+        let bind_addr = format!("127.0.0.1:{}", port.unwrap_or(0));
         let listener = match self
             .tokio_runtime
-            .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .block_on(tokio::net::TcpListener::bind(&bind_addr))
         {
             Ok(listener) => listener,
             Err(err) => {
                 let _ = self.event_tx.send(GargoServerEvent::Error(format!(
-                    "Failed to bind Gargo server on localhost: {}",
-                    err
+                    "Failed to bind Gargo server on {}: {}",
+                    bind_addr, err
                 )));
                 return;
             }

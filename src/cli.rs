@@ -29,6 +29,11 @@ pub struct Cli {
     #[arg(long, requires = "server", conflicts_with_all = ["check", "update"])]
     pub no_open: bool,
 
+    /// Port for the HTTP server (server mode only). Defaults to an
+    /// OS-assigned ephemeral port when omitted.
+    #[arg(long, requires = "server", conflicts_with_all = ["check", "update"])]
+    pub port: Option<u16>,
+
     /// Optional file or directory to open.
     #[arg(value_name = "PATH", conflicts_with_all = ["check", "update"])]
     pub path: Option<PathBuf>,
@@ -88,6 +93,25 @@ mod tests {
             .expect("parse --server --no-open");
         assert_eq!(cli.mode(), CliMode::Server);
         assert!(!cli.open_browser(), "--no-open suppresses the browser");
+    }
+
+    #[test]
+    fn parses_server_port_flag() {
+        let cli = Cli::try_parse_from(["gargo", "--server", "--port", "8080"])
+            .expect("parse --server --port 8080");
+        assert_eq!(cli.mode(), CliMode::Server);
+        assert_eq!(cli.port, Some(8080));
+    }
+
+    #[test]
+    fn rejects_port_without_server() {
+        let err =
+            Cli::try_parse_from(["gargo", "--port", "8080"]).expect_err("--port requires --server");
+        let message = err.to_string();
+        assert!(
+            message.contains("following required") || message.contains("cannot be used"),
+            "unexpected clap error: {message}"
+        );
     }
 
     #[test]
