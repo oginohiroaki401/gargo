@@ -72,6 +72,8 @@ const state = {
   treeRoot: null,
   treeExpanded: new Set(),
   treePreviewToken: 0,
+  showHidden: false,       // tree: `.` toggles dot-prefixed files/dirs into view
+  promptResolve: null,     // resolver for the active promptText()/confirmAction() overlay
   help: false,
   searchToken: 0,
   searchHits: [],          // flat, path-sorted match hits from /api/search
@@ -116,6 +118,10 @@ const HELP_SECTIONS = [
   {
     title: "Explorer / Editor", keys: [
       ["t", "Open file tree"],
+      ["a / r / d", "Tree: add / rename / delete entry"],
+      ["c / y", "Tree: copy absolute / relative path"],
+      [".", "Tree: toggle hidden files"],
+      ["right-click", "Tree: context menu"],
       ["i / Enter", "Edit (insert) mode"],
       ["⌘F / ⌘⌥F", "Find / Find & replace in file"],
       ["Esc", "Back to app focus"],
@@ -2552,7 +2558,7 @@ function showPopup(kind, title, items, placeholder = "") {
   popup.classList.toggle("tree-popup", kind === "tree");
   popupPreview.hidden = kind !== "tree";
   popupHint.textContent = kind === "tree"
-    ? "j/k move · h/l collapse/expand · Enter open · ⌥/⌘Enter new tab · / filter · J/K preview · Esc close"
+    ? "j/k move · h/l fold · Enter open · a add · r rename · d delete · c/y copy path · . hidden · right-click menu · / filter · Esc close"
     : kind === "search"
     ? "type to search project · ↑↓ move · Enter open · Esc close"
     : kind === "quick"
@@ -2568,6 +2574,13 @@ function showPopup(kind, title, items, placeholder = "") {
 }
 
 function closePopup() {
+  // A prompt/confirm overlay dismissed via backdrop-click resolves to "cancelled"
+  // so the awaiting action doesn't hang.
+  if (state.promptResolve) {
+    const resolve = state.promptResolve;
+    state.promptResolve = null;
+    resolve(null);
+  }
   state.popup = null;
   state.treePreviewToken++;
   popupBackdrop.hidden = true;
@@ -2726,7 +2739,7 @@ function buildTree(entries) {
   for (const entry of entries) {
     let current = root;
     const parts = entry.path.split("/");
-    if (parts.some(part => part.startsWith("."))) continue;
+    if (!state.showHidden && parts.some(part => part.startsWith("."))) continue;
     parts.forEach((name, index) => {
       const path = parts.slice(0, index + 1).join("/");
       const type = index === parts.length - 1 ? "file" : "dir";
@@ -2820,6 +2833,194 @@ async function updateTreePreview() {
     if (token !== state.treePreviewToken || state.popup !== "tree") return;
     popupPreview.innerHTML = `<div class="preview-title">${escapeHtml(node.path)}</div><div class="error">${escapeHtml(error.message)}</div>`;
   }
+}
+
+// Lightweight text-prompt overlay (rename / new-entry path). Reuses the popup
+// backdrop + filter input rather than a bespoke modal: shows the title, prefills
+// and focuses the input, and resolves on Enter (trimmed value, or null if empty)
+// / null on Esc/backdrop-click. The resolver lives on state.promptResolve so the
+// keydown handler and closePopup() can settle it.
+function promptText(title, initial = "", hint = "Enter confirm · Esc cancel") {
+  return new Promise(resolve => {
+    state.promptResolve = resolve;
+    state.popup = "prompt";
+    popupTitle.textContent = title;
+    popup.classList.remove("tree-popup");
+    popupList.innerHTML = "";
+    popupPreview.hidden = true;
+    popupPreview.innerHTML = "";
+    popupInput.hidden = false;
+    popupInput.placeholder = "";
+    popupInput.value = initial;
+    popupHint.textContent = hint;
+    popupBackdrop.hidden = false;
+    popupInput.focus();
+    popupInput.setSelectionRange(initial.length, initial.length);
+  });
+}
+
+// Yes/no confirmation (delete). Same overlay as promptText but no text entry;
+// resolves true on Enter, false on Esc/backdrop-click.
+function confirmAction(title) {
+  return new Promise(resolve => {
+    state.promptResolve = value => resolve(value !== null);
+    state.popup = "confirm";
+    popupTitle.textContent = title;
+    popup.classList.remove("tree-popup");
+    popupList.innerHTML = "";
+    popupPreview.hidden = true;
+    popupPreview.innerHTML = "";
+    popupInput.hidden = true;
+    popupHint.textContent = "Enter confirm · Esc cancel";
+    popupBackdrop.hidden = false;
+    popup.focus();
+  });
+}
+
+// Settle the active prompt/confirm overlay with `value` (null = cancelled) and
+// tear the overlay down. Called from the keydown handlers.
+function resolvePrompt(value) {
+  const resolve = state.promptResolve;
+  state.promptResolve = null;
+  closePopup();
+  if (resolve) resolve(value);
+}
+
+// POST a JSON body to one of the /api/fs/* mutation endpoints, then refresh the
+// file listing and rebuild the tree so the change shows immediately. `ensureFiles`
+// caches on `state.files`, so clear it to force a refetch.
+async function fsMutate(endpoint, body) {
+  await api(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  state.files = [];
+  await ensureFiles();
+  state.treeRoot = buildTree(state.fileEntries);
+  if (state.popup === "tree") filterPopup();
+}
+
+// The tree node the selection currently points at (null when the list is empty).
+function selectedTreeNode() {
+  return state.popupFiltered[state.popupIndex]?.node || null;
+}
+
+// Repo-relative directory a new entry should land in, derived from the selection:
+// inside the selected dir, beside the selected file, else the repo root.
+function treeBaseDir(node) {
+  if (!node) return "";
+  if (node.type === "dir") return `${node.path}/`;
+  return node.path.includes("/") ? `${node.path.slice(0, node.path.lastIndexOf("/") + 1)}` : "";
+}
+
+// `a` — create a file or directory. A trailing `/` means directory; otherwise a
+// file (missing parent dirs are created server-side). `some/path/memo.md` works.
+async function treeAddEntry() {
+  const base = treeBaseDir(selectedTreeNode());
+  const input = await promptText("New file or dir (end with / for a directory)", base);
+  if (!input) return;
+  const kind = input.endsWith("/") ? "dir" : "file";
+  const path = input.replace(/\/+$/, "");
+  if (!path) return;
+  try {
+    await fsMutate("/api/fs/create", { path, kind });
+    // Reveal the new entry: expand its ancestors, and open it if it's a file.
+    const parts = path.split("/");
+    for (let i = 1; i < parts.length; i++) state.treeExpanded.add(parts.slice(0, i).join("/"));
+    if (state.popup === "tree") filterPopup();
+    if (kind === "file") await openFile(path);
+    notify(`Created ${path}`);
+  } catch (error) {
+    notify(`Create failed: ${error.message}`);
+  }
+}
+
+// `r` — rename/move the selected entry; prompt is prefilled with its current path.
+async function treeRenameEntry(node) {
+  if (!node) { notify("No selection"); return; }
+  const to = await promptText("Rename", node.path);
+  if (!to || to === node.path) return;
+  try {
+    const wasOpen = state.currentFile === node.path;
+    await fsMutate("/api/fs/rename", { from: node.path, to });
+    if (wasOpen) await openFile(to);
+    notify(`Renamed to ${to}`);
+  } catch (error) {
+    notify(`Rename failed: ${error.message}`);
+  }
+}
+
+// `d` — delete the selected entry after a confirmation.
+async function treeDeleteEntry(node) {
+  if (!node) { notify("No selection"); return; }
+  if (!await confirmAction(`Delete ${node.path}?`)) return;
+  try {
+    await fsMutate("/api/fs/delete", { path: node.path });
+    notify(`Deleted ${node.path}`);
+  } catch (error) {
+    notify(`Delete failed: ${error.message}`);
+  }
+}
+
+// `c` / `y` — copy the selected entry's absolute / repo-relative path.
+function treeCopyAbsPath(node) {
+  if (!node) { notify("No selection"); return; }
+  const root = state.repoInfo?.root ? state.repoInfo.root.replace(/\/$/, "") : "";
+  copyText(root ? `${root}/${node.path}` : node.path);
+}
+function treeCopyRelPath(node) {
+  if (!node) { notify("No selection"); return; }
+  copyText(node.path);
+}
+
+// `.` — toggle dot-prefixed files/dirs in the tree (gitignored paths stay hidden;
+// those aren't in gargo's file listing). Rebuilds the tree from the same entries.
+function toggleTreeHidden() {
+  state.showHidden = !state.showHidden;
+  state.treeRoot = buildTree(state.fileEntries);
+  filterPopup();
+  notify(state.showHidden ? "Showing hidden files" : "Hiding hidden files");
+}
+
+// Floating right-click context menu over the tree: the same actions as the direct
+// keys, anchored at the cursor. Created once, reused, clamped to the viewport.
+let treeContextMenuEl = null;
+function showTreeContextMenu(x, y, node) {
+  const root = state.repoInfo?.root ? state.repoInfo.root.replace(/\/$/, "") : "";
+  const actions = [{ key: "a", label: "New file / dir…", run: () => treeAddEntry() }];
+  if (node) {
+    actions.push(
+      { key: "r", label: "Rename…", run: () => treeRenameEntry(node) },
+      { key: "c", label: "Copy absolute path", run: () => copyText(root ? `${root}/${node.path}` : node.path) },
+      { key: "y", label: "Copy relative path", run: () => copyText(node.path) },
+      { key: "d", label: "Delete…", run: () => treeDeleteEntry(node) },
+    );
+  }
+  if (!treeContextMenuEl) {
+    treeContextMenuEl = document.createElement("div");
+    treeContextMenuEl.id = "tree-context-menu";
+    document.body.appendChild(treeContextMenuEl);
+  }
+  const menu = treeContextMenuEl;
+  menu.innerHTML = actions.map((action, index) =>
+    `<div class="ctx-item" data-index="${index}">${escapeHtml(action.label)}<span class="hint">${escapeHtml(action.key)}</span></div>`
+  ).join("");
+  menu.hidden = false;
+  menu.querySelectorAll("[data-index]").forEach(el => el.addEventListener("click", () => {
+    hideTreeContextMenu();
+    actions[Number(el.dataset.index)].run();
+  }));
+  // Position, then clamp so the menu stays on-screen.
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  const rect = menu.getBoundingClientRect();
+  if (rect.right > window.innerWidth) menu.style.left = `${Math.max(0, window.innerWidth - rect.width - 4)}px`;
+  if (rect.bottom > window.innerHeight) menu.style.top = `${Math.max(0, window.innerHeight - rect.height - 4)}px`;
+}
+
+function hideTreeContextMenu() {
+  if (treeContextMenuEl) treeContextMenuEl.hidden = true;
 }
 
 // Project-wide text search (⌘⇧F) as a dedicated tab, styled like Compare: the
@@ -3061,6 +3262,11 @@ function highlightExcerpt(excerpt, col, qlen) {
 
 popupInput.addEventListener("input", filterPopup);
 popupInput.addEventListener("keydown", event => {
+  if (state.popup === "prompt") {
+    if (event.key === "Enter") { event.preventDefault(); resolvePrompt(popupInput.value.trim() || null); }
+    else if (event.key === "Escape") { event.preventDefault(); resolvePrompt(null); }
+    return;
+  }
   if (event.key === "Escape") {
     event.preventDefault();
     if (state.popup === "tree") {
@@ -3088,10 +3294,33 @@ popupInput.addEventListener("keydown", event => {
 
 popup.addEventListener("keydown", event => {
   if (state.popup === "menu") { handleMenuKey(event); return; }
+  if (state.popup === "confirm") {
+    if (event.key === "Enter") { event.preventDefault(); resolvePrompt(true); }
+    else if (event.key === "Escape") { event.preventDefault(); resolvePrompt(null); }
+    return;
+  }
   if (state.popup !== "tree" || !popupInput.hidden) return;
   if (event.key === "Escape") {
     event.preventDefault();
     closePopup();
+  } else if (event.key === "a") {
+    event.preventDefault();
+    treeAddEntry();
+  } else if (event.key === "r") {
+    event.preventDefault();
+    treeRenameEntry(selectedTreeNode());
+  } else if (event.key === "d") {
+    event.preventDefault();
+    treeDeleteEntry(selectedTreeNode());
+  } else if (event.key === "c") {
+    event.preventDefault();
+    treeCopyAbsPath(selectedTreeNode());
+  } else if (event.key === "y") {
+    event.preventDefault();
+    treeCopyRelPath(selectedTreeNode());
+  } else if (event.key === ".") {
+    event.preventDefault();
+    toggleTreeHidden();
   } else if (event.key === "/" || event.key === "f") {
     event.preventDefault();
     popupInput.hidden = false;
@@ -3119,6 +3348,29 @@ popup.addEventListener("keydown", event => {
     popupPreview.scrollBy({ top: -popupPreview.clientHeight * 0.25, behavior: "smooth" });
   }
 });
+
+// Right-click a tree row → floating context menu at the cursor. Selecting the row
+// first keeps the keyboard actions (which read the selection) consistent with the
+// menu. Right-clicking empty space still offers "New file / dir".
+popupList.addEventListener("contextmenu", event => {
+  if (state.popup !== "tree") return;
+  event.preventDefault();
+  const row = event.target.closest("[data-index]");
+  if (row) {
+    const index = Number(row.dataset.index);
+    if (index !== state.popupIndex) { state.popupIndex = index; renderPopupList(); updateTreePreview(); }
+  }
+  showTreeContextMenu(event.clientX, event.clientY, selectedTreeNode());
+});
+
+// Dismiss the context menu on any outside interaction.
+document.addEventListener("mousedown", event => {
+  if (treeContextMenuEl && !treeContextMenuEl.hidden && !event.target.closest("#tree-context-menu")) {
+    hideTreeContextMenu();
+  }
+}, true);
+document.addEventListener("scroll", () => hideTreeContextMenu(), true);
+window.addEventListener("keydown", event => { if (event.key === "Escape") hideTreeContextMenu(); }, true);
 
 function collapseTreeSelection() {
   const item = state.popupFiltered[state.popupIndex];
