@@ -210,8 +210,9 @@ pub(crate) async fn handle_api_commit_file(
         {
             return hit;
         }
-        let diff = crate::command::git_backend::commit_diff_text(&repo_root, &hash_c, Some(&path_c))
-            .unwrap_or_default();
+        let diff =
+            crate::command::git_backend::commit_diff_text(&repo_root, &hash_c, Some(&path_c))
+                .unwrap_or_default();
         let value = diff_server::file_diff_json_from_text(&diff, &path_c, "modified");
         if let Some(key) = key {
             cache.insert(key, value.clone());

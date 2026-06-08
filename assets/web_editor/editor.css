@@ -93,7 +93,7 @@ button { color: inherit; }
 
 .panes { display: grid; }
 .panes.history { grid-template-columns: minmax(210px, 25%) minmax(210px, 25%) minmax(0, 1fr); }
-.panes.compare, .panes.status { grid-template-columns: minmax(320px, 34%) minmax(0, 1fr); }
+.panes.compare, .panes.status, .panes.search { grid-template-columns: minmax(320px, 34%) minmax(0, 1fr); }
 .pane {
   overflow: auto;
   border-right: 1px solid var(--line);
@@ -204,6 +204,50 @@ body.col-resizing iframe { pointer-events: none; }
   font: inherit;
 }
 .ref-button:hover, .ref-button:focus { border-color: var(--accent); }
+
+/* Search tab: a query box atop a per-file list of matched lines (left pane). The
+   box sticks just under the (31px) pane title while the results scroll past it. */
+.search-form {
+  position: sticky;
+  top: 31px;
+  z-index: 1;
+  padding: 9px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+#search-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--text);
+  outline: none;
+  font: inherit;
+}
+#search-input:focus { border-color: var(--accent); }
+#search-results .list li.gfile { gap: 6px; align-items: center; color: var(--muted); font-size: 11px; }
+#search-results .list li.gfile .gchevron { width: 1em; flex: 0 0 1em; text-align: center; }
+#search-results .list li.gfile .gfile-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#search-results .list li.gfile .gcount { margin-left: auto; flex: 0 0 auto; }
+#search-results .list li.ghit { padding-left: 24px; }
+#search-results .list li.ghit .gline { flex: 0 0 auto; min-width: 3ch; color: var(--muted); text-align: right; }
+#search-results .list li.ghit .gtext { overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+#search-results .match { color: var(--accent); font-weight: 700; }
+/* Search preview: a normal-flow code block (mirrors .highlight-layer's metrics so
+   line numbers line up) that lets the surrounding .code-surface scroll. */
+.search-preview {
+  margin: 0;
+  padding: 12px 14px 40px 58px;
+  min-width: max-content;
+  font: 13px/20px var(--font);
+  tab-size: 4;
+  white-space: pre;
+  color: var(--text);
+}
+/* The previewed match line (right pane). */
+.search-match-line { background: var(--accent-dim); }
 
 .code-surface { position: relative; overflow: auto; background: var(--bg); }
 .code-toolbar {
@@ -429,6 +473,30 @@ body.col-resizing iframe { pointer-events: none; }
 }
 #popup-list li.ref-row .hint { float: none; color: var(--muted); }
 
+/* Floating right-click menu over the tree. Sits above #popup (z 100) and the
+   toast (z 200) so it's never occluded while the picker is open. */
+#tree-context-menu {
+  position: fixed;
+  z-index: 250;
+  min-width: 180px;
+  padding: 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: 0 12px 40px rgba(0,0,0,.5);
+}
+#tree-context-menu[hidden] { display: none; }
+#tree-context-menu .ctx-item {
+  display: flex;
+  align-items: center;
+  padding: 6px 9px;
+  border-radius: 3px;
+  color: var(--text);
+  cursor: default;
+}
+#tree-context-menu .ctx-item:hover { background: var(--accent-dim); }
+#tree-context-menu .ctx-item .hint { margin-left: auto; padding-left: 18px; color: var(--muted); }
+
 #toast {
   position: fixed;
   z-index: 200;
@@ -578,6 +646,6 @@ body.col-resizing iframe { pointer-events: none; }
 
 @media (max-width: 800px) {
   .panes.history { grid-template-columns: 42% 58% 100%; overflow-x: auto; }
-  .panes.compare, .panes.status { grid-template-columns: 46% 100%; overflow-x: auto; }
+  .panes.compare, .panes.status, .panes.search { grid-template-columns: 46% 100%; overflow-x: auto; }
   #app-version { display: none; }
 }

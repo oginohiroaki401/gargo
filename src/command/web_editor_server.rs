@@ -99,6 +99,15 @@ pub(crate) async fn handle_api_file(
     };
     match std::fs::read(&full) {
         Ok(bytes) => {
+            // Record the open in the shared history so the Cmd+P picker's recency
+            // sort sees it. Best-effort and off the response path (opens a SQLite
+            // connection), so detach it.
+            let root = state.repo_root.clone();
+            let opened = full.clone();
+            tokio::task::spawn_blocking(move || {
+                let _ = crate::command::recent_projects::RecentProjectsStore::new()
+                    .record_file_open(&root, &opened);
+            });
             let content = String::from_utf8_lossy(&bytes).into_owned();
             ok_json(&FileResponse {
                 path: q.path,
@@ -122,6 +131,10 @@ struct FileEntryResponse {
     path: String,
     mtime: u64,
     changed: bool,
+    /// Last time the file was opened in gargo (CLI or web editor), ms since the
+    /// epoch; 0 if never opened. The picker sorts the empty query by
+    /// `max(mtime, opened)` descending.
+    opened: u64,
 }
 
 /// How long a cached `/api/files` listing stays fresh. The editor fires this on
@@ -182,13 +195,16 @@ async fn collect_file_entries(repo_root: &Path, files: Vec<String>) -> Vec<FileE
     let root = repo_root.to_path_buf();
     tokio::task::spawn_blocking(move || {
         let changed = crate::command::git_backend::status_map(&root);
+        let opens =
+            crate::command::recent_projects::RecentProjectsStore::new().get_file_open_times(&root);
         files
             .into_iter()
             .map(|path| {
                 let full = root.join(&path);
                 let mtime = mtime_ms(&full);
                 let is_changed = changed.contains_key(&path);
-                (path, mtime, is_changed)
+                let opened = opens.get(&path).copied().unwrap_or(0).max(0) as u64;
+                (path, mtime, is_changed, opened)
             })
             .collect::<Vec<_>>()
     })
@@ -199,10 +215,11 @@ async fn collect_file_entries(repo_root: &Path, files: Vec<String>) -> Vec<FileE
 fn files_response(files: Vec<String>, entries: Vec<FileEntry>) -> Response {
     let entries = entries
         .into_iter()
-        .map(|(path, mtime, changed)| FileEntryResponse {
+        .map(|(path, mtime, changed, opened)| FileEntryResponse {
             path,
             mtime,
             changed,
+            opened,
         })
         .collect();
     ok_json(&FilesResponse { files, entries })
@@ -474,9 +491,10 @@ struct PreviewResponse {
 /// wraps the result in a sandboxed iframe (markdown gets a styled `markdown-body`
 /// document; HTML is shown as-is).
 ///
-/// Relative links/images are intentionally left unresolved — the editor has no
-/// repo-blob URL context like the preview server, and a preview pane doesn't need
-/// working navigation.
+/// Relative links/images are left unresolved in the HTML — the editor has no
+/// repo-blob URL context like the preview server. Instead the client intercepts
+/// clicks on the rendered links and resolves relative targets against the open
+/// file, opening them in the same preview pane (see `navigateEditorLink`).
 pub(crate) async fn handle_api_preview(Json(req): Json<PreviewRequest>) -> Response {
     let ext = Path::new(&req.path)
         .extension()

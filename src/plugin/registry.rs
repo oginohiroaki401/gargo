@@ -1,7 +1,6 @@
 use std::path::Path;
 
 use crate::config::Config;
-use crate::plugin::diff_ui::DiffUiPlugin;
 use crate::plugin::gargo_preview::GargoPreviewPlugin;
 use crate::plugin::gargo_server::GargoServerPlugin;
 use crate::plugin::host::PluginHost;
@@ -16,7 +15,6 @@ pub fn build_plugin_host(config: &Config, project_root: &Path) -> Result<PluginH
             "gargo_server" | "github_server" => {
                 plugins.push(Box::new(GargoServerPlugin::new(config, project_root)));
             }
-            "diff_ui" => plugins.push(Box::new(DiffUiPlugin::new(config))),
             "gargo_preview" | "github_preview" => {
                 plugins.push(Box::new(GargoPreviewPlugin::new(config, project_root)));
             }

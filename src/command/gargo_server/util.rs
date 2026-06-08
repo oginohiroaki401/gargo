@@ -44,13 +44,19 @@ mod tests {
         assert_eq!(normalize_api_path("a/../../b"), None);
         // Percent-decoding happens in axum before we see the path, so the value
         // we validate is already the decoded `..` form.
-        assert_eq!(normalize_api_path("%2e%2e/etc"), Some("%2e%2e/etc".to_string()));
+        assert_eq!(
+            normalize_api_path("%2e%2e/etc"),
+            Some("%2e%2e/etc".to_string())
+        );
     }
 
     #[test]
     fn normalize_api_path_accepts_normal_paths() {
         assert_eq!(normalize_api_path("src"), Some("src".to_string()));
-        assert_eq!(normalize_api_path("src/command/mod.rs"), Some("src/command/mod.rs".to_string()));
+        assert_eq!(
+            normalize_api_path("src/command/mod.rs"),
+            Some("src/command/mod.rs".to_string())
+        );
         assert_eq!(normalize_api_path(""), Some(".".to_string()));
         assert_eq!(normalize_api_path("./src/./x"), Some("src/x".to_string()));
     }

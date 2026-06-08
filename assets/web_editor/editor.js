@@ -25,7 +25,7 @@ const commitAmend = document.getElementById("commit-amend");
 const commitSubmit = document.getElementById("commit-submit");
 const commitCancel = document.getElementById("commit-cancel");
 
-const COMPONENTS = ["explorer", "history", "compare", "status"];
+const COMPONENTS = ["explorer", "history", "compare", "status", "search"];
 const state = {
   component: "explorer",
   connected: true,
@@ -73,12 +73,16 @@ const state = {
   treeRoot: null,
   treeExpanded: new Set(),
   treePreviewToken: 0,
+  showHidden: false,       // tree: `.` toggles dot-prefixed files/dirs into view
+  promptResolve: null,     // resolver for the active promptText()/confirmAction() overlay
   help: false,
   searchToken: 0,
-  lastSearchQuery: null,
-  searchHits: [],
+  searchHits: [],          // flat, path-sorted match hits from /api/search
+  searchRows: [],          // visible rows (file headers + hits), honoring collapse
   searchQuery: "",
-  searchCollapsed: new Set(),
+  searchSelected: 0,       // index into searchRows (selected row in the Search tab)
+  searchCollapsed: new Set(), // collapsed file paths
+  searchTruncated: false,
   repoInfo: null,
   quickFiles: [],
   quickCommands: [],
@@ -96,16 +100,17 @@ const state = {
     regex: false,
     pendingCaret: null, // where the next i/Enter should drop the caret (last match)
     kept: null,         // {start,end} of a match kept highlighted after the bar closes
+    cache: null,        // last computed match set for the same buffer/query/options
   },
 };
 
 const HELP_SECTIONS = [
   {
     title: "Global", keys: [
-      ["g e / g h / g c / g s", "Explorer / History / Compare / Status"],
+      ["g e / g h / g c / g s / g f", "Explorer / History / Compare / Status / Search"],
       ["⌘P / ⌘⇧P", "File picker / Command picker"],
       ["⌘@", "Symbol picker"],
-      ["⌘⇧F", "Global search"],
+      ["⌘⇧F", "Global search (Search tab)"],
       ["⌘S", "Save current file"],
       ["r", "Refresh component"],
       ["?", "Toggle this help"],
@@ -114,6 +119,10 @@ const HELP_SECTIONS = [
   {
     title: "Explorer / Editor", keys: [
       ["t", "Open file tree"],
+      ["a / r / d", "Tree: add / rename / delete entry"],
+      ["c / y", "Tree: copy absolute / relative path"],
+      [".", "Tree: toggle hidden files"],
+      ["right-click", "Tree: context menu"],
       ["i / Enter", "Edit (insert) mode"],
       ["⌘F / ⌘⌥F", "Find / Find & replace in file"],
       ["Esc", "Back to app focus"],
@@ -154,6 +163,19 @@ const HELP_SECTIONS = [
     ],
   },
   {
+    title: "Search", keys: [
+      ["⌘⇧F / g f", "Open the Search tab / focus the query box"],
+      ["type", "Query (≥ 3 chars), live results"],
+      ["Enter (in box)", "Move focus to the results list"],
+      ["j / k", "Prev / next row (k at top → query box)"],
+      ["h / l (← / →)", "Collapse / expand the file group"],
+      ["J / K · Ctrl-f/b · Ctrl-d/u", "Scroll preview"],
+      ["o / Enter", "Open file at the matched line"],
+      ["e", "Open file in a new browser tab"],
+      ["O", "Open menu: GitHub · copy path · copy content"],
+    ],
+  },
+  {
     title: "File tree", keys: [
       ["j / k", "Move"],
       ["h / l", "Collapse / expand"],
@@ -170,10 +192,11 @@ const COMMANDS = [
   { label: "Switch to History", hint: "g h", run: () => switchComponent("history") },
   { label: "Switch to Compare", hint: "g c", run: () => switchComponent("compare") },
   { label: "Switch to Status", hint: "g s", run: () => switchComponent("status") },
+  { label: "Switch to Search", hint: "g f", run: () => switchComponent("search") },
   { label: "Open file tree", hint: "t", run: () => openTreePicker() },
   { label: "Save current file", hint: "Cmd+S", run: () => saveCurrentFile() },
   { label: "Refresh current component", hint: "r", run: () => refreshComponent() },
-  { label: "Search project", hint: "Cmd+Shift+F", run: () => openSearchPopup() },
+  { label: "Search project", hint: "Cmd+Shift+F", run: () => switchComponent("search") },
   { label: "Show keybindings", hint: "?", run: () => toggleHelp() },
 ];
 
@@ -335,9 +358,11 @@ async function switchComponent(component) {
   if (component === "history") await renderHistory();
   if (component === "compare") await renderCompare();
   if (component === "status") await renderStatus();
+  if (component === "search") await renderSearch();
   setFocus(component === "explorer" ? "app" : "pane", 0);
   if (component === "status") startStatusPolling();
   if (component === "history") startHistoryPolling();
+  if (component === "search") focusSearchInput();
 }
 
 function componentBar(title, hint) {
@@ -360,7 +385,7 @@ async function ensureFiles() {
   if (state.files.length) return;
   const data = await api("/api/files");
   state.files = data.files || [];
-  state.fileEntries = data.entries || state.files.map(path => ({ path, mtime: 0, changed: false }));
+  state.fileEntries = data.entries || state.files.map(path => ({ path, mtime: 0, opened: 0, changed: false }));
 }
 
 async function renderExplorer() {
@@ -431,6 +456,22 @@ async function renderPreviewSurface(container) {
     <div class="code-body"><iframe class="preview-frame" title="Preview"></iframe></div>
   </div>`;
   const frame = container.querySelector(".preview-frame");
+  // Clicks on rendered links navigate: relative links open the target in this
+  // same preview pane, external URLs open a new tab. In-page #anchors fall
+  // through so the iframe scrolls them natively. The srcdoc frame is
+  // same-origin, so we can reach into its document to intercept clicks.
+  frame.addEventListener("load", () => {
+    let doc;
+    try { doc = frame.contentDocument; } catch (_) { return; }
+    if (!doc) return;
+    doc.addEventListener("click", event => {
+      const anchor = event.target.closest && event.target.closest("a");
+      const href = anchor && anchor.getAttribute("href");
+      if (!href || href.startsWith("#")) return;
+      event.preventDefault();
+      navigateEditorLink(href);
+    });
+  });
   try {
     const data = await api("/api/preview", {
       method: "POST", headers: { "content-type": "application/json" },
@@ -481,6 +522,72 @@ async function openFile(path, line = null, col = 0) {
     scrollEditorToCursor("auto");
   } else {
     setFocus("app", 0);
+  }
+}
+
+// ---- Link navigation -------------------------------------------------------
+//
+// Cmd/Ctrl-click in the editor (insert or read-only) and clicks in the rendered
+// preview follow links: relative links open the target file (staying in the
+// current preview/code mode), external URLs open in a new tab.
+
+// True for links that point outside the repo — a scheme like http:/mailto: or a
+// protocol-relative //host. These open in a browser tab, not the editor.
+function isExternalLink(href) {
+  return /^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith("//");
+}
+
+// Resolve a relative (or repo-root `/foo`) link against the current file's
+// directory into a clean repo-relative path, collapsing `.`/`..` and dropping
+// the leading slash (the server rejects `..`, so we normalize it away here).
+function resolveRelativePath(currentFile, href) {
+  let combined;
+  if (href.startsWith("/")) {
+    combined = href.slice(1); // repo-root relative
+  } else {
+    const slash = (currentFile || "").lastIndexOf("/");
+    const baseDir = slash >= 0 ? currentFile.slice(0, slash) : "";
+    combined = baseDir ? `${baseDir}/${href}` : href;
+  }
+  const parts = [];
+  for (const seg of combined.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") { if (parts.length) parts.pop(); continue; }
+    parts.push(seg);
+  }
+  return parts.join("/");
+}
+
+// The link target covering `offset` in `value`, or null. Matches an inline
+// markdown link `[text](target)` first (a click anywhere in it counts), then a
+// bare http(s) URL.
+function linkTargetAt(value, offset) {
+  let m;
+  const linkRe = /\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
+  while ((m = linkRe.exec(value))) {
+    if (offset >= m.index && offset <= m.index + m[0].length) return m[1];
+  }
+  const urlRe = /https?:\/\/[^\s)<>"']+/g;
+  while ((m = urlRe.exec(value))) {
+    if (offset >= m.index && offset <= m.index + m[0].length) return m[0];
+  }
+  return null;
+}
+
+// Follow a link href from the editor: external → new tab; in-repo → open the
+// target file, keeping the current preview/code mode (openFile leaves
+// state.previewMode untouched). In-page `#anchors` are the caller's business.
+async function navigateEditorLink(href) {
+  if (!href || href.startsWith("#")) return;
+  if (isExternalLink(href)) { window.open(href, "_blank", "noopener"); return; }
+  let clean = href.split("#")[0].split("?")[0];
+  try { clean = decodeURIComponent(clean); } catch (_) { /* keep raw */ }
+  const target = resolveRelativePath(state.currentFile, clean);
+  if (!target) return;
+  try {
+    await openFile(target);
+  } catch (error) {
+    notify(`Can't open ${target}: ${error.message}`);
   }
 }
 
@@ -571,8 +678,11 @@ async function renderCodeSurface(container, options) {
   });
   container.insertAdjacentHTML("beforeend", FIND_BAR_HTML);
   wireFindBar();
-  input.addEventListener("mousedown", () => {
+  input.addEventListener("mousedown", event => {
     clearFindKept(); // a click moves the caret → drop any kept find highlight
+    // Cmd/Ctrl-click is a link jump (handled on `click`, after the caret lands)
+    // — don't enter insert mode or clear multi-cursor for it.
+    if (event.metaKey || event.ctrlKey) return;
     if (state.editorMode === "readonly") {
       // Click into a read-only editor → enter insert mode with the caret where
       // the click lands. Don't preventDefault: the native mousedown positions
@@ -581,6 +691,14 @@ async function renderCodeSurface(container, options) {
     } else {
       clearMultiCursors();
     }
+  });
+  // Cmd/Ctrl-click a URL or markdown link under the caret to follow it.
+  input.addEventListener("click", event => {
+    if (!(event.metaKey || event.ctrlKey)) return;
+    const href = linkTargetAt(input.value, input.selectionStart);
+    if (!href) return;
+    event.preventDefault();
+    navigateEditorLink(href);
   });
   input.addEventListener("blur", updateEditorModeIndicator);
   updateDirtyIndicator();
@@ -636,6 +754,48 @@ function leaveEditorInsertMode() {
   if (input) input.readOnly = true;
   state.editorMode = "readonly";
   setFocus("app", 0);
+}
+
+// A cursor-motion key: arrows, or the macOS emacs motions Ctrl+N/P/F/B/A/E.
+// (Plain Cmd/Alt combos are not motions.)
+function isCursorMotionKey(event) {
+  if (event.metaKey || event.altKey) return false;
+  const k = event.key.toLowerCase();
+  if (k === "arrowleft" || k === "arrowright" || k === "arrowup" || k === "arrowdown") return true;
+  return event.ctrlKey && ["n", "p", "f", "b", "a", "e"].includes(k);
+}
+
+// New caret offset for a motion key applied at the current caret. Vertical moves
+// keep the column; Ctrl+A/E go to line start/end.
+function motionCaretTarget(input, event) {
+  const value = input.value;
+  const lines = value.split("\n");
+  const at = input.selectionStart;
+  const k = event.key.toLowerCase();
+  const ctrl = event.ctrlKey;
+  if (k === "arrowleft" || (ctrl && k === "b")) return Math.max(0, at - 1);
+  if (k === "arrowright" || (ctrl && k === "f")) return Math.min(value.length, at + 1);
+  if (ctrl && k === "a") return value.lastIndexOf("\n", at - 1) + 1;
+  if (ctrl && k === "e") { const nl = value.indexOf("\n", at); return nl < 0 ? value.length : nl; }
+  const { line, col } = offsetLineCol(value, at);
+  if (k === "arrowup" || (ctrl && k === "p")) return line === 0 ? at : lineColToOffset(lines, line - 1, col);
+  return line >= lines.length - 1 ? at : lineColToOffset(lines, line + 1, col); // ArrowDown / Ctrl+N
+}
+
+// When the editor view is showing (explorer, app focus, not preview) but the
+// textarea isn't focused, a cursor-motion key wakes the editor: it focuses and
+// applies that one motion, so e.g. `p` out of preview then Ctrl+N just works.
+// Later motions land on the now-focused textarea (native on macOS). Returns
+// true when it handled the key.
+function wakeEditorWithMotion(event) {
+  if (state.component !== "explorer" || state.focusLevel !== "app" || state.previewMode) return false;
+  if (!isCursorMotionKey(event)) return false;
+  const input = app.querySelector(".editor-input");
+  if (!input || !enterEditorInsertMode()) return false;
+  const target = motionCaretTarget(input, event); // from the caret enterEditorInsertMode placed
+  input.setSelectionRange(target, target);
+  scrollEditorToCursor("auto");
+  return true;
 }
 
 // Accumulating smooth scroll: repeated key presses extend a single target and
@@ -838,6 +998,50 @@ function addCursorsToEdge(dir) {
   renderMultiCursors();
 }
 
+// New offset for one caret after an arrow press. Horizontal clamps to the buffer
+// ends; vertical keeps the column and stays put at the first/last line.
+function moveCaretOffset(value, lines, offset, key, dir) {
+  if (key === "ArrowLeft") return Math.max(0, offset - 1);
+  if (key === "ArrowRight") return Math.min(value.length, offset + 1);
+  const { line, col } = offsetLineCol(value, offset);
+  const target = line + dir;
+  if (target < 0 || target >= lines.length) return offset;
+  return lineColToOffset(lines, target, col);
+}
+
+// Plain (or Shift-extended) arrow press while multi-cursor is active: move every
+// cursor instead of dropping the secondary ones. A horizontal arrow with live
+// selections collapses each to its leading edge first (VSCode-style); Shift moves
+// only the head so selections grow/shrink. Cursors that land together merge.
+function moveMultiCursors(event) {
+  const input = app.querySelector(".editor-input");
+  if (!input || input.readOnly) return;
+  const value = input.value;
+  const lines = value.split("\n");
+  const dir = (event.key === "ArrowRight" || event.key === "ArrowDown") ? 1 : -1;
+  const horizontal = event.key === "ArrowLeft" || event.key === "ArrowRight";
+  const hasSelection = state.multiRanges.some(r => r.start !== r.end);
+  const next = state.multiRanges.map(r => {
+    if (event.shiftKey) {
+      return { start: r.start, end: moveCaretOffset(value, lines, r.end, event.key, dir) };
+    }
+    if (hasSelection && horizontal) {
+      const at = dir > 0 ? r.end : r.start; // collapse selection to its edge
+      return { start: at, end: at };
+    }
+    const at = moveCaretOffset(value, lines, dir > 0 ? r.end : r.start, event.key, dir);
+    return { start: at, end: at };
+  });
+  next.sort((a, b) => a.start - b.start || a.end - b.end);
+  state.multiRanges = next.filter((r, i) =>
+    i === 0 || r.start !== next[i - 1].start || r.end !== next[i - 1].end);
+  const primary = dir > 0 ? state.multiRanges[state.multiRanges.length - 1] : state.multiRanges[0];
+  input.setSelectionRange(primary.start, primary.end);
+  state.multiGoalCol = offsetLineCol(value, primary.end).col;
+  scrollEditorToCursor("auto");
+  renderMultiCursors();
+}
+
 // Cmd+D: seed from the current selection/word, or add the next occurrence of the
 // seeded word as another cursor.
 function multiCursorAddNext() {
@@ -958,7 +1162,7 @@ function repaintEditorAfterEdit() {
   const layer = app.querySelector("#explorer-surface .highlight-layer");
   if (!input || !layer) return;
   state.fileContent = input.value;
-  layer.innerHTML = numberedPlainText(input.value);
+  patchPlainChangedLines(layer, input.value);
   applyGitGutter(layer);
   const body = layer.closest(".code-body");
   input.dataset.lines = String(input.value.split("\n").length);
@@ -1007,6 +1211,7 @@ function resetFindState() {
   state.find.index = -1;
   state.find.pendingCaret = null;
   state.find.kept = null;
+  state.find.cache = null;
 }
 
 function findBar() { return app.querySelector("#find"); }
@@ -1124,6 +1329,29 @@ function computeFindMatches(value, query) {
   return out;
 }
 
+function computeFindMatchesCached(value, query) {
+  const f = state.find;
+  const cache = f.cache;
+  if (cache
+      && cache.value === value
+      && cache.query === query
+      && cache.caseSensitive === f.caseSensitive
+      && cache.wholeWord === f.wholeWord
+      && cache.regex === f.regex) {
+    return cache.matches;
+  }
+  const matches = computeFindMatches(value, query);
+  f.cache = {
+    value,
+    query,
+    caseSensitive: f.caseSensitive,
+    wholeWord: f.wholeWord,
+    regex: f.regex,
+    matches,
+  };
+  return matches;
+}
+
 // Recompute matches for the current query. When `jump`, also move to the match
 // at/after the caret; otherwise keep the current index (used after edits that
 // shift offsets around).
@@ -1140,7 +1368,7 @@ function runFind(jump) {
     renderFindMatches();
     return;
   }
-  try { f.matches = computeFindMatches(input.value, query); }
+  try { f.matches = computeFindMatchesCached(input.value, query); }
   catch (_) { f.matches = []; } // invalid regex while typing
   if (!f.matches.length) {
     f.index = -1;
@@ -1323,6 +1551,13 @@ function onEditorKeyDown(event) {
     return;
   }
   if (event.metaKey && event.key.toLowerCase() === "z") return; // global undo/redo
+  // Plain/Shift arrows adjust every cursor instead of dropping the extras.
+  if (event.key.startsWith("Arrow") && state.multiRanges.length >= 2
+      && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    event.preventDefault();
+    moveMultiCursors(event);
+    return;
+  }
   if (event.metaKey || event.ctrlKey || event.altKey
       || event.key.startsWith("Arrow") || ["Home", "End", "PageUp", "PageDown"].includes(event.key)) {
     clearMultiCursors();
@@ -1363,15 +1598,72 @@ function gotoEditorEdge(edge) {
 }
 
 function numberedPlainText(content) {
-  return content.split("\n").map((line, index) =>
-    `<span class="line-number">${index + 1}</span>${escapeHtml(line)}`
-  ).join("\n");
+  return plainTextLines(contentLines(content)).join("\n");
+}
+
+function editorLineHtml(index, inner) {
+  return `<span class="editor-line" data-line="${index}"><span class="line-number">${index + 1}</span>${inner}</span>`;
+}
+
+function contentLines(content) {
+  return content.split("\n");
+}
+
+function plainTextLine(line, index) {
+  return editorLineHtml(index, escapeHtml(line));
+}
+
+function plainTextLines(lineTexts) {
+  return lineTexts.map((line, index) => plainTextLine(line, index));
+}
+
+function setLayerLines(layer, lines, lineTexts = null) {
+  layer.innerHTML = lines.join("\n");
+  layer._lineHtml = lines.slice();
+  layer._lineText = lineTexts ? lineTexts.slice() : null;
+}
+
+function patchLayerLines(layer, lines, lineTexts = null) {
+  const previous = layer._lineHtml;
+  const nodes = layer.querySelectorAll(":scope > .editor-line");
+  if (!previous || previous.length !== lines.length || nodes.length !== lines.length) {
+    setLayerLines(layer, lines, lineTexts);
+    return;
+  }
+  for (let i = 0; i < lines.length; i++) {
+    if (previous[i] === lines[i]) continue;
+    nodes[i].outerHTML = lines[i];
+    previous[i] = lines[i];
+  }
+  if (lineTexts) layer._lineText = lineTexts.slice();
+}
+
+function patchPlainChangedLines(layer, content) {
+  const lineTexts = contentLines(content);
+  const previousText = layer._lineText;
+  const previousHtml = layer._lineHtml;
+  const nodes = layer.querySelectorAll(":scope > .editor-line");
+  if (!previousText
+      || !previousHtml
+      || previousText.length !== lineTexts.length
+      || previousHtml.length !== lineTexts.length
+      || nodes.length !== lineTexts.length) {
+    patchLayerLines(layer, plainTextLines(lineTexts), lineTexts);
+    return;
+  }
+  for (let i = 0; i < lineTexts.length; i++) {
+    if (previousText[i] === lineTexts[i]) continue;
+    const html = plainTextLine(lineTexts[i], i);
+    nodes[i].outerHTML = html;
+    previousHtml[i] = html;
+    previousText[i] = lineTexts[i];
+  }
 }
 
 // Paint plain (un-highlighted) glyphs into the layer immediately — the textarea
 // itself is transparent, so this is what the user actually sees while typing.
 function paintEditorPlain(input, layer) {
-  layer.innerHTML = numberedPlainText(input.value);
+  patchPlainChangedLines(layer, input.value);
   applyGitGutter(layer);
   if (state.find.open) renderFindMatches();
 }
@@ -1405,21 +1697,23 @@ async function updateHighlightLayer(layer, path, content, input) {
   // plain numbered text, so editing stays responsive (master virtualizes; this
   // is the lightweight equivalent for the textarea surface).
   if (content.length > 200000) {
-    layer.innerHTML = numberedPlainText(content);
+    const lineTexts = contentLines(content);
+    patchLayerLines(layer, plainTextLines(lineTexts), lineTexts);
     applyGitGutter(layer);
     if (state.find.open) renderFindMatches();
     return;
   }
   try {
-    const html = await highlightedTextHtml(path, content);
+    const { htmlLines, lineTexts } = await highlightedTextLines(path, content);
     // Discard a stale pass: if the buffer moved on (or an IME composition is in
     // flight) since the request went out, painting this would flash older text
     // into view — the root of the "Japanese text briefly disappears" bug.
     if (input && (input.value !== content || input.composing)) return;
-    layer.innerHTML = html;
+    patchLayerLines(layer, htmlLines, lineTexts);
   } catch (_) {
     if (input && input.value !== content) return;
-    layer.innerHTML = numberedPlainText(content);
+    const lineTexts = contentLines(content);
+    patchLayerLines(layer, plainTextLines(lineTexts), lineTexts);
   }
   applyGitGutter(layer);
   if (state.find.open) renderFindMatches();
@@ -1458,11 +1752,16 @@ function applyGitGutter(layer) {
 }
 
 async function highlightedTextHtml(path, content) {
+  return (await highlightedTextLines(path, content)).htmlLines.join("\n");
+}
+
+async function highlightedTextLines(path, content) {
   const data = await api("/api/highlight", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ path, content }),
   });
-  return content.split("\n").map((line, index) => {
+  const lineTexts = contentLines(content);
+  const htmlLines = lineTexts.map((line, index) => {
     const spans = [...(data.lines?.[String(index)] || [])]
       .sort((a, b) => a.start - b.start || a.end - b.end);
     const chars = Array.from(line);
@@ -1477,8 +1776,9 @@ async function highlightedTextHtml(path, content) {
       cursor = end;
     }
     out += escapeHtml(chars.slice(cursor).join(""));
-    return `<span class="line-number">${index + 1}</span>${out}`;
-  }).join("\n");
+    return editorLineHtml(index, out);
+  });
+  return { htmlLines, lineTexts };
 }
 
 async function renderHistory() {
@@ -1553,7 +1853,7 @@ function scrollPreview(direction, amount = 0.7) {
 // where there is no list to move through so j/k should scroll the preview.
 function isPreviewPaneFocused() {
   if (state.focusLevel !== "pane") return false;
-  if (!["compare", "status", "history"].includes(state.component)) return false;
+  if (!["compare", "status", "history", "search"].includes(state.component)) return false;
   const count = app.querySelectorAll(".pane").length;
   return count > 0 && state.pane === count - 1;
 }
@@ -1638,8 +1938,15 @@ async function openRefPicker(which) {
 async function applyRef(which, ref) {
   ref = String(ref || "").trim();
   if (!ref) return;
-  if (which === "base") state.compareBase = ref;
-  else state.compareTarget = ref;
+  // Picking a ref equal to the other one would diff a ref against itself; swap
+  // instead so the old value of the picked side moves to the other side.
+  if (which === "base") {
+    if (ref === state.compareTarget) state.compareTarget = state.compareBase;
+    state.compareBase = ref;
+  } else {
+    if (ref === state.compareBase) state.compareBase = state.compareTarget;
+    state.compareTarget = ref;
+  }
   state.compareFiles = [];
   state.compareFile = 0;
   await loadCompare().catch(error => notify(error.message));
@@ -1925,6 +2232,7 @@ async function refreshHistoryIfChanged() {
 async function loadCurrentDiffPreview() {
   const surface = document.getElementById("diff-surface");
   if (!surface) return;
+  if (state.component === "search") { await loadSearchPreview(surface); return; }
   let file, url;
   if (state.component === "history") {
     file = state.historyData?.files?.[state.historyFile];
@@ -1988,6 +2296,8 @@ async function moveSelectionTo(index) {
     pane0?.querySelector("li.selected")?.classList.remove("selected");
     pane0?.querySelector(`li[data-index="${state.statusFile}"]`)?.classList.add("selected");
     await loadCurrentDiffPreview();
+  } else if (state.component === "search" && state.pane === 0) {
+    await selectSearchRow(index);
   }
 }
 
@@ -1996,6 +2306,7 @@ function currentSelection() {
   if (state.component === "history" && state.pane === 1) return [state.historyFile, state.historyData?.files?.length || 0];
   if (state.component === "compare" && state.pane === 0) return [state.compareFile, state.compareFiles.length];
   if (state.component === "status" && state.pane === 0) return [state.statusFile, state.statusFiles.length];
+  if (state.component === "search" && state.pane === 0) return [state.searchSelected, state.searchRows.length];
   return [0, 0];
 }
 
@@ -2215,6 +2526,7 @@ async function openSelectedDiffFileInEditor() {
 function openMenuTarget() {
   if (state.component === "status" && state.pane === 0) return state.statusFiles[state.statusFile]?.path || "";
   if (state.component === "compare" && state.pane === 0) return state.compareFiles[state.compareFile]?.path || "";
+  if (state.component === "search") return searchRowTarget(state.searchRows[state.searchSelected])?.path || "";
   if (state.component === "explorer") return state.currentFile || "";
   return "";
 }
@@ -2359,7 +2671,7 @@ function showPopup(kind, title, items, placeholder = "") {
   popup.classList.toggle("tree-popup", kind === "tree");
   popupPreview.hidden = kind !== "tree";
   popupHint.textContent = kind === "tree"
-    ? "j/k move · h/l collapse/expand · Enter open · ⌥/⌘Enter new tab · / filter · J/K preview · Esc close"
+    ? "j/k move · h/l fold · Enter open · a add · r rename · d delete · c/y copy path · . hidden · right-click menu · / filter · Esc close"
     : kind === "search"
     ? "type to search project · ↑↓ move · Enter open · Esc close"
     : kind === "quick"
@@ -2375,6 +2687,13 @@ function showPopup(kind, title, items, placeholder = "") {
 }
 
 function closePopup() {
+  // A prompt/confirm overlay dismissed via backdrop-click resolves to "cancelled"
+  // so the awaiting action doesn't hang.
+  if (state.promptResolve) {
+    const resolve = state.promptResolve;
+    state.promptResolve = null;
+    resolve(null);
+  }
   state.popup = null;
   state.treePreviewToken++;
   popupBackdrop.hidden = true;
@@ -2411,11 +2730,6 @@ function movePopupSelection(delta) {
 
 function filterPopup() {
   const raw = popupInput.value;
-  if (state.popup === "search") {
-    if (raw.trim() === state.lastSearchQuery) renderPopupList();
-    else scheduleSearch();
-    return;
-  }
   let query = raw.trim();
   if (state.popup === "tree") {
     state.popupItems = treePopupItems(query);
@@ -2462,9 +2776,12 @@ async function choosePopup(index = state.popupIndex) {
 // (⌘P / ⌘⇧P / ⌘@) land directly in the right mode.
 async function openQuickPicker(initial = "") {
   await ensureFiles();
+  // Empty-query order: changed files first, then by recency — the more recent of
+  // the file's mtime and the last time it was opened in gargo (CLI or web editor).
+  const recency = entry => Math.max(Number(entry.mtime || 0), Number(entry.opened || 0));
   const entries = [...state.fileEntries].sort((a, b) =>
     Number(b.changed) - Number(a.changed)
-    || Number(b.mtime || 0) - Number(a.mtime || 0)
+    || recency(b) - recency(a)
     || a.path.localeCompare(b.path)
   );
   state.quickFiles = entries.map(entry => ({
@@ -2535,7 +2852,7 @@ function buildTree(entries) {
   for (const entry of entries) {
     let current = root;
     const parts = entry.path.split("/");
-    if (parts.some(part => part.startsWith("."))) continue;
+    if (!state.showHidden && parts.some(part => part.startsWith("."))) continue;
     parts.forEach((name, index) => {
       const path = parts.slice(0, index + 1).join("/");
       const type = index === parts.length - 1 ? "file" : "dir";
@@ -2631,11 +2948,247 @@ async function updateTreePreview() {
   }
 }
 
-// Project-wide text search (Cmd+Shift+F). Backed by /api/search, which is a
-// case-insensitive literal substring search with a 3-character minimum.
-function openSearchPopup() {
-  state.lastSearchQuery = null;
-  showPopup("search", "Search project", [], "Search across files");
+// Lightweight text-prompt overlay (rename / new-entry path). Reuses the popup
+// backdrop + filter input rather than a bespoke modal: shows the title, prefills
+// and focuses the input, and resolves on Enter (trimmed value, or null if empty)
+// / null on Esc/backdrop-click. The resolver lives on state.promptResolve so the
+// keydown handler and closePopup() can settle it.
+function promptText(title, initial = "", hint = "Enter confirm · Esc cancel") {
+  return new Promise(resolve => {
+    state.promptResolve = resolve;
+    state.popup = "prompt";
+    popupTitle.textContent = title;
+    popup.classList.remove("tree-popup");
+    popupList.innerHTML = "";
+    popupPreview.hidden = true;
+    popupPreview.innerHTML = "";
+    popupInput.hidden = false;
+    popupInput.placeholder = "";
+    popupInput.value = initial;
+    popupHint.textContent = hint;
+    popupBackdrop.hidden = false;
+    popupInput.focus();
+    popupInput.setSelectionRange(initial.length, initial.length);
+  });
+}
+
+// Yes/no confirmation (delete). Same overlay as promptText but no text entry;
+// resolves true on Enter, false on Esc/backdrop-click.
+function confirmAction(title) {
+  return new Promise(resolve => {
+    state.promptResolve = value => resolve(value !== null);
+    state.popup = "confirm";
+    popupTitle.textContent = title;
+    popup.classList.remove("tree-popup");
+    popupList.innerHTML = "";
+    popupPreview.hidden = true;
+    popupPreview.innerHTML = "";
+    popupInput.hidden = true;
+    popupHint.textContent = "Enter confirm · Esc cancel";
+    popupBackdrop.hidden = false;
+    popup.focus();
+  });
+}
+
+// Settle the active prompt/confirm overlay with `value` (null = cancelled) and
+// tear the overlay down. Called from the keydown handlers.
+function resolvePrompt(value) {
+  const resolve = state.promptResolve;
+  state.promptResolve = null;
+  closePopup();
+  if (resolve) resolve(value);
+}
+
+// POST a JSON body to one of the /api/fs/* mutation endpoints, then refresh the
+// file listing and rebuild the tree so the change shows immediately. `ensureFiles`
+// caches on `state.files`, so clear it to force a refetch.
+async function fsMutate(endpoint, body) {
+  await api(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  state.files = [];
+  await ensureFiles();
+  state.treeRoot = buildTree(state.fileEntries);
+  if (state.popup === "tree") filterPopup();
+}
+
+// The tree node the selection currently points at (null when the list is empty).
+function selectedTreeNode() {
+  return state.popupFiltered[state.popupIndex]?.node || null;
+}
+
+// Repo-relative directory a new entry should land in, derived from the selection:
+// inside the selected dir, beside the selected file, else the repo root.
+function treeBaseDir(node) {
+  if (!node) return "";
+  if (node.type === "dir") return `${node.path}/`;
+  return node.path.includes("/") ? `${node.path.slice(0, node.path.lastIndexOf("/") + 1)}` : "";
+}
+
+// `a` — create a file or directory. A trailing `/` means directory; otherwise a
+// file (missing parent dirs are created server-side). `some/path/memo.md` works.
+async function treeAddEntry() {
+  const base = treeBaseDir(selectedTreeNode());
+  const input = await promptText("New file or dir (end with / for a directory)", base);
+  if (!input) return;
+  const kind = input.endsWith("/") ? "dir" : "file";
+  const path = input.replace(/\/+$/, "");
+  if (!path) return;
+  try {
+    await fsMutate("/api/fs/create", { path, kind });
+    // Reveal the new entry: expand its ancestors, and open it if it's a file.
+    const parts = path.split("/");
+    for (let i = 1; i < parts.length; i++) state.treeExpanded.add(parts.slice(0, i).join("/"));
+    if (state.popup === "tree") filterPopup();
+    if (kind === "file") await openFile(path);
+    notify(`Created ${path}`);
+  } catch (error) {
+    notify(`Create failed: ${error.message}`);
+  }
+}
+
+// `r` — rename/move the selected entry; prompt is prefilled with its current path.
+async function treeRenameEntry(node) {
+  if (!node) { notify("No selection"); return; }
+  const to = await promptText("Rename", node.path);
+  if (!to || to === node.path) return;
+  try {
+    const wasOpen = state.currentFile === node.path;
+    await fsMutate("/api/fs/rename", { from: node.path, to });
+    if (wasOpen) await openFile(to);
+    notify(`Renamed to ${to}`);
+  } catch (error) {
+    notify(`Rename failed: ${error.message}`);
+  }
+}
+
+// `d` — delete the selected entry after a confirmation.
+async function treeDeleteEntry(node) {
+  if (!node) { notify("No selection"); return; }
+  if (!await confirmAction(`Delete ${node.path}?`)) return;
+  try {
+    await fsMutate("/api/fs/delete", { path: node.path });
+    notify(`Deleted ${node.path}`);
+  } catch (error) {
+    notify(`Delete failed: ${error.message}`);
+  }
+}
+
+// `c` / `y` — copy the selected entry's absolute / repo-relative path.
+function treeCopyAbsPath(node) {
+  if (!node) { notify("No selection"); return; }
+  const root = state.repoInfo?.root ? state.repoInfo.root.replace(/\/$/, "") : "";
+  copyText(root ? `${root}/${node.path}` : node.path);
+}
+function treeCopyRelPath(node) {
+  if (!node) { notify("No selection"); return; }
+  copyText(node.path);
+}
+
+// `.` — toggle dot-prefixed files/dirs in the tree (gitignored paths stay hidden;
+// those aren't in gargo's file listing). Rebuilds the tree from the same entries.
+function toggleTreeHidden() {
+  state.showHidden = !state.showHidden;
+  state.treeRoot = buildTree(state.fileEntries);
+  filterPopup();
+  notify(state.showHidden ? "Showing hidden files" : "Hiding hidden files");
+}
+
+// Floating right-click context menu over the tree: the same actions as the direct
+// keys, anchored at the cursor. Created once, reused, clamped to the viewport.
+let treeContextMenuEl = null;
+function showTreeContextMenu(x, y, node) {
+  const root = state.repoInfo?.root ? state.repoInfo.root.replace(/\/$/, "") : "";
+  const actions = [{ key: "a", label: "New file / dir…", run: () => treeAddEntry() }];
+  if (node) {
+    actions.push(
+      { key: "r", label: "Rename…", run: () => treeRenameEntry(node) },
+      { key: "c", label: "Copy absolute path", run: () => copyText(root ? `${root}/${node.path}` : node.path) },
+      { key: "y", label: "Copy relative path", run: () => copyText(node.path) },
+      { key: "d", label: "Delete…", run: () => treeDeleteEntry(node) },
+    );
+  }
+  if (!treeContextMenuEl) {
+    treeContextMenuEl = document.createElement("div");
+    treeContextMenuEl.id = "tree-context-menu";
+    document.body.appendChild(treeContextMenuEl);
+  }
+  const menu = treeContextMenuEl;
+  menu.innerHTML = actions.map((action, index) =>
+    `<div class="ctx-item" data-index="${index}">${escapeHtml(action.label)}<span class="hint">${escapeHtml(action.key)}</span></div>`
+  ).join("");
+  menu.hidden = false;
+  menu.querySelectorAll("[data-index]").forEach(el => el.addEventListener("click", () => {
+    hideTreeContextMenu();
+    actions[Number(el.dataset.index)].run();
+  }));
+  // Position, then clamp so the menu stays on-screen.
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  const rect = menu.getBoundingClientRect();
+  if (rect.right > window.innerWidth) menu.style.left = `${Math.max(0, window.innerWidth - rect.width - 4)}px`;
+  if (rect.bottom > window.innerHeight) menu.style.top = `${Math.max(0, window.innerHeight - rect.height - 4)}px`;
+}
+
+function hideTreeContextMenu() {
+  if (treeContextMenuEl) treeContextMenuEl.hidden = true;
+}
+
+// Project-wide text search (⌘⇧F) as a dedicated tab, styled like Compare: the
+// left pane is a typed query + per-file list of matched lines, the right pane
+// previews the selected match's file with the matched line highlighted. Backed by
+// /api/search (case-insensitive literal substring, 3-character minimum).
+async function renderSearch() {
+  await renderDiffView({
+    kind: "search",
+    title: "Search",
+    hint: `<span>Project-wide · <span class="key">j/k</span> rows · <span class="key">h/l</span> collapse/expand · <span class="key">J/K</span> preview · <span class="key">o</span> open · <span class="key">e</span> new tab · <span class="key">O</span> menu</span>`,
+    panes: [
+      {
+        title: "Matches", name: "matches",
+        body: `<div class="search-form">
+          <input id="search-input" type="text" placeholder="Search project…" autocomplete="off"
+            autocorrect="off" autocapitalize="off" spellcheck="false" value="${escapeHtml(state.searchQuery)}">
+        </div>
+        <div id="search-results">${searchResultsHtml()}</div>`,
+      },
+      { title: "Preview", name: "preview", body: diffSurfaceHtml() },
+    ],
+    bind: () => {
+      const input = document.getElementById("search-input");
+      input.addEventListener("input", scheduleSearch);
+      input.addEventListener("keydown", onSearchInputKey);
+    },
+  });
+}
+
+// Focus (and select-to-end) the query box: the tab opens ready to type, and a
+// second ⌘⇧F while already on the tab just refocuses it.
+function focusSearchInput() {
+  const input = document.getElementById("search-input");
+  if (!input) return;
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
+// While the query box owns focus: arrows move the selection (and preview), Enter
+// hands focus to the results list so the vim keys (j/k/J/K/o/e/O/h/l) take over,
+// and Esc does the same. `stopPropagation` keeps the global handler out.
+function onSearchInputKey(event) {
+  if (event.key === "ArrowDown" || (event.ctrlKey && event.key === "n")) {
+    event.preventDefault(); event.stopPropagation();
+    moveSearchSelection(1);
+  } else if (event.key === "ArrowUp" || (event.ctrlKey && event.key === "p")) {
+    event.preventDefault(); event.stopPropagation();
+    moveSearchSelection(-1);
+  } else if (event.key === "Enter" || event.key === "Escape") {
+    event.preventDefault(); event.stopPropagation();
+    event.target.blur();
+    setFocus("pane", 0);
+    app.querySelector(".list li.selected")?.scrollIntoView({ block: "nearest" });
+  }
 }
 
 function scheduleSearch() {
@@ -2644,77 +3197,170 @@ function scheduleSearch() {
 }
 
 async function runGlobalSearch() {
-  const query = popupInput.value.trim();
+  const input = document.getElementById("search-input");
+  if (!input) return;
+  const query = input.value.trim();
   const token = ++state.searchToken;
-  state.lastSearchQuery = query;
+  state.searchQuery = query;
+  const results = document.getElementById("search-results");
   if (query.length < 3) {
-    state.popupFiltered = [];
-    popupList.innerHTML = `<li>${query ? "Type at least 3 characters…" : "Search across the project"}</li>`;
+    state.searchHits = [];
+    state.searchRows = [];
+    state.searchCollapsed = new Set();
+    state.searchSelected = 0;
+    if (results) results.innerHTML = `<div class="empty">${query ? "Type at least 3 characters…" : "Search across the project"}</div>`;
+    clearSearchPreview();
     return;
   }
-  popupList.innerHTML = `<li>Searching…</li>`;
+  if (results) results.innerHTML = `<div class="loading">Searching…</div>`;
   try {
     const data = await api(`/api/search?${new URLSearchParams({ q: query, max: "500" })}`);
-    if (token !== state.searchToken || state.popup !== "search") return;
+    if (token !== state.searchToken || state.component !== "search") return;
     state.searchHits = data.hits || [];
-    state.searchQuery = query;
     state.searchCollapsed = new Set();
-    state.popupIndex = 0;
-    if (!state.searchHits.length) {
-      state.popupFiltered = [];
-      popupList.innerHTML = `<li>No matches</li>`;
-      popupTitle.textContent = "Search project · no matches";
-      return;
-    }
-    state.popupFiltered = buildSearchRows();
-    renderPopupList("No matches");
-    const files = new Set(state.searchHits.map(hit => hit.path)).size;
-    popupTitle.textContent =
-      `Search project · ${state.searchHits.length}${data.truncated ? "+" : ""} matches in ${files} file${files === 1 ? "" : "s"}`;
+    state.searchRows = buildSearchRows();
+    state.searchSelected = 0;
+    state.searchTruncated = Boolean(data.truncated);
+    renderSearchResults();
+    if (state.searchRows.length) await loadCurrentDiffPreview();
+    else clearSearchPreview();
   } catch (error) {
-    if (token !== state.searchToken || state.popup !== "search") return;
-    popupList.innerHTML = `<li>${escapeHtml(error.message)}</li>`;
+    if (token !== state.searchToken || state.component !== "search") return;
+    if (results) results.innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
   }
 }
 
-// Flatten the path-sorted hits into a collapsible per-file tree: one file header
-// row (chevron · path · count) followed by its match rows (line · excerpt).
-// Rows under a collapsed file are dropped so keyboard nav skips them.
+// Flatten the path-sorted hits into the visible rows: one file-header row per
+// path followed by its match rows, with a collapsed file's matches omitted so
+// keyboard nav skips them. `state.searchRows` is the single source of truth for
+// selection (its index is the row's `data-index`).
 function buildSearchRows() {
-  const counts = new Map();
-  for (const hit of state.searchHits) counts.set(hit.path, (counts.get(hit.path) || 0) + 1);
   const rows = [];
   let curPath = null;
-  for (const hit of state.searchHits) {
+  state.searchHits.forEach((hit, hitIndex) => {
     if (hit.path !== curPath) {
       curPath = hit.path;
-      const path = hit.path;
-      const collapsed = state.searchCollapsed.has(path);
-      rows.push({
-        kind: "file", path, cls: "gfile", keepOpen: true,
-        html: `<span class="gchevron">${collapsed ? "▸" : "▾"}</span>`
-          + `<span class="gfile-path">${escapeHtml(path)}</span>`
-          + `<span class="gcount">${counts.get(path)}</span>`,
-        run: () => toggleSearchFile(path),
-      });
+      rows.push({ kind: "file", path: hit.path });
     }
-    if (state.searchCollapsed.has(hit.path)) continue;
-    rows.push({
-      kind: "hit", cls: "ghit",
-      html: `<span class="gline">${hit.line + 1}</span>`
-        + `<span class="gtext">${highlightExcerpt(hit.excerpt, hit.col, state.searchQuery.length)}</span>`,
-      run: () => openFile(hit.path, hit.line, hit.col),
-    });
-  }
+    if (!state.searchCollapsed.has(hit.path)) rows.push({ kind: "hit", path: hit.path, hitIndex });
+  });
   return rows;
 }
 
-function toggleSearchFile(path) {
-  if (state.searchCollapsed.has(path)) state.searchCollapsed.delete(path);
-  else state.searchCollapsed.add(path);
-  state.popupFiltered = buildSearchRows();
-  state.popupIndex = Math.min(state.popupIndex, state.popupFiltered.length - 1);
-  renderPopupList("No matches");
+// The hit a row resolves to for preview / open: the hit itself, or a file
+// header's first match.
+function searchRowTarget(row) {
+  if (!row) return null;
+  if (row.kind === "hit") return state.searchHits[row.hitIndex];
+  return state.searchHits.find(hit => hit.path === row.path) || null;
+}
+
+function searchResultsHtml() {
+  if (!state.searchHits.length) {
+    return `<div class="empty">${state.searchQuery ? "No matches" : "Search across the project"}</div>`;
+  }
+  const counts = new Map();
+  for (const hit of state.searchHits) counts.set(hit.path, (counts.get(hit.path) || 0) + 1);
+  const rows = state.searchRows.map((row, index) => {
+    const sel = index === state.searchSelected ? " selected" : "";
+    if (row.kind === "file") {
+      const chevron = state.searchCollapsed.has(row.path) ? "▸" : "▾";
+      return `<li data-index="${index}" class="gfile${sel}"><span class="gchevron">${chevron}</span>`
+        + `<span class="gfile-path">${escapeHtml(row.path)}</span>`
+        + `<span class="gcount">${counts.get(row.path)}</span></li>`;
+    }
+    const hit = state.searchHits[row.hitIndex];
+    return `<li data-index="${index}" class="ghit${sel}"><span class="gline">${hit.line + 1}</span>`
+      + `<span class="gtext">${highlightExcerpt(hit.excerpt, hit.col, state.searchQuery.length)}</span></li>`;
+  });
+  return `<ol class="list">${rows.join("")}</ol>`;
+}
+
+function renderSearchResults() {
+  const results = document.getElementById("search-results");
+  if (!results) return;
+  results.innerHTML = searchResultsHtml();
+  bindListClicks();
+}
+
+function clearSearchPreview() {
+  const surface = document.getElementById("diff-surface");
+  if (surface) surface.innerHTML = `<div class="empty">No file selected</div>`;
+}
+
+// Move the selected row (wrapping), update the highlighted row and the preview.
+async function moveSearchSelection(delta) {
+  const length = state.searchRows.length;
+  if (!length) return;
+  await selectSearchRow((state.searchSelected + delta + length) % length);
+  app.querySelector(".list li.selected")?.scrollIntoView({ block: "nearest" });
+}
+
+// Re-select without rebuilding the list (it can be hundreds of rows): shift the
+// `selected` class and reload the preview for the new row.
+async function selectSearchRow(index) {
+  state.searchSelected = Math.max(0, Math.min(index, state.searchRows.length - 1));
+  const pane0 = app.querySelector('.pane[data-pane="0"]');
+  pane0?.querySelector("li.selected")?.classList.remove("selected");
+  pane0?.querySelector(`li[data-index="${state.searchSelected}"]`)?.classList.add("selected");
+  await loadCurrentDiffPreview();
+}
+
+// Collapse / expand the selected file group (h / ← collapse, l / → expand). On a
+// hit, collapsing folds its parent file and lands the selection on the header.
+async function setSearchCollapsed(path, collapsed) {
+  if (collapsed) state.searchCollapsed.add(path);
+  else state.searchCollapsed.delete(path);
+  state.searchRows = buildSearchRows();
+  const idx = state.searchRows.findIndex(row => row.kind === "file" && row.path === path);
+  state.searchSelected = idx < 0 ? 0 : idx;
+  renderSearchResults();
+  app.querySelector(".list li.selected")?.scrollIntoView({ block: "nearest" });
+  await loadCurrentDiffPreview();
+}
+
+async function searchCollapse() {
+  const row = state.searchRows[state.searchSelected];
+  if (row && !state.searchCollapsed.has(row.path)) await setSearchCollapsed(row.path, true);
+}
+
+async function searchExpand() {
+  const row = state.searchRows[state.searchSelected];
+  if (row && row.kind === "file" && state.searchCollapsed.has(row.path)) await setSearchCollapsed(row.path, false);
+}
+
+function openSearchHit() {
+  const hit = searchRowTarget(state.searchRows[state.searchSelected]);
+  if (hit) openFile(hit.path, hit.line, hit.col);
+}
+
+// Preview the selected row's file (full content, syntax-highlighted) with the
+// matched line highlighted and centred. Shares state.previewToken with the diff
+// previews so a slow earlier fetch can't clobber the row the user landed on.
+async function loadSearchPreview(surface) {
+  const hit = searchRowTarget(state.searchRows[state.searchSelected]);
+  if (!hit) { surface.innerHTML = `<div class="empty">No file selected</div>`; return; }
+  const token = ++state.previewToken;
+  try {
+    const data = await api(`/api/file?path=${encodeURIComponent(hit.path)}`);
+    if (token !== state.previewToken || state.component !== "search") return;
+    const body = await highlightedTextHtml(hit.path, data.content || "");
+    if (token !== state.previewToken || state.component !== "search") return;
+    // A normal-flow <pre> (not the absolute .highlight-layer) so the .code-surface
+    // actually overflows and J/K / Ctrl-f-b can scroll it.
+    surface.innerHTML = `<div class="code-surface">
+      <div class="code-toolbar"><span class="path">${escapeHtml(hit.path)}</span>
+        <span class="grow"></span><span>read only</span></div>
+      <div class="code-body"><pre class="search-preview">${body}</pre></div></div>`;
+    const lineEl = surface.querySelector(`.editor-line[data-line="${hit.line}"]`);
+    if (lineEl) {
+      lineEl.classList.add("search-match-line");
+      lineEl.scrollIntoView({ block: "center" });
+    }
+  } catch (error) {
+    if (token !== state.previewToken || state.component !== "search") return;
+    surface.innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
+  }
 }
 
 // Bold `qlen` characters of the excerpt from the server-provided 0-based column.
@@ -2729,6 +3375,11 @@ function highlightExcerpt(excerpt, col, qlen) {
 
 popupInput.addEventListener("input", filterPopup);
 popupInput.addEventListener("keydown", event => {
+  if (state.popup === "prompt") {
+    if (event.key === "Enter") { event.preventDefault(); resolvePrompt(popupInput.value.trim() || null); }
+    else if (event.key === "Escape") { event.preventDefault(); resolvePrompt(null); }
+    return;
+  }
   if (event.key === "Escape") {
     event.preventDefault();
     if (state.popup === "tree") {
@@ -2745,12 +3396,6 @@ popupInput.addEventListener("keydown", event => {
   } else if (event.key === "ArrowUp" || (event.ctrlKey && event.key === "p")) {
     event.preventDefault();
     movePopupSelection(-1);
-  } else if (state.popup === "search" && (event.key === "ArrowRight" || event.key === "ArrowLeft")) {
-    const item = state.popupFiltered[state.popupIndex];
-    if (item?.kind === "file" && (event.key === "ArrowRight") === state.searchCollapsed.has(item.path)) {
-      event.preventDefault();
-      toggleSearchFile(item.path);
-    }
   } else if (event.key === "Enter" && state.popup === "tree" && (event.altKey || event.metaKey)) {
     event.preventDefault();
     openTreeSelectionInNewTab();
@@ -2762,10 +3407,33 @@ popupInput.addEventListener("keydown", event => {
 
 popup.addEventListener("keydown", event => {
   if (state.popup === "menu") { handleMenuKey(event); return; }
+  if (state.popup === "confirm") {
+    if (event.key === "Enter") { event.preventDefault(); resolvePrompt(true); }
+    else if (event.key === "Escape") { event.preventDefault(); resolvePrompt(null); }
+    return;
+  }
   if (state.popup !== "tree" || !popupInput.hidden) return;
   if (event.key === "Escape") {
     event.preventDefault();
     closePopup();
+  } else if (event.key === "a") {
+    event.preventDefault();
+    treeAddEntry();
+  } else if (event.key === "r") {
+    event.preventDefault();
+    treeRenameEntry(selectedTreeNode());
+  } else if (event.key === "d") {
+    event.preventDefault();
+    treeDeleteEntry(selectedTreeNode());
+  } else if (event.key === "c") {
+    event.preventDefault();
+    treeCopyAbsPath(selectedTreeNode());
+  } else if (event.key === "y") {
+    event.preventDefault();
+    treeCopyRelPath(selectedTreeNode());
+  } else if (event.key === ".") {
+    event.preventDefault();
+    toggleTreeHidden();
   } else if (event.key === "/" || event.key === "f") {
     event.preventDefault();
     popupInput.hidden = false;
@@ -2793,6 +3461,29 @@ popup.addEventListener("keydown", event => {
     popupPreview.scrollBy({ top: -popupPreview.clientHeight * 0.25, behavior: "smooth" });
   }
 });
+
+// Right-click a tree row → floating context menu at the cursor. Selecting the row
+// first keeps the keyboard actions (which read the selection) consistent with the
+// menu. Right-clicking empty space still offers "New file / dir".
+popupList.addEventListener("contextmenu", event => {
+  if (state.popup !== "tree") return;
+  event.preventDefault();
+  const row = event.target.closest("[data-index]");
+  if (row) {
+    const index = Number(row.dataset.index);
+    if (index !== state.popupIndex) { state.popupIndex = index; renderPopupList(); updateTreePreview(); }
+  }
+  showTreeContextMenu(event.clientX, event.clientY, selectedTreeNode());
+});
+
+// Dismiss the context menu on any outside interaction.
+document.addEventListener("mousedown", event => {
+  if (treeContextMenuEl && !treeContextMenuEl.hidden && !event.target.closest("#tree-context-menu")) {
+    hideTreeContextMenu();
+  }
+}, true);
+document.addEventListener("scroll", () => hideTreeContextMenu(), true);
+window.addEventListener("keydown", event => { if (event.key === "Escape") hideTreeContextMenu(); }, true);
 
 function collapseTreeSelection() {
   const item = state.popupFiltered[state.popupIndex];
@@ -2877,7 +3568,8 @@ window.addEventListener("keydown", async event => {
 
   if (event.metaKey && event.shiftKey && event.key.toLowerCase() === "f") {
     event.preventDefault();
-    openSearchPopup();
+    if (state.component === "search") focusSearchInput();
+    else switchComponent("search");
     return;
   }
   // Cmd+F: in-file find; Cmd+Alt+F: find & replace. Only over the editable editor;
@@ -2981,7 +3673,7 @@ window.addEventListener("keydown", async event => {
       gotoEditorEdge("top");
       return;
     }
-    const target = ({ e: "explorer", h: "history", c: "compare", s: "status" })[event.key];
+    const target = ({ e: "explorer", h: "history", c: "compare", s: "status", f: "search" })[event.key];
     if (target) { event.preventDefault(); await switchComponent(target); }
     return;
   }
@@ -2995,6 +3687,10 @@ window.addEventListener("keydown", async event => {
     event.preventDefault(); openTreePicker(); return;
   }
   if ((event.key === "i" || event.key === "Enter") && enterEditorInsertMode()) {
+    event.preventDefault();
+    return;
+  }
+  if (wakeEditorWithMotion(event)) {
     event.preventDefault();
     return;
   }
@@ -3023,6 +3719,39 @@ window.addEventListener("keydown", async event => {
     event.preventDefault();
     scrollPreview(-1, 0.25);
     return;
+  }
+  if (state.component === "search") {
+    if (event.shiftKey && (event.key === "J" || event.key === "K")) {
+      event.preventDefault();
+      scrollPreview(event.key === "J" ? 1 : -1, 0.25);
+      return;
+    }
+    if (event.ctrlKey && (event.key === "f" || event.key === "b")) {
+      event.preventDefault();
+      scrollPreview(event.key === "f" ? 1 : -1, 0.9);
+      return;
+    }
+    if (state.pane === 0) {
+      const up = event.key === "ArrowUp" || (event.ctrlKey && event.key === "p");
+      const down = event.key === "ArrowDown" || (event.ctrlKey && event.key === "n");
+      // Up off the top row of the list (k / ↑ / Ctrl-p) jumps back to the query box.
+      if ((event.key === "k" || up) && state.searchSelected === 0) {
+        event.preventDefault();
+        focusSearchInput();
+        return;
+      }
+      if (up) { event.preventDefault(); await moveSelection(-1); return; }
+      if (down) { event.preventDefault(); await moveSelection(1); return; }
+      if (event.key === "h" || event.key === "ArrowLeft") { event.preventDefault(); await searchCollapse(); return; }
+      if (event.key === "l" || event.key === "ArrowRight") { event.preventDefault(); await searchExpand(); return; }
+      if (event.key === "o" || event.key === "Enter") { event.preventDefault(); openSearchHit(); return; }
+      if (event.key === "e") {
+        event.preventDefault();
+        const hit = searchRowTarget(state.searchRows[state.searchSelected]);
+        if (hit) openFileInNewTab(hit.path);
+        return;
+      }
+    }
   }
   if (state.component === "history" && event.shiftKey && event.key === "J") {
     event.preventDefault();

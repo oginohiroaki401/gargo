@@ -1,10 +1,9 @@
-//! Backend behavior oracle for the diff/gargo servers.
+//! Backend behavior oracle for the gargo server.
 //!
 //! This is a characterization test that locks down the **backend** contract of
-//! the `/api/*` JSON endpoints before the `diff_server.rs` / `gargo_server.rs`
-//! refactor (file split + template extraction). It deliberately covers the JSON
-//! APIs and git-state semantics only — NOT the HTML pages — so a later frontend
-//! redesign can rewrite the templates freely without regenerating these goldens.
+//! the `/api/*` JSON endpoints. It deliberately covers the JSON APIs and
+//! git-state semantics only — NOT the HTML pages — so a later frontend redesign
+//! can rewrite the templates freely without regenerating these goldens.
 //!
 //! Determinism: the fixture repo pins author/committer dates and identity, so
 //! commit dates (`--date=short`) are stable. Commit hashes are still normalized
@@ -17,18 +16,29 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use gargo::command::diff_server::{DiffServerCommand, DiffServerEvent, DiffServerHandle};
 use gargo::command::gargo_server::{GargoServerCommand, GargoServerEvent, GargoServerHandle};
 use serde_json::Value;
-use tempfile::tempdir;
+use tempfile::{TempDir, tempdir};
 
 // --- git + http harness ------------------------------------------------------
 
 /// A fixed timestamp for every commit so `--date=short` output is deterministic.
 const FIXED_DATE: &str = "2021-06-01T12:00:00 +0000";
+
+/// Redirect the persisted viewed-state store to a process-wide temp dir so the
+/// tests never touch the real data dir. Shared across tests (same value) so the
+/// parallel `set_var` calls don't race on a meaningful difference.
+fn isolate_data_dir() {
+    static DIR: OnceLock<TempDir> = OnceLock::new();
+    let dir = DIR.get_or_init(|| tempdir().expect("temp data dir"));
+    unsafe {
+        std::env::set_var("XDG_DATA_HOME", dir.path());
+    }
+}
 
 /// Run a git command with pinned author/committer dates (harmless for
 /// non-commit subcommands; required so commit dates/hashes are reproducible).
@@ -96,29 +106,12 @@ fn post_json(url: &str, payload: Value) -> Value {
     }
 }
 
-fn start_diff_server(repo: &Path, data_dir: &Path, handle: &DiffServerHandle) -> Option<u16> {
-    handle
-        .command_tx
-        .send(DiffServerCommand::Start {
-            project_root: repo.to_path_buf(),
-            data_dir: Some(data_dir.to_path_buf()),
-        })
-        .expect("send diff start");
-    match handle.event_rx.recv_timeout(Duration::from_secs(5)) {
-        Ok(DiffServerEvent::Started { port }) => Some(port),
-        Ok(DiffServerEvent::Error(msg)) if msg.starts_with("Failed to bind diff server") => {
-            eprintln!("skip oracle: {msg}");
-            None
-        }
-        other => panic!("expected diff Started, got {other:?}"),
-    }
-}
-
 fn start_gargo_server(repo: &Path, handle: &GargoServerHandle) -> Option<u16> {
     handle
         .command_tx
         .send(GargoServerCommand::Start {
             repo_root: repo.to_path_buf(),
+            port: None,
         })
         .expect("send gargo start");
     match handle.event_rx.recv_timeout(Duration::from_secs(5)) {
@@ -222,52 +215,46 @@ fn setup_repo(repo: &Path) {
 
 #[test]
 fn backend_oracle_read_endpoints() {
+    isolate_data_dir();
     let repo_dir = tempdir().expect("temp repo");
     let repo = repo_dir.path();
-    let data_dir = tempdir().expect("temp data dir");
     setup_repo(repo);
 
-    let diff_handle = DiffServerHandle::new().expect("diff handle");
-    let Some(diff_port) = start_diff_server(repo, data_dir.path(), &diff_handle) else {
-        return;
-    };
     let gargo_handle = GargoServerHandle::new().expect("gargo handle");
     let Some(gargo_port) = start_gargo_server(repo, &gargo_handle) else {
-        let _ = diff_handle.command_tx.send(DiffServerCommand::Stop);
         return;
     };
 
-    let d = format!("http://127.0.0.1:{diff_port}");
     let g = format!("http://127.0.0.1:{gargo_port}");
 
-    // diff server endpoints
-    assert_golden("status", get_json_with_retry(&format!("{d}/api/status")));
+    // status + compare endpoints
+    assert_golden("status", get_json_with_retry(&format!("{g}/api/status")));
     assert_golden(
         "status_file_unstaged",
         get_json_with_retry(&format!(
-            "{d}/api/status/file?section=unstaged&path=src/lib.rs"
+            "{g}/api/status/file?section=unstaged&path=src/lib.rs"
         )),
     );
     assert_golden(
         "status_file_staged",
-        get_json_with_retry(&format!("{d}/api/status/file?section=staged&path=added.rs")),
+        get_json_with_retry(&format!("{g}/api/status/file?section=staged&path=added.rs")),
     );
     assert_golden(
         "branches",
-        get_json_with_retry(&format!("{d}/api/branches")),
+        get_json_with_retry(&format!("{g}/api/branches")),
     );
     assert_golden(
         "compare",
-        get_json_with_retry(&format!("{d}/api/compare?base=master&compare=feature")),
+        get_json_with_retry(&format!("{g}/api/compare?base=master&compare=feature")),
     );
     assert_golden(
         "compare_file",
         get_json_with_retry(&format!(
-            "{d}/api/compare/file?base=master&compare=feature&path=src/lib.rs"
+            "{g}/api/compare/file?base=master&compare=feature&path=src/lib.rs"
         )),
     );
 
-    // gargo server endpoints
+    // tree + blob + commit endpoints
     assert_golden(
         "tree_src",
         get_json_with_retry(&format!("{g}/api/tree/src")),
@@ -292,7 +279,6 @@ fn backend_oracle_read_endpoints() {
         get_json_with_retry(&format!("{g}/api/commit/{head}/file?path=src/lib.rs")),
     );
 
-    let _ = diff_handle.command_tx.send(DiffServerCommand::Stop);
     let _ = gargo_handle.command_tx.send(GargoServerCommand::Stop);
 }
 
@@ -328,13 +314,13 @@ fn paths_of(section: &Value) -> Vec<String> {
 
 #[test]
 fn backend_oracle_stage_unstage_viewed_commit() {
+    isolate_data_dir();
     let repo_dir = tempdir().expect("temp repo");
     let repo = repo_dir.path();
-    let data_dir = tempdir().expect("temp data dir");
     setup_repo(repo);
 
-    let handle = DiffServerHandle::new().expect("diff handle");
-    let Some(port) = start_diff_server(repo, data_dir.path(), &handle) else {
+    let handle = GargoServerHandle::new().expect("gargo handle");
+    let Some(port) = start_gargo_server(repo, &handle) else {
         return;
     };
     let base = format!("http://127.0.0.1:{port}");
@@ -418,5 +404,5 @@ fn backend_oracle_stage_unstage_viewed_commit() {
         "added.rs should be gone from staged after commit"
     );
 
-    let _ = handle.command_tx.send(DiffServerCommand::Stop);
+    let _ = handle.command_tx.send(GargoServerCommand::Stop);
 }
