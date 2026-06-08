@@ -474,9 +474,10 @@ struct PreviewResponse {
 /// wraps the result in a sandboxed iframe (markdown gets a styled `markdown-body`
 /// document; HTML is shown as-is).
 ///
-/// Relative links/images are intentionally left unresolved — the editor has no
-/// repo-blob URL context like the preview server, and a preview pane doesn't need
-/// working navigation.
+/// Relative links/images are left unresolved in the HTML — the editor has no
+/// repo-blob URL context like the preview server. Instead the client intercepts
+/// clicks on the rendered links and resolves relative targets against the open
+/// file, opening them in the same preview pane (see `navigateEditorLink`).
 pub(crate) async fn handle_api_preview(Json(req): Json<PreviewRequest>) -> Response {
     let ext = Path::new(&req.path)
         .extension()

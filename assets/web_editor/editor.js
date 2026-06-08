@@ -430,6 +430,22 @@ async function renderPreviewSurface(container) {
     <div class="code-body"><iframe class="preview-frame" title="Preview"></iframe></div>
   </div>`;
   const frame = container.querySelector(".preview-frame");
+  // Clicks on rendered links navigate: relative links open the target in this
+  // same preview pane, external URLs open a new tab. In-page #anchors fall
+  // through so the iframe scrolls them natively. The srcdoc frame is
+  // same-origin, so we can reach into its document to intercept clicks.
+  frame.addEventListener("load", () => {
+    let doc;
+    try { doc = frame.contentDocument; } catch (_) { return; }
+    if (!doc) return;
+    doc.addEventListener("click", event => {
+      const anchor = event.target.closest && event.target.closest("a");
+      const href = anchor && anchor.getAttribute("href");
+      if (!href || href.startsWith("#")) return;
+      event.preventDefault();
+      navigateEditorLink(href);
+    });
+  });
   try {
     const data = await api("/api/preview", {
       method: "POST", headers: { "content-type": "application/json" },
@@ -480,6 +496,72 @@ async function openFile(path, line = null, col = 0) {
     scrollEditorToCursor("auto");
   } else {
     setFocus("app", 0);
+  }
+}
+
+// ---- Link navigation -------------------------------------------------------
+//
+// Cmd/Ctrl-click in the editor (insert or read-only) and clicks in the rendered
+// preview follow links: relative links open the target file (staying in the
+// current preview/code mode), external URLs open in a new tab.
+
+// True for links that point outside the repo — a scheme like http:/mailto: or a
+// protocol-relative //host. These open in a browser tab, not the editor.
+function isExternalLink(href) {
+  return /^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith("//");
+}
+
+// Resolve a relative (or repo-root `/foo`) link against the current file's
+// directory into a clean repo-relative path, collapsing `.`/`..` and dropping
+// the leading slash (the server rejects `..`, so we normalize it away here).
+function resolveRelativePath(currentFile, href) {
+  let combined;
+  if (href.startsWith("/")) {
+    combined = href.slice(1); // repo-root relative
+  } else {
+    const slash = (currentFile || "").lastIndexOf("/");
+    const baseDir = slash >= 0 ? currentFile.slice(0, slash) : "";
+    combined = baseDir ? `${baseDir}/${href}` : href;
+  }
+  const parts = [];
+  for (const seg of combined.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") { if (parts.length) parts.pop(); continue; }
+    parts.push(seg);
+  }
+  return parts.join("/");
+}
+
+// The link target covering `offset` in `value`, or null. Matches an inline
+// markdown link `[text](target)` first (a click anywhere in it counts), then a
+// bare http(s) URL.
+function linkTargetAt(value, offset) {
+  let m;
+  const linkRe = /\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
+  while ((m = linkRe.exec(value))) {
+    if (offset >= m.index && offset <= m.index + m[0].length) return m[1];
+  }
+  const urlRe = /https?:\/\/[^\s)<>"']+/g;
+  while ((m = urlRe.exec(value))) {
+    if (offset >= m.index && offset <= m.index + m[0].length) return m[0];
+  }
+  return null;
+}
+
+// Follow a link href from the editor: external → new tab; in-repo → open the
+// target file, keeping the current preview/code mode (openFile leaves
+// state.previewMode untouched). In-page `#anchors` are the caller's business.
+async function navigateEditorLink(href) {
+  if (!href || href.startsWith("#")) return;
+  if (isExternalLink(href)) { window.open(href, "_blank", "noopener"); return; }
+  let clean = href.split("#")[0].split("?")[0];
+  try { clean = decodeURIComponent(clean); } catch (_) { /* keep raw */ }
+  const target = resolveRelativePath(state.currentFile, clean);
+  if (!target) return;
+  try {
+    await openFile(target);
+  } catch (error) {
+    notify(`Can't open ${target}: ${error.message}`);
   }
 }
 
@@ -570,8 +652,11 @@ async function renderCodeSurface(container, options) {
   });
   container.insertAdjacentHTML("beforeend", FIND_BAR_HTML);
   wireFindBar();
-  input.addEventListener("mousedown", () => {
+  input.addEventListener("mousedown", event => {
     clearFindKept(); // a click moves the caret → drop any kept find highlight
+    // Cmd/Ctrl-click is a link jump (handled on `click`, after the caret lands)
+    // — don't enter insert mode or clear multi-cursor for it.
+    if (event.metaKey || event.ctrlKey) return;
     if (state.editorMode === "readonly") {
       // Click into a read-only editor → enter insert mode with the caret where
       // the click lands. Don't preventDefault: the native mousedown positions
@@ -580,6 +665,14 @@ async function renderCodeSurface(container, options) {
     } else {
       clearMultiCursors();
     }
+  });
+  // Cmd/Ctrl-click a URL or markdown link under the caret to follow it.
+  input.addEventListener("click", event => {
+    if (!(event.metaKey || event.ctrlKey)) return;
+    const href = linkTargetAt(input.value, input.selectionStart);
+    if (!href) return;
+    event.preventDefault();
+    navigateEditorLink(href);
   });
   input.addEventListener("blur", updateEditorModeIndicator);
   updateDirtyIndicator();
