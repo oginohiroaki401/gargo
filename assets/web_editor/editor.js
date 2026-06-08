@@ -95,6 +95,7 @@ const state = {
     regex: false,
     pendingCaret: null, // where the next i/Enter should drop the caret (last match)
     kept: null,         // {start,end} of a match kept highlighted after the bar closes
+    cache: null,        // last computed match set for the same buffer/query/options
   },
 };
 
@@ -1136,7 +1137,7 @@ function repaintEditorAfterEdit() {
   const layer = app.querySelector("#explorer-surface .highlight-layer");
   if (!input || !layer) return;
   state.fileContent = input.value;
-  layer.innerHTML = numberedPlainText(input.value);
+  patchPlainChangedLines(layer, input.value);
   applyGitGutter(layer);
   const body = layer.closest(".code-body");
   input.dataset.lines = String(input.value.split("\n").length);
@@ -1185,6 +1186,7 @@ function resetFindState() {
   state.find.index = -1;
   state.find.pendingCaret = null;
   state.find.kept = null;
+  state.find.cache = null;
 }
 
 function findBar() { return app.querySelector("#find"); }
@@ -1302,6 +1304,29 @@ function computeFindMatches(value, query) {
   return out;
 }
 
+function computeFindMatchesCached(value, query) {
+  const f = state.find;
+  const cache = f.cache;
+  if (cache
+      && cache.value === value
+      && cache.query === query
+      && cache.caseSensitive === f.caseSensitive
+      && cache.wholeWord === f.wholeWord
+      && cache.regex === f.regex) {
+    return cache.matches;
+  }
+  const matches = computeFindMatches(value, query);
+  f.cache = {
+    value,
+    query,
+    caseSensitive: f.caseSensitive,
+    wholeWord: f.wholeWord,
+    regex: f.regex,
+    matches,
+  };
+  return matches;
+}
+
 // Recompute matches for the current query. When `jump`, also move to the match
 // at/after the caret; otherwise keep the current index (used after edits that
 // shift offsets around).
@@ -1318,7 +1343,7 @@ function runFind(jump) {
     renderFindMatches();
     return;
   }
-  try { f.matches = computeFindMatches(input.value, query); }
+  try { f.matches = computeFindMatchesCached(input.value, query); }
   catch (_) { f.matches = []; } // invalid regex while typing
   if (!f.matches.length) {
     f.index = -1;
@@ -1548,15 +1573,72 @@ function gotoEditorEdge(edge) {
 }
 
 function numberedPlainText(content) {
-  return content.split("\n").map((line, index) =>
-    `<span class="line-number">${index + 1}</span>${escapeHtml(line)}`
-  ).join("\n");
+  return plainTextLines(contentLines(content)).join("\n");
+}
+
+function editorLineHtml(index, inner) {
+  return `<span class="editor-line" data-line="${index}"><span class="line-number">${index + 1}</span>${inner}</span>`;
+}
+
+function contentLines(content) {
+  return content.split("\n");
+}
+
+function plainTextLine(line, index) {
+  return editorLineHtml(index, escapeHtml(line));
+}
+
+function plainTextLines(lineTexts) {
+  return lineTexts.map((line, index) => plainTextLine(line, index));
+}
+
+function setLayerLines(layer, lines, lineTexts = null) {
+  layer.innerHTML = lines.join("\n");
+  layer._lineHtml = lines.slice();
+  layer._lineText = lineTexts ? lineTexts.slice() : null;
+}
+
+function patchLayerLines(layer, lines, lineTexts = null) {
+  const previous = layer._lineHtml;
+  const nodes = layer.querySelectorAll(":scope > .editor-line");
+  if (!previous || previous.length !== lines.length || nodes.length !== lines.length) {
+    setLayerLines(layer, lines, lineTexts);
+    return;
+  }
+  for (let i = 0; i < lines.length; i++) {
+    if (previous[i] === lines[i]) continue;
+    nodes[i].outerHTML = lines[i];
+    previous[i] = lines[i];
+  }
+  if (lineTexts) layer._lineText = lineTexts.slice();
+}
+
+function patchPlainChangedLines(layer, content) {
+  const lineTexts = contentLines(content);
+  const previousText = layer._lineText;
+  const previousHtml = layer._lineHtml;
+  const nodes = layer.querySelectorAll(":scope > .editor-line");
+  if (!previousText
+      || !previousHtml
+      || previousText.length !== lineTexts.length
+      || previousHtml.length !== lineTexts.length
+      || nodes.length !== lineTexts.length) {
+    patchLayerLines(layer, plainTextLines(lineTexts), lineTexts);
+    return;
+  }
+  for (let i = 0; i < lineTexts.length; i++) {
+    if (previousText[i] === lineTexts[i]) continue;
+    const html = plainTextLine(lineTexts[i], i);
+    nodes[i].outerHTML = html;
+    previousHtml[i] = html;
+    previousText[i] = lineTexts[i];
+  }
 }
 
 // Paint plain (un-highlighted) glyphs into the layer immediately — the textarea
 // itself is transparent, so this is what the user actually sees while typing.
 function paintEditorPlain(input, layer) {
-  layer.innerHTML = numberedPlainText(input.value);
+  patchPlainChangedLines(layer, input.value);
   applyGitGutter(layer);
   if (state.find.open) renderFindMatches();
 }
@@ -1590,21 +1672,23 @@ async function updateHighlightLayer(layer, path, content, input) {
   // plain numbered text, so editing stays responsive (master virtualizes; this
   // is the lightweight equivalent for the textarea surface).
   if (content.length > 200000) {
-    layer.innerHTML = numberedPlainText(content);
+    const lineTexts = contentLines(content);
+    patchLayerLines(layer, plainTextLines(lineTexts), lineTexts);
     applyGitGutter(layer);
     if (state.find.open) renderFindMatches();
     return;
   }
   try {
-    const html = await highlightedTextHtml(path, content);
+    const { htmlLines, lineTexts } = await highlightedTextLines(path, content);
     // Discard a stale pass: if the buffer moved on (or an IME composition is in
     // flight) since the request went out, painting this would flash older text
     // into view — the root of the "Japanese text briefly disappears" bug.
     if (input && (input.value !== content || input.composing)) return;
-    layer.innerHTML = html;
+    patchLayerLines(layer, htmlLines, lineTexts);
   } catch (_) {
     if (input && input.value !== content) return;
-    layer.innerHTML = numberedPlainText(content);
+    const lineTexts = contentLines(content);
+    patchLayerLines(layer, plainTextLines(lineTexts), lineTexts);
   }
   applyGitGutter(layer);
   if (state.find.open) renderFindMatches();
@@ -1643,11 +1727,16 @@ function applyGitGutter(layer) {
 }
 
 async function highlightedTextHtml(path, content) {
+  return (await highlightedTextLines(path, content)).htmlLines.join("\n");
+}
+
+async function highlightedTextLines(path, content) {
   const data = await api("/api/highlight", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ path, content }),
   });
-  return content.split("\n").map((line, index) => {
+  const lineTexts = contentLines(content);
+  const htmlLines = lineTexts.map((line, index) => {
     const spans = [...(data.lines?.[String(index)] || [])]
       .sort((a, b) => a.start - b.start || a.end - b.end);
     const chars = Array.from(line);
@@ -1662,8 +1751,9 @@ async function highlightedTextHtml(path, content) {
       cursor = end;
     }
     out += escapeHtml(chars.slice(cursor).join(""));
-    return `<span class="line-number">${index + 1}</span>${out}`;
-  }).join("\n");
+    return editorLineHtml(index, out);
+  });
+  return { htmlLines, lineTexts };
 }
 
 async function renderHistory() {
