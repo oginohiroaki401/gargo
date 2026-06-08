@@ -837,6 +837,50 @@ function addCursorsToEdge(dir) {
   renderMultiCursors();
 }
 
+// New offset for one caret after an arrow press. Horizontal clamps to the buffer
+// ends; vertical keeps the column and stays put at the first/last line.
+function moveCaretOffset(value, lines, offset, key, dir) {
+  if (key === "ArrowLeft") return Math.max(0, offset - 1);
+  if (key === "ArrowRight") return Math.min(value.length, offset + 1);
+  const { line, col } = offsetLineCol(value, offset);
+  const target = line + dir;
+  if (target < 0 || target >= lines.length) return offset;
+  return lineColToOffset(lines, target, col);
+}
+
+// Plain (or Shift-extended) arrow press while multi-cursor is active: move every
+// cursor instead of dropping the secondary ones. A horizontal arrow with live
+// selections collapses each to its leading edge first (VSCode-style); Shift moves
+// only the head so selections grow/shrink. Cursors that land together merge.
+function moveMultiCursors(event) {
+  const input = app.querySelector(".editor-input");
+  if (!input || input.readOnly) return;
+  const value = input.value;
+  const lines = value.split("\n");
+  const dir = (event.key === "ArrowRight" || event.key === "ArrowDown") ? 1 : -1;
+  const horizontal = event.key === "ArrowLeft" || event.key === "ArrowRight";
+  const hasSelection = state.multiRanges.some(r => r.start !== r.end);
+  const next = state.multiRanges.map(r => {
+    if (event.shiftKey) {
+      return { start: r.start, end: moveCaretOffset(value, lines, r.end, event.key, dir) };
+    }
+    if (hasSelection && horizontal) {
+      const at = dir > 0 ? r.end : r.start; // collapse selection to its edge
+      return { start: at, end: at };
+    }
+    const at = moveCaretOffset(value, lines, dir > 0 ? r.end : r.start, event.key, dir);
+    return { start: at, end: at };
+  });
+  next.sort((a, b) => a.start - b.start || a.end - b.end);
+  state.multiRanges = next.filter((r, i) =>
+    i === 0 || r.start !== next[i - 1].start || r.end !== next[i - 1].end);
+  const primary = dir > 0 ? state.multiRanges[state.multiRanges.length - 1] : state.multiRanges[0];
+  input.setSelectionRange(primary.start, primary.end);
+  state.multiGoalCol = offsetLineCol(value, primary.end).col;
+  scrollEditorToCursor("auto");
+  renderMultiCursors();
+}
+
 // Cmd+D: seed from the current selection/word, or add the next occurrence of the
 // seeded word as another cursor.
 function multiCursorAddNext() {
@@ -1322,6 +1366,13 @@ function onEditorKeyDown(event) {
     return;
   }
   if (event.metaKey && event.key.toLowerCase() === "z") return; // global undo/redo
+  // Plain/Shift arrows adjust every cursor instead of dropping the extras.
+  if (event.key.startsWith("Arrow") && state.multiRanges.length >= 2
+      && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    event.preventDefault();
+    moveMultiCursors(event);
+    return;
+  }
   if (event.metaKey || event.ctrlKey || event.altKey
       || event.key.startsWith("Arrow") || ["Home", "End", "PageUp", "PageDown"].includes(event.key)) {
     clearMultiCursors();
