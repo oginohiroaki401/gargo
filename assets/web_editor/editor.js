@@ -25,7 +25,7 @@ const commitAmend = document.getElementById("commit-amend");
 const commitSubmit = document.getElementById("commit-submit");
 const commitCancel = document.getElementById("commit-cancel");
 
-const COMPONENTS = ["explorer", "history", "compare", "status"];
+const COMPONENTS = ["explorer", "history", "compare", "status", "search"];
 const state = {
   component: "explorer",
   connected: true,
@@ -74,10 +74,12 @@ const state = {
   treePreviewToken: 0,
   help: false,
   searchToken: 0,
-  lastSearchQuery: null,
-  searchHits: [],
+  searchHits: [],          // flat, path-sorted match hits from /api/search
+  searchRows: [],          // visible rows (file headers + hits), honoring collapse
   searchQuery: "",
-  searchCollapsed: new Set(),
+  searchSelected: 0,       // index into searchRows (selected row in the Search tab)
+  searchCollapsed: new Set(), // collapsed file paths
+  searchTruncated: false,
   repoInfo: null,
   quickFiles: [],
   quickCommands: [],
@@ -102,10 +104,10 @@ const state = {
 const HELP_SECTIONS = [
   {
     title: "Global", keys: [
-      ["g e / g h / g c / g s", "Explorer / History / Compare / Status"],
+      ["g e / g h / g c / g s / g f", "Explorer / History / Compare / Status / Search"],
       ["⌘P / ⌘⇧P", "File picker / Command picker"],
       ["⌘@", "Symbol picker"],
-      ["⌘⇧F", "Global search"],
+      ["⌘⇧F", "Global search (Search tab)"],
       ["⌘S", "Save current file"],
       ["r", "Refresh component"],
       ["?", "Toggle this help"],
@@ -154,6 +156,19 @@ const HELP_SECTIONS = [
     ],
   },
   {
+    title: "Search", keys: [
+      ["⌘⇧F / g f", "Open the Search tab / focus the query box"],
+      ["type", "Query (≥ 3 chars), live results"],
+      ["Enter (in box)", "Move focus to the results list"],
+      ["j / k", "Prev / next row (k at top → query box)"],
+      ["h / l (← / →)", "Collapse / expand the file group"],
+      ["J / K · Ctrl-f/b · Ctrl-d/u", "Scroll preview"],
+      ["o / Enter", "Open file at the matched line"],
+      ["e", "Open file in a new browser tab"],
+      ["O", "Open menu: GitHub · copy path · copy content"],
+    ],
+  },
+  {
     title: "File tree", keys: [
       ["j / k", "Move"],
       ["h / l", "Collapse / expand"],
@@ -170,10 +185,11 @@ const COMMANDS = [
   { label: "Switch to History", hint: "g h", run: () => switchComponent("history") },
   { label: "Switch to Compare", hint: "g c", run: () => switchComponent("compare") },
   { label: "Switch to Status", hint: "g s", run: () => switchComponent("status") },
+  { label: "Switch to Search", hint: "g f", run: () => switchComponent("search") },
   { label: "Open file tree", hint: "t", run: () => openTreePicker() },
   { label: "Save current file", hint: "Cmd+S", run: () => saveCurrentFile() },
   { label: "Refresh current component", hint: "r", run: () => refreshComponent() },
-  { label: "Search project", hint: "Cmd+Shift+F", run: () => openSearchPopup() },
+  { label: "Search project", hint: "Cmd+Shift+F", run: () => switchComponent("search") },
   { label: "Show keybindings", hint: "?", run: () => toggleHelp() },
 ];
 
@@ -335,9 +351,11 @@ async function switchComponent(component) {
   if (component === "history") await renderHistory();
   if (component === "compare") await renderCompare();
   if (component === "status") await renderStatus();
+  if (component === "search") await renderSearch();
   setFocus(component === "explorer" ? "app" : "pane", 0);
   if (component === "status") startStatusPolling();
   if (component === "history") startHistoryPolling();
+  if (component === "search") focusSearchInput();
 }
 
 function componentBar(title, hint) {
@@ -1828,7 +1846,7 @@ function scrollPreview(direction, amount = 0.7) {
 // where there is no list to move through so j/k should scroll the preview.
 function isPreviewPaneFocused() {
   if (state.focusLevel !== "pane") return false;
-  if (!["compare", "status", "history"].includes(state.component)) return false;
+  if (!["compare", "status", "history", "search"].includes(state.component)) return false;
   const count = app.querySelectorAll(".pane").length;
   return count > 0 && state.pane === count - 1;
 }
@@ -2088,6 +2106,7 @@ async function refreshHistoryIfChanged() {
 async function loadCurrentDiffPreview() {
   const surface = document.getElementById("diff-surface");
   if (!surface) return;
+  if (state.component === "search") { await loadSearchPreview(surface); return; }
   let file, url;
   if (state.component === "history") {
     file = state.historyData?.files?.[state.historyFile];
@@ -2151,6 +2170,8 @@ async function moveSelectionTo(index) {
     pane0?.querySelector("li.selected")?.classList.remove("selected");
     pane0?.querySelector(`li[data-index="${state.statusFile}"]`)?.classList.add("selected");
     await loadCurrentDiffPreview();
+  } else if (state.component === "search" && state.pane === 0) {
+    await selectSearchRow(index);
   }
 }
 
@@ -2159,6 +2180,7 @@ function currentSelection() {
   if (state.component === "history" && state.pane === 1) return [state.historyFile, state.historyData?.files?.length || 0];
   if (state.component === "compare" && state.pane === 0) return [state.compareFile, state.compareFiles.length];
   if (state.component === "status" && state.pane === 0) return [state.statusFile, state.statusFiles.length];
+  if (state.component === "search" && state.pane === 0) return [state.searchSelected, state.searchRows.length];
   return [0, 0];
 }
 
@@ -2378,6 +2400,7 @@ async function openSelectedDiffFileInEditor() {
 function openMenuTarget() {
   if (state.component === "status" && state.pane === 0) return state.statusFiles[state.statusFile]?.path || "";
   if (state.component === "compare" && state.pane === 0) return state.compareFiles[state.compareFile]?.path || "";
+  if (state.component === "search") return searchRowTarget(state.searchRows[state.searchSelected])?.path || "";
   if (state.component === "explorer") return state.currentFile || "";
   return "";
 }
@@ -2574,11 +2597,6 @@ function movePopupSelection(delta) {
 
 function filterPopup() {
   const raw = popupInput.value;
-  if (state.popup === "search") {
-    if (raw.trim() === state.lastSearchQuery) renderPopupList();
-    else scheduleSearch();
-    return;
-  }
   let query = raw.trim();
   if (state.popup === "tree") {
     state.popupItems = treePopupItems(query);
@@ -2797,11 +2815,59 @@ async function updateTreePreview() {
   }
 }
 
-// Project-wide text search (Cmd+Shift+F). Backed by /api/search, which is a
-// case-insensitive literal substring search with a 3-character minimum.
-function openSearchPopup() {
-  state.lastSearchQuery = null;
-  showPopup("search", "Search project", [], "Search across files");
+// Project-wide text search (⌘⇧F) as a dedicated tab, styled like Compare: the
+// left pane is a typed query + per-file list of matched lines, the right pane
+// previews the selected match's file with the matched line highlighted. Backed by
+// /api/search (case-insensitive literal substring, 3-character minimum).
+async function renderSearch() {
+  await renderDiffView({
+    kind: "search",
+    title: "Search",
+    hint: `<span>Project-wide · <span class="key">j/k</span> rows · <span class="key">h/l</span> collapse/expand · <span class="key">J/K</span> preview · <span class="key">o</span> open · <span class="key">e</span> new tab · <span class="key">O</span> menu</span>`,
+    panes: [
+      {
+        title: "Matches", name: "matches",
+        body: `<div class="search-form">
+          <input id="search-input" type="text" placeholder="Search project…" autocomplete="off"
+            autocorrect="off" autocapitalize="off" spellcheck="false" value="${escapeHtml(state.searchQuery)}">
+        </div>
+        <div id="search-results">${searchResultsHtml()}</div>`,
+      },
+      { title: "Preview", name: "preview", body: diffSurfaceHtml() },
+    ],
+    bind: () => {
+      const input = document.getElementById("search-input");
+      input.addEventListener("input", scheduleSearch);
+      input.addEventListener("keydown", onSearchInputKey);
+    },
+  });
+}
+
+// Focus (and select-to-end) the query box: the tab opens ready to type, and a
+// second ⌘⇧F while already on the tab just refocuses it.
+function focusSearchInput() {
+  const input = document.getElementById("search-input");
+  if (!input) return;
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
+// While the query box owns focus: arrows move the selection (and preview), Enter
+// hands focus to the results list so the vim keys (j/k/J/K/o/e/O/h/l) take over,
+// and Esc does the same. `stopPropagation` keeps the global handler out.
+function onSearchInputKey(event) {
+  if (event.key === "ArrowDown" || (event.ctrlKey && event.key === "n")) {
+    event.preventDefault(); event.stopPropagation();
+    moveSearchSelection(1);
+  } else if (event.key === "ArrowUp" || (event.ctrlKey && event.key === "p")) {
+    event.preventDefault(); event.stopPropagation();
+    moveSearchSelection(-1);
+  } else if (event.key === "Enter" || event.key === "Escape") {
+    event.preventDefault(); event.stopPropagation();
+    event.target.blur();
+    setFocus("pane", 0);
+    app.querySelector(".list li.selected")?.scrollIntoView({ block: "nearest" });
+  }
 }
 
 function scheduleSearch() {
@@ -2810,77 +2876,170 @@ function scheduleSearch() {
 }
 
 async function runGlobalSearch() {
-  const query = popupInput.value.trim();
+  const input = document.getElementById("search-input");
+  if (!input) return;
+  const query = input.value.trim();
   const token = ++state.searchToken;
-  state.lastSearchQuery = query;
+  state.searchQuery = query;
+  const results = document.getElementById("search-results");
   if (query.length < 3) {
-    state.popupFiltered = [];
-    popupList.innerHTML = `<li>${query ? "Type at least 3 characters…" : "Search across the project"}</li>`;
+    state.searchHits = [];
+    state.searchRows = [];
+    state.searchCollapsed = new Set();
+    state.searchSelected = 0;
+    if (results) results.innerHTML = `<div class="empty">${query ? "Type at least 3 characters…" : "Search across the project"}</div>`;
+    clearSearchPreview();
     return;
   }
-  popupList.innerHTML = `<li>Searching…</li>`;
+  if (results) results.innerHTML = `<div class="loading">Searching…</div>`;
   try {
     const data = await api(`/api/search?${new URLSearchParams({ q: query, max: "500" })}`);
-    if (token !== state.searchToken || state.popup !== "search") return;
+    if (token !== state.searchToken || state.component !== "search") return;
     state.searchHits = data.hits || [];
-    state.searchQuery = query;
     state.searchCollapsed = new Set();
-    state.popupIndex = 0;
-    if (!state.searchHits.length) {
-      state.popupFiltered = [];
-      popupList.innerHTML = `<li>No matches</li>`;
-      popupTitle.textContent = "Search project · no matches";
-      return;
-    }
-    state.popupFiltered = buildSearchRows();
-    renderPopupList("No matches");
-    const files = new Set(state.searchHits.map(hit => hit.path)).size;
-    popupTitle.textContent =
-      `Search project · ${state.searchHits.length}${data.truncated ? "+" : ""} matches in ${files} file${files === 1 ? "" : "s"}`;
+    state.searchRows = buildSearchRows();
+    state.searchSelected = 0;
+    state.searchTruncated = Boolean(data.truncated);
+    renderSearchResults();
+    if (state.searchRows.length) await loadCurrentDiffPreview();
+    else clearSearchPreview();
   } catch (error) {
-    if (token !== state.searchToken || state.popup !== "search") return;
-    popupList.innerHTML = `<li>${escapeHtml(error.message)}</li>`;
+    if (token !== state.searchToken || state.component !== "search") return;
+    if (results) results.innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
   }
 }
 
-// Flatten the path-sorted hits into a collapsible per-file tree: one file header
-// row (chevron · path · count) followed by its match rows (line · excerpt).
-// Rows under a collapsed file are dropped so keyboard nav skips them.
+// Flatten the path-sorted hits into the visible rows: one file-header row per
+// path followed by its match rows, with a collapsed file's matches omitted so
+// keyboard nav skips them. `state.searchRows` is the single source of truth for
+// selection (its index is the row's `data-index`).
 function buildSearchRows() {
-  const counts = new Map();
-  for (const hit of state.searchHits) counts.set(hit.path, (counts.get(hit.path) || 0) + 1);
   const rows = [];
   let curPath = null;
-  for (const hit of state.searchHits) {
+  state.searchHits.forEach((hit, hitIndex) => {
     if (hit.path !== curPath) {
       curPath = hit.path;
-      const path = hit.path;
-      const collapsed = state.searchCollapsed.has(path);
-      rows.push({
-        kind: "file", path, cls: "gfile", keepOpen: true,
-        html: `<span class="gchevron">${collapsed ? "▸" : "▾"}</span>`
-          + `<span class="gfile-path">${escapeHtml(path)}</span>`
-          + `<span class="gcount">${counts.get(path)}</span>`,
-        run: () => toggleSearchFile(path),
-      });
+      rows.push({ kind: "file", path: hit.path });
     }
-    if (state.searchCollapsed.has(hit.path)) continue;
-    rows.push({
-      kind: "hit", cls: "ghit",
-      html: `<span class="gline">${hit.line + 1}</span>`
-        + `<span class="gtext">${highlightExcerpt(hit.excerpt, hit.col, state.searchQuery.length)}</span>`,
-      run: () => openFile(hit.path, hit.line, hit.col),
-    });
-  }
+    if (!state.searchCollapsed.has(hit.path)) rows.push({ kind: "hit", path: hit.path, hitIndex });
+  });
   return rows;
 }
 
-function toggleSearchFile(path) {
-  if (state.searchCollapsed.has(path)) state.searchCollapsed.delete(path);
-  else state.searchCollapsed.add(path);
-  state.popupFiltered = buildSearchRows();
-  state.popupIndex = Math.min(state.popupIndex, state.popupFiltered.length - 1);
-  renderPopupList("No matches");
+// The hit a row resolves to for preview / open: the hit itself, or a file
+// header's first match.
+function searchRowTarget(row) {
+  if (!row) return null;
+  if (row.kind === "hit") return state.searchHits[row.hitIndex];
+  return state.searchHits.find(hit => hit.path === row.path) || null;
+}
+
+function searchResultsHtml() {
+  if (!state.searchHits.length) {
+    return `<div class="empty">${state.searchQuery ? "No matches" : "Search across the project"}</div>`;
+  }
+  const counts = new Map();
+  for (const hit of state.searchHits) counts.set(hit.path, (counts.get(hit.path) || 0) + 1);
+  const rows = state.searchRows.map((row, index) => {
+    const sel = index === state.searchSelected ? " selected" : "";
+    if (row.kind === "file") {
+      const chevron = state.searchCollapsed.has(row.path) ? "▸" : "▾";
+      return `<li data-index="${index}" class="gfile${sel}"><span class="gchevron">${chevron}</span>`
+        + `<span class="gfile-path">${escapeHtml(row.path)}</span>`
+        + `<span class="gcount">${counts.get(row.path)}</span></li>`;
+    }
+    const hit = state.searchHits[row.hitIndex];
+    return `<li data-index="${index}" class="ghit${sel}"><span class="gline">${hit.line + 1}</span>`
+      + `<span class="gtext">${highlightExcerpt(hit.excerpt, hit.col, state.searchQuery.length)}</span></li>`;
+  });
+  return `<ol class="list">${rows.join("")}</ol>`;
+}
+
+function renderSearchResults() {
+  const results = document.getElementById("search-results");
+  if (!results) return;
+  results.innerHTML = searchResultsHtml();
+  bindListClicks();
+}
+
+function clearSearchPreview() {
+  const surface = document.getElementById("diff-surface");
+  if (surface) surface.innerHTML = `<div class="empty">No file selected</div>`;
+}
+
+// Move the selected row (wrapping), update the highlighted row and the preview.
+async function moveSearchSelection(delta) {
+  const length = state.searchRows.length;
+  if (!length) return;
+  await selectSearchRow((state.searchSelected + delta + length) % length);
+  app.querySelector(".list li.selected")?.scrollIntoView({ block: "nearest" });
+}
+
+// Re-select without rebuilding the list (it can be hundreds of rows): shift the
+// `selected` class and reload the preview for the new row.
+async function selectSearchRow(index) {
+  state.searchSelected = Math.max(0, Math.min(index, state.searchRows.length - 1));
+  const pane0 = app.querySelector('.pane[data-pane="0"]');
+  pane0?.querySelector("li.selected")?.classList.remove("selected");
+  pane0?.querySelector(`li[data-index="${state.searchSelected}"]`)?.classList.add("selected");
+  await loadCurrentDiffPreview();
+}
+
+// Collapse / expand the selected file group (h / ← collapse, l / → expand). On a
+// hit, collapsing folds its parent file and lands the selection on the header.
+async function setSearchCollapsed(path, collapsed) {
+  if (collapsed) state.searchCollapsed.add(path);
+  else state.searchCollapsed.delete(path);
+  state.searchRows = buildSearchRows();
+  const idx = state.searchRows.findIndex(row => row.kind === "file" && row.path === path);
+  state.searchSelected = idx < 0 ? 0 : idx;
+  renderSearchResults();
+  app.querySelector(".list li.selected")?.scrollIntoView({ block: "nearest" });
+  await loadCurrentDiffPreview();
+}
+
+async function searchCollapse() {
+  const row = state.searchRows[state.searchSelected];
+  if (row && !state.searchCollapsed.has(row.path)) await setSearchCollapsed(row.path, true);
+}
+
+async function searchExpand() {
+  const row = state.searchRows[state.searchSelected];
+  if (row && row.kind === "file" && state.searchCollapsed.has(row.path)) await setSearchCollapsed(row.path, false);
+}
+
+function openSearchHit() {
+  const hit = searchRowTarget(state.searchRows[state.searchSelected]);
+  if (hit) openFile(hit.path, hit.line, hit.col);
+}
+
+// Preview the selected row's file (full content, syntax-highlighted) with the
+// matched line highlighted and centred. Shares state.previewToken with the diff
+// previews so a slow earlier fetch can't clobber the row the user landed on.
+async function loadSearchPreview(surface) {
+  const hit = searchRowTarget(state.searchRows[state.searchSelected]);
+  if (!hit) { surface.innerHTML = `<div class="empty">No file selected</div>`; return; }
+  const token = ++state.previewToken;
+  try {
+    const data = await api(`/api/file?path=${encodeURIComponent(hit.path)}`);
+    if (token !== state.previewToken || state.component !== "search") return;
+    const body = await highlightedTextHtml(hit.path, data.content || "");
+    if (token !== state.previewToken || state.component !== "search") return;
+    // A normal-flow <pre> (not the absolute .highlight-layer) so the .code-surface
+    // actually overflows and J/K / Ctrl-f-b can scroll it.
+    surface.innerHTML = `<div class="code-surface">
+      <div class="code-toolbar"><span class="path">${escapeHtml(hit.path)}</span>
+        <span class="grow"></span><span>read only</span></div>
+      <div class="code-body"><pre class="search-preview">${body}</pre></div></div>`;
+    const lineEl = surface.querySelector(`.editor-line[data-line="${hit.line}"]`);
+    if (lineEl) {
+      lineEl.classList.add("search-match-line");
+      lineEl.scrollIntoView({ block: "center" });
+    }
+  } catch (error) {
+    if (token !== state.previewToken || state.component !== "search") return;
+    surface.innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
+  }
 }
 
 // Bold `qlen` characters of the excerpt from the server-provided 0-based column.
@@ -2911,12 +3070,6 @@ popupInput.addEventListener("keydown", event => {
   } else if (event.key === "ArrowUp" || (event.ctrlKey && event.key === "p")) {
     event.preventDefault();
     movePopupSelection(-1);
-  } else if (state.popup === "search" && (event.key === "ArrowRight" || event.key === "ArrowLeft")) {
-    const item = state.popupFiltered[state.popupIndex];
-    if (item?.kind === "file" && (event.key === "ArrowRight") === state.searchCollapsed.has(item.path)) {
-      event.preventDefault();
-      toggleSearchFile(item.path);
-    }
   } else if (event.key === "Enter" && state.popup === "tree" && (event.altKey || event.metaKey)) {
     event.preventDefault();
     openTreeSelectionInNewTab();
@@ -3043,7 +3196,8 @@ window.addEventListener("keydown", async event => {
 
   if (event.metaKey && event.shiftKey && event.key.toLowerCase() === "f") {
     event.preventDefault();
-    openSearchPopup();
+    if (state.component === "search") focusSearchInput();
+    else switchComponent("search");
     return;
   }
   // Cmd+F: in-file find; Cmd+Alt+F: find & replace. Only over the editable editor;
@@ -3147,7 +3301,7 @@ window.addEventListener("keydown", async event => {
       gotoEditorEdge("top");
       return;
     }
-    const target = ({ e: "explorer", h: "history", c: "compare", s: "status" })[event.key];
+    const target = ({ e: "explorer", h: "history", c: "compare", s: "status", f: "search" })[event.key];
     if (target) { event.preventDefault(); await switchComponent(target); }
     return;
   }
@@ -3193,6 +3347,39 @@ window.addEventListener("keydown", async event => {
     event.preventDefault();
     scrollPreview(-1, 0.25);
     return;
+  }
+  if (state.component === "search") {
+    if (event.shiftKey && (event.key === "J" || event.key === "K")) {
+      event.preventDefault();
+      scrollPreview(event.key === "J" ? 1 : -1, 0.25);
+      return;
+    }
+    if (event.ctrlKey && (event.key === "f" || event.key === "b")) {
+      event.preventDefault();
+      scrollPreview(event.key === "f" ? 1 : -1, 0.9);
+      return;
+    }
+    if (state.pane === 0) {
+      const up = event.key === "ArrowUp" || (event.ctrlKey && event.key === "p");
+      const down = event.key === "ArrowDown" || (event.ctrlKey && event.key === "n");
+      // Up off the top row of the list (k / ↑ / Ctrl-p) jumps back to the query box.
+      if ((event.key === "k" || up) && state.searchSelected === 0) {
+        event.preventDefault();
+        focusSearchInput();
+        return;
+      }
+      if (up) { event.preventDefault(); await moveSelection(-1); return; }
+      if (down) { event.preventDefault(); await moveSelection(1); return; }
+      if (event.key === "h" || event.key === "ArrowLeft") { event.preventDefault(); await searchCollapse(); return; }
+      if (event.key === "l" || event.key === "ArrowRight") { event.preventDefault(); await searchExpand(); return; }
+      if (event.key === "o" || event.key === "Enter") { event.preventDefault(); openSearchHit(); return; }
+      if (event.key === "e") {
+        event.preventDefault();
+        const hit = searchRowTarget(state.searchRows[state.searchSelected]);
+        if (hit) openFileInNewTab(hit.path);
+        return;
+      }
+    }
   }
   if (state.component === "history" && event.shiftKey && event.key === "J") {
     event.preventDefault();
