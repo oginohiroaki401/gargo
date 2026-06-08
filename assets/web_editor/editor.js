@@ -359,7 +359,7 @@ async function ensureFiles() {
   if (state.files.length) return;
   const data = await api("/api/files");
   state.files = data.files || [];
-  state.fileEntries = data.entries || state.files.map(path => ({ path, mtime: 0, changed: false }));
+  state.fileEntries = data.entries || state.files.map(path => ({ path, mtime: 0, opened: 0, changed: false }));
 }
 
 async function renderExplorer() {
@@ -2493,9 +2493,12 @@ async function choosePopup(index = state.popupIndex) {
 // (⌘P / ⌘⇧P / ⌘@) land directly in the right mode.
 async function openQuickPicker(initial = "") {
   await ensureFiles();
+  // Empty-query order: changed files first, then by recency — the more recent of
+  // the file's mtime and the last time it was opened in gargo (CLI or web editor).
+  const recency = entry => Math.max(Number(entry.mtime || 0), Number(entry.opened || 0));
   const entries = [...state.fileEntries].sort((a, b) =>
     Number(b.changed) - Number(a.changed)
-    || Number(b.mtime || 0) - Number(a.mtime || 0)
+    || recency(b) - recency(a)
     || a.path.localeCompare(b.path)
   );
   state.quickFiles = entries.map(entry => ({

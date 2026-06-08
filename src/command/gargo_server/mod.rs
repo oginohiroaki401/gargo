@@ -377,8 +377,9 @@ fn bridge_preview_events(
     tx
 }
 
-/// One `/api/files` entry: `(path, mtime_ms, changed)`.
-pub(crate) type FileEntry = (String, u64, bool);
+/// One `/api/files` entry: `(path, mtime_ms, changed, opened_ms)`. `opened_ms` is
+/// the last time the file was opened in gargo (CLI or web editor), 0 if never.
+pub(crate) type FileEntry = (String, u64, bool, u64);
 
 /// A cached `/api/files` listing: `(generation, cached_at, files, entries)`,
 /// reused while the generation matches and the entry is within the TTL.
