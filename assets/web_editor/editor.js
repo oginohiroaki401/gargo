@@ -1924,7 +1924,9 @@ async function openRefPicker(which) {
       ? `${escapeHtml(tip.hash || "")}${tip.message ? ` · ${escapeHtml(String(tip.message).split("\n")[0])}` : ""}${tip.time ? ` · ${escapeHtml(relativeTime(tip.time))}` : ""}`
       : "";
     return {
-      label: ref, search: ref, cls: "ref-row",
+      // The current side's ref is also searchable by the word "current" so
+      // typing "current" + Enter re-picks it (matches the inline badge below).
+      label: ref, search: ref === current ? `${ref} current` : ref, cls: "ref-row",
       run: () => applyRef(which, ref),
       html: `<div class="stack"><div class="primary">${escapeHtml(ref)}${ref === current ? ` <span class="hint">current</span>` : ""}</div>`
         + (meta ? `<span class="secondary">${meta}</span>` : "") + `</div>`,
@@ -1932,6 +1934,13 @@ async function openRefPicker(which) {
   });
   showPopup("ref", which === "base" ? "Select base ref" : "Select compare ref",
     items, "Filter branches, tags, refs…");
+  // Default the input to the side's existing ref (selected, so typing replaces
+  // it) — Enter without edits keeps the old value, matching the picker's intent.
+  if (current) {
+    popupInput.value = current;
+    popupInput.select();
+    filterPopup();
+  }
 }
 
 async function applyRef(which, ref) {
@@ -2637,7 +2646,7 @@ function filterPopup() {
     : state.popupItems.slice(0, 300);
   // Ref picker: a query that doesn't exactly name a known ref still resolves —
   // offer it verbatim so arbitrary commit/tag refs can be entered.
-  if (state.popup === "ref" && query
+  if (state.popup === "ref" && query && query.toLowerCase() !== "current"
       && !state.popupFiltered.some(item => item.label === query)) {
     const which = state.refPickerWhich;
     state.popupFiltered.unshift({
@@ -3283,6 +3292,16 @@ popupInput.addEventListener("keydown", event => {
   } else if (event.key === "ArrowUp" || (event.ctrlKey && event.key === "p")) {
     event.preventDefault();
     movePopupSelection(-1);
+  } else if (event.key === "Tab" && state.popup === "ref") {
+    // Tab completes the input to the highlighted ref so it can be edited or
+    // confirmed, rather than moving focus out of the picker.
+    event.preventDefault();
+    const item = state.popupFiltered[state.popupIndex];
+    if (item) {
+      popupInput.value = item.label;
+      filterPopup();
+      popupInput.setSelectionRange(popupInput.value.length, popupInput.value.length);
+    }
   } else if (event.key === "Enter" && state.popup === "tree" && (event.altKey || event.metaKey)) {
     event.preventDefault();
     openTreeSelectionInNewTab();
