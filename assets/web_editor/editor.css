@@ -51,7 +51,9 @@ button { color: inherit; }
 #header > span { color: var(--line); }
 #repo-link { color: var(--accent); text-decoration: none; white-space: nowrap; }
 #repo-link[href]:hover { text-decoration: underline; }
-#repo-link[hidden], #repo-sep[hidden] { display: none; }
+#header #repo-branch { color: #687481; white-space: nowrap; cursor: pointer; }
+#header #repo-branch:hover { color: var(--text); }
+#repo-link[hidden], #repo-sep[hidden], #repo-branch[hidden] { display: none; }
 #app-version { margin-left: auto; font-size: 11px; white-space: nowrap; }
 #version-text { color: #687481; }
 #version-update {

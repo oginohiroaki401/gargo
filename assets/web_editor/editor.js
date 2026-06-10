@@ -15,6 +15,11 @@ const connBanner = document.getElementById("conn-banner");
 const helpBackdrop = document.getElementById("help-backdrop");
 const helpBody = document.getElementById("help-body");
 const repoLink = document.getElementById("repo-link");
+const repoBranch = document.getElementById("repo-branch");
+repoBranch.addEventListener("click", () => {
+  const branch = state.repoInfo && state.repoInfo.branch;
+  if (branch) copyText(branch);
+});
 const repoSep = document.getElementById("repo-sep");
 const commitBackdrop = document.getElementById("commit-backdrop");
 const commitBranch = document.getElementById("commit-branch");
@@ -284,9 +289,18 @@ async function checkForUpdate() {
 
 function renderRepoLink() {
   const info = state.repoInfo;
+  // Current branch sits next to the repo name; shown whenever we know it,
+  // independent of whether owner/repo (the remote link) is available.
+  if (info && info.branch) {
+    repoBranch.textContent = `⎇ ${info.branch}`;
+    repoBranch.hidden = false;
+  } else {
+    repoBranch.hidden = true;
+  }
   if (!info || (!info.owner && !info.repo)) {
     repoLink.hidden = true;
-    repoSep.hidden = true;
+    // Keep the divider before the tabs when only the branch is shown.
+    repoSep.hidden = repoBranch.hidden;
     return;
   }
   repoLink.textContent = `${info.owner}/${info.repo}`;
@@ -582,13 +596,25 @@ async function navigateEditorLink(href) {
   if (isExternalLink(href)) { window.open(href, "_blank", "noopener"); return; }
   let clean = href.split("#")[0].split("?")[0];
   try { clean = decodeURIComponent(clean); } catch (_) { /* keep raw */ }
-  const target = resolveRelativePath(state.currentFile, clean);
-  if (!target) return;
-  try {
-    await openFile(target);
-  } catch (error) {
-    notify(`Can't open ${target}: ${error.message}`);
+  // Try resolving the link from the repo root first; if no such file exists,
+  // fall back to the legacy current-file-relative resolution. (openFile throws
+  // before mutating state when the file is missing, so a failed attempt is safe.)
+  const rootTarget = resolveRelativePath("", clean);
+  const relTarget = resolveRelativePath(state.currentFile, clean);
+  const candidates = [];
+  if (rootTarget) candidates.push(rootTarget);
+  if (relTarget && relTarget !== rootTarget) candidates.push(relTarget);
+  if (!candidates.length) return;
+  let lastError;
+  for (const target of candidates) {
+    try {
+      await openFile(target);
+      return;
+    } catch (error) {
+      lastError = error;
+    }
   }
+  notify(`Can't open ${candidates[candidates.length - 1]}: ${lastError.message}`);
 }
 
 async function saveCurrentFile() {
@@ -1925,7 +1951,9 @@ async function openRefPicker(which) {
       ? `${escapeHtml(tip.hash || "")}${tip.message ? ` · ${escapeHtml(String(tip.message).split("\n")[0])}` : ""}${tip.time ? ` · ${escapeHtml(relativeTime(tip.time))}` : ""}`
       : "";
     return {
-      label: ref, search: ref, cls: "ref-row",
+      // The current side's ref is also searchable by the word "current" so
+      // typing "current" + Enter re-picks it (matches the inline badge below).
+      label: ref, search: ref === current ? `${ref} current` : ref, cls: "ref-row",
       run: () => applyRef(which, ref),
       html: `<div class="stack"><div class="primary">${escapeHtml(ref)}${ref === current ? ` <span class="hint">current</span>` : ""}</div>`
         + (meta ? `<span class="secondary">${meta}</span>` : "") + `</div>`,
@@ -1933,6 +1961,13 @@ async function openRefPicker(which) {
   });
   showPopup("ref", which === "base" ? "Select base ref" : "Select compare ref",
     items, "Filter branches, tags, refs…");
+  // Default the input to the side's existing ref (selected, so typing replaces
+  // it) — Enter without edits keeps the old value, matching the picker's intent.
+  if (current) {
+    popupInput.value = current;
+    popupInput.select();
+    filterPopup();
+  }
 }
 
 async function applyRef(which, ref) {
@@ -2286,6 +2321,9 @@ async function moveSelectionTo(index) {
   } else if (state.component === "compare" && state.pane === 0) {
     state.compareFile = Math.max(0, Math.min(index, state.compareFiles.length - 1));
     await renderCompare();
+    // renderCompare() rebuilds the pane, resetting scrollTop — keep the newly
+    // selected file row visible (e.g. when clicked while scrolled down).
+    app.querySelector('.pane[data-pane="0"] .list li.selected')?.scrollIntoView({ block: "nearest" });
   } else if (state.component === "status" && state.pane === 0) {
     // j/k between files: the file set is already in state (and a 1.5s poller
     // keeps it fresh), so don't re-fetch /api/status or rebuild the whole view.
@@ -2750,7 +2788,7 @@ function filterPopup() {
     : state.popupItems.slice(0, 300);
   // Ref picker: a query that doesn't exactly name a known ref still resolves —
   // offer it verbatim so arbitrary commit/tag refs can be entered.
-  if (state.popup === "ref" && query
+  if (state.popup === "ref" && query && query.toLowerCase() !== "current"
       && !state.popupFiltered.some(item => item.label === query)) {
     const which = state.refPickerWhich;
     state.popupFiltered.unshift({
@@ -3396,6 +3434,16 @@ popupInput.addEventListener("keydown", event => {
   } else if (event.key === "ArrowUp" || (event.ctrlKey && event.key === "p")) {
     event.preventDefault();
     movePopupSelection(-1);
+  } else if (event.key === "Tab" && state.popup === "ref") {
+    // Tab completes the input to the highlighted ref so it can be edited or
+    // confirmed, rather than moving focus out of the picker.
+    event.preventDefault();
+    const item = state.popupFiltered[state.popupIndex];
+    if (item) {
+      popupInput.value = item.label;
+      filterPopup();
+      popupInput.setSelectionRange(popupInput.value.length, popupInput.value.length);
+    }
   } else if (event.key === "Enter" && state.popup === "tree" && (event.altKey || event.metaKey)) {
     event.preventDefault();
     openTreeSelectionInNewTab();
