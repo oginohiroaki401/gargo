@@ -15,6 +15,11 @@ const connBanner = document.getElementById("conn-banner");
 const helpBackdrop = document.getElementById("help-backdrop");
 const helpBody = document.getElementById("help-body");
 const repoLink = document.getElementById("repo-link");
+const repoBranch = document.getElementById("repo-branch");
+repoBranch.addEventListener("click", () => {
+  const branch = state.repoInfo && state.repoInfo.branch;
+  if (branch) copyText(branch);
+});
 const repoSep = document.getElementById("repo-sep");
 const commitBackdrop = document.getElementById("commit-backdrop");
 const commitBranch = document.getElementById("commit-branch");
@@ -283,9 +288,18 @@ async function checkForUpdate() {
 
 function renderRepoLink() {
   const info = state.repoInfo;
+  // Current branch sits next to the repo name; shown whenever we know it,
+  // independent of whether owner/repo (the remote link) is available.
+  if (info && info.branch) {
+    repoBranch.textContent = `⎇ ${info.branch}`;
+    repoBranch.hidden = false;
+  } else {
+    repoBranch.hidden = true;
+  }
   if (!info || (!info.owner && !info.repo)) {
     repoLink.hidden = true;
-    repoSep.hidden = true;
+    // Keep the divider before the tabs when only the branch is shown.
+    repoSep.hidden = repoBranch.hidden;
     return;
   }
   repoLink.textContent = `${info.owner}/${info.repo}`;
@@ -2194,6 +2208,9 @@ async function moveSelectionTo(index) {
   } else if (state.component === "compare" && state.pane === 0) {
     state.compareFile = Math.max(0, Math.min(index, state.compareFiles.length - 1));
     await renderCompare();
+    // renderCompare() rebuilds the pane, resetting scrollTop — keep the newly
+    // selected file row visible (e.g. when clicked while scrolled down).
+    app.querySelector('.pane[data-pane="0"] .list li.selected')?.scrollIntoView({ block: "nearest" });
   } else if (state.component === "status" && state.pane === 0) {
     // j/k between files: the file set is already in state (and a 1.5s poller
     // keeps it fresh), so don't re-fetch /api/status or rebuild the whole view.
