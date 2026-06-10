@@ -723,20 +723,27 @@ body.col-resizing iframe { pointer-events: none; }
 }
 .ai-chat-btn:hover { border-color: var(--accent); }
 
-/* AI chat modal (Ask AI about the compare diff). */
+/* AI chat panel (Ask AI about the compare diff). Modeless: the wrapper lets
+   pointer events fall through so the diff underneath stays selectable/copyable;
+   only the panel itself is interactive. Anchored to the bottom-right corner. */
 #chat-backdrop {
   position: fixed;
   inset: 0;
   z-index: 150;
-  display: grid;
-  place-items: start center;
-  padding-top: min(8vh, 72px);
-  background: color-mix(in srgb, var(--bg) 58%, transparent);
+  pointer-events: none;
 }
 #chat-backdrop[hidden] { display: none; }
 #chat-dialog {
-  width: min(680px, calc(100vw - 32px));
-  max-height: min(760px, 84vh);
+  pointer-events: auto;
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  width: min(440px, calc(100vw - 32px));
+  height: min(560px, 76vh);
+  min-width: 280px;
+  min-height: 220px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 32px);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -745,6 +752,20 @@ body.col-resizing iframe { pointer-events: none; }
   background: var(--panel);
   box-shadow: 0 18px 60px rgba(0,0,0,.5);
   outline: none;
+}
+/* Resize grip: the panel is pinned to the bottom-right corner, so grow it by
+   dragging from the top-left (handled in JS). */
+#chat-resize {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  z-index: 3;
+  background:
+    linear-gradient(135deg, transparent 0 6px, var(--line-strong) 6px 7px, transparent 7px 9px,
+      var(--line-strong) 9px 10px, transparent 10px);
 }
 #chat-title {
   display: flex;

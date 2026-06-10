@@ -68,8 +68,8 @@ const state = {
   // server reports the feature is off so we stop asking.
   aiSummary: {},
   aiDisabled: false,
-  // AI chat modal: a conversation grounded in the current compare diff.
-  chat: { open: false, busy: false, messages: [], base: "", compare: "" },
+  // AI chat panel: a conversation grounded in the current compare diff.
+  chat: { open: false, busy: false, messages: [], base: "", compare: "", size: null },
   statusFiles: [],
   statusFile: 0,
   statusBranch: "",
@@ -2015,7 +2015,7 @@ async function loadAiSummary() {
   }
 }
 
-// ---- AI chat modal (grounded in the current compare diff) ------------------
+// ---- AI chat panel (modeless, grounded in the current compare diff) --------
 
 function chatContextLabel() {
   return `${state.compareBase || "—"} … ${state.compareTarget || "—"}`;
@@ -2035,6 +2035,7 @@ function openChat() {
   }
   state.chat.open = true;
   state.chat.busy = false;
+  applyChatSize();
   document.getElementById("chat-context").textContent = chatContextLabel();
   renderChatMessages();
   document.getElementById("chat-backdrop").hidden = false;
@@ -2109,9 +2110,44 @@ async function sendChat() {
 
 document.getElementById("chat-send")?.addEventListener("click", () => sendChat());
 document.getElementById("chat-close")?.addEventListener("click", () => closeChat());
-document.getElementById("chat-backdrop")?.addEventListener("click", event => {
-  if (event.target.id === "chat-backdrop") closeChat();
-});
+
+// Re-apply the user's last dragged size (kept for the session) when reopening.
+function applyChatSize() {
+  const dialog = document.getElementById("chat-dialog");
+  if (!dialog || !state.chat.size) return;
+  dialog.style.width = `${state.chat.size.w}px`;
+  dialog.style.height = `${state.chat.size.h}px`;
+}
+
+// Resize via the top-left grip. The panel is anchored bottom-right, so moving
+// the pointer up/left enlarges it; the CSS min/max keep it on-screen.
+(function wireChatResize() {
+  const handle = document.getElementById("chat-resize");
+  if (!handle) return;
+  let drag = null;
+  handle.addEventListener("pointerdown", event => {
+    event.preventDefault();
+    const rect = document.getElementById("chat-dialog").getBoundingClientRect();
+    drag = { x: event.clientX, y: event.clientY, w: rect.width, h: rect.height };
+    handle.setPointerCapture(event.pointerId);
+  });
+  handle.addEventListener("pointermove", event => {
+    if (!drag) return;
+    const w = Math.max(280, Math.min(window.innerWidth - 32, drag.w - (event.clientX - drag.x)));
+    const h = Math.max(220, Math.min(window.innerHeight - 32, drag.h - (event.clientY - drag.y)));
+    const dialog = document.getElementById("chat-dialog");
+    dialog.style.width = `${w}px`;
+    dialog.style.height = `${h}px`;
+    state.chat.size = { w, h };
+  });
+  const end = event => {
+    if (!drag) return;
+    drag = null;
+    handle.releasePointerCapture?.(event.pointerId);
+  };
+  handle.addEventListener("pointerup", end);
+  handle.addEventListener("pointercancel", end);
+})();
 
 // Fuzzy picker for the Compare base/compare refs (replaces the raw text inputs).
 // Lists known branches/tags/refs; a non-matching query offers a "use verbatim"
@@ -3773,13 +3809,21 @@ window.addEventListener("keydown", async event => {
   // Cmd+F / Cmd+Alt+F are handled there); don't let the global shortcuts fire.
   if (event.target.closest?.("#find")) return;
 
-  // Chat modal owns every key while open: Enter sends (Shift+Enter newline),
-  // Esc closes; every other key falls through to the textarea so it types.
-  if (state.chat && state.chat.open) {
+  // Chat panel is modeless: it only owns keys while focus is inside the panel
+  // (Enter sends, Shift+Enter newlines, Esc closes). When focus is elsewhere the
+  // panel stays open but every shortcut falls through to the editor underneath,
+  // so the diff can be selected/copied while the conversation is up.
+  if (state.chat && state.chat.open && event.target.closest?.("#chat-dialog")) {
     if (event.key === "Escape") {
       event.preventDefault();
       closeChat();
-    } else if (event.key === "Enter" && !event.shiftKey && event.target.id === "chat-input") {
+    } else if (
+      event.key === "Enter" && !event.shiftKey && event.target.id === "chat-input"
+      // Ignore the Enter that confirms an IME conversion candidate (Google IME
+      // etc.): during composition the event carries isComposing / keyCode 229.
+      // Only a "real" Enter — pressed after composition has ended — sends.
+      && !event.isComposing && event.keyCode !== 229
+    ) {
       event.preventDefault();
       sendChat();
     }

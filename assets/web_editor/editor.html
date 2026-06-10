@@ -74,7 +74,8 @@
     </div>
 
     <div id="chat-backdrop" hidden>
-      <section id="chat-dialog" role="dialog" aria-modal="true" aria-label="Ask AI about the diff" tabindex="-1">
+      <section id="chat-dialog" role="dialog" aria-label="Ask AI about the diff" tabindex="-1">
+        <div id="chat-resize" title="Drag to resize" aria-hidden="true"></div>
         <div id="chat-title">Ask AI<span class="grow"></span><span id="chat-context"></span></div>
         <div id="chat-messages"></div>
         <textarea id="chat-input" rows="2" placeholder="Ask about this diff…"
