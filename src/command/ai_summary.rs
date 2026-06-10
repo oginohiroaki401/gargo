@@ -21,10 +21,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, Result};
 
-/// Hard cap on diff size (bytes) sent to the model. Larger diffs are refused
-/// with a friendly message rather than silently truncated.
-pub const MAX_DIFF_BYTES: usize = 100_000;
-
 /// Non-secret AI settings threaded from `config.toml` to the server thread.
 ///
 /// `Clone`/`Debug` so it can ride inside [`crate::command::gargo_server`]'s
@@ -37,6 +33,8 @@ pub struct AiConfig {
     pub model: String,
     pub api_key_env: String,
     pub max_tokens: u32,
+    /// Largest diff (bytes) sent to the model; larger ones are refused.
+    pub max_diff_bytes: usize,
     /// Natural language for the generated summary (e.g. `English`, `Japanese`).
     pub language: String,
 }
@@ -49,6 +47,7 @@ impl Default for AiConfig {
             model: "gpt-4o-mini".to_string(),
             api_key_env: "OPENAI_API_KEY".to_string(),
             max_tokens: 2000,
+            max_diff_bytes: 250_000,
             language: "English".to_string(),
         }
     }
@@ -62,6 +61,7 @@ impl From<&crate::config::PluginGargoServerAiConfig> for AiConfig {
             model: c.model.clone(),
             api_key_env: c.api_key_env.clone(),
             max_tokens: c.max_tokens,
+            max_diff_bytes: c.max_diff_bytes,
             language: c.language.clone(),
         }
     }
@@ -87,36 +87,104 @@ branch names verbatim)."
     )
 }
 
-/// Call the configured provider to summarise `diff_text`.
-///
-/// Returns `Ok(markdown_summary)` or `Err(human_readable_message)`. Blocking;
-/// callers run it on the blocking pool.
-pub fn generate_summary(config: &AiConfig, diff_text: &str) -> std::result::Result<String, String> {
-    let api_key = std::env::var(&config.api_key_env).map_err(|_| {
+/// One turn of a chat conversation, as sent by the client.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+/// System prompt for the chat endpoint: the diff is the grounding context.
+fn chat_system_prompt(language: &str, diff_text: &str) -> String {
+    format!(
+        "You are a senior code reviewer helping a teammate review a pull request. \
+The unified git diff under review is given below. Answer the user's questions \
+about it accurately and concisely, grounding every answer in the diff; if \
+something is not shown in the diff, say so rather than guessing. Use Markdown, \
+and keep code identifiers, file paths, and branch names verbatim. Respond in \
+{language}.\n\n--- DIFF UNDER REVIEW ---\n{diff_text}"
+    )
+}
+
+fn read_api_key(config: &AiConfig) -> std::result::Result<String, String> {
+    std::env::var(&config.api_key_env).map_err(|_| {
         format!(
             "{} is not set. Run `export {}=sk-...` in the shell that launches gargo.",
             config.api_key_env, config.api_key_env
         )
-    })?;
+    })
+}
 
+/// Summarise `diff_text` via the configured provider.
+///
+/// Returns `Ok(markdown_summary)` or `Err(human_readable_message)`. Blocking;
+/// callers run it on the blocking pool.
+pub fn generate_summary(config: &AiConfig, diff_text: &str) -> std::result::Result<String, String> {
+    let api_key = read_api_key(config)?;
     match config.provider.as_str() {
-        "openai" => generate_openai(&api_key, config, diff_text),
+        "openai" => {
+            let messages = serde_json::json!([
+                { "role": "system", "content": system_prompt(&config.language) },
+                { "role": "user", "content": diff_text },
+            ]);
+            call_openai(
+                &api_key,
+                config,
+                messages,
+                "OpenAI returned an empty summary",
+            )
+        }
         other => Err(format!("unsupported AI provider: {other}")),
     }
 }
 
-fn generate_openai(
-    api_key: &str,
+/// Answer a chat conversation grounded in `diff_text`.
+///
+/// `messages` is the client-side conversation (oldest first). The diff is
+/// injected as a leading system message. Blocking; run on the blocking pool.
+pub fn generate_chat(
     config: &AiConfig,
     diff_text: &str,
+    messages: &[ChatMessage],
+) -> std::result::Result<String, String> {
+    let api_key = read_api_key(config)?;
+    match config.provider.as_str() {
+        "openai" => {
+            let mut msgs = vec![serde_json::json!({
+                "role": "system",
+                "content": chat_system_prompt(&config.language, diff_text),
+            })];
+            for m in messages {
+                // Only forward known roles so a malformed client can't inject
+                // arbitrary message types.
+                let role = match m.role.as_str() {
+                    "user" | "assistant" => m.role.as_str(),
+                    _ => "user",
+                };
+                msgs.push(serde_json::json!({ "role": role, "content": m.content }));
+            }
+            call_openai(
+                &api_key,
+                config,
+                serde_json::Value::Array(msgs),
+                "OpenAI returned an empty reply",
+            )
+        }
+        other => Err(format!("unsupported AI provider: {other}")),
+    }
+}
+
+/// Low-level OpenAI Chat Completions call shared by summary and chat.
+fn call_openai(
+    api_key: &str,
+    config: &AiConfig,
+    messages: serde_json::Value,
+    empty_msg: &str,
 ) -> std::result::Result<String, String> {
     let body = serde_json::json!({
         "model": config.model,
         "max_tokens": config.max_tokens,
-        "messages": [
-            { "role": "system", "content": system_prompt(&config.language) },
-            { "role": "user", "content": diff_text },
-        ],
+        "messages": messages,
     });
 
     let response = ureq::post("https://api.openai.com/v1/chat/completions")
@@ -144,7 +212,7 @@ fn generate_openai(
         .as_str()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| "OpenAI returned an empty summary".to_string())
+        .ok_or_else(|| empty_msg.to_string())
 }
 
 /// SQLite-backed cache of generated summaries.

@@ -541,6 +541,10 @@ async fn run_server(
             "/api/ai/summary",
             get(diff_server::handle_api_ai_summary_request),
         )
+        .route(
+            "/api/ai/chat",
+            post(diff_server::handle_api_ai_chat_request),
+        )
         .route("/split", get(diff_server::handle_split_request))
         .with_state(diff_state);
 

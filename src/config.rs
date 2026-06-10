@@ -83,6 +83,10 @@ pub struct PluginGargoServerAiConfig {
     pub api_key_env: String,
     /// Upper bound on generated tokens for one summary.
     pub max_tokens: u32,
+    /// Largest diff (bytes) sent to the model. Diffs above this are refused
+    /// rather than silently truncated. Roughly 3–4 bytes per token, so the
+    /// default (~250 KB ≈ 70K tokens) stays well inside a 128K context window.
+    pub max_diff_bytes: usize,
     /// Natural language the summary is written in, e.g. `English`,
     /// `Japanese`/`日本語`. Passed verbatim into the prompt.
     pub language: String,
@@ -96,6 +100,7 @@ impl Default for PluginGargoServerAiConfig {
             model: "gpt-4o-mini".to_string(),
             api_key_env: "OPENAI_API_KEY".to_string(),
             max_tokens: 2000,
+            max_diff_bytes: 250_000,
             language: "English".to_string(),
         }
     }

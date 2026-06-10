@@ -73,6 +73,21 @@
       </section>
     </div>
 
+    <div id="chat-backdrop" hidden>
+      <section id="chat-dialog" role="dialog" aria-modal="true" aria-label="Ask AI about the diff" tabindex="-1">
+        <div id="chat-title">Ask AI<span class="grow"></span><span id="chat-context"></span></div>
+        <div id="chat-messages"></div>
+        <textarea id="chat-input" rows="2" placeholder="Ask about this diff…"
+          autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
+        <div id="chat-actions">
+          <span id="chat-hint"><span class="key">↵</span> send · <span class="key">⇧↵</span> newline · <span class="key">Esc</span> close</span>
+          <span class="grow"></span>
+          <button type="button" id="chat-close">Close</button>
+          <button type="button" id="chat-send">Send</button>
+        </div>
+      </section>
+    </div>
+
     <script type="module">
 {{EDITOR_JS}}
     </script>
