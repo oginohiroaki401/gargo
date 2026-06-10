@@ -37,6 +37,8 @@ pub struct AiConfig {
     pub model: String,
     pub api_key_env: String,
     pub max_tokens: u32,
+    /// Natural language for the generated summary (e.g. `English`, `Japanese`).
+    pub language: String,
 }
 
 impl Default for AiConfig {
@@ -47,6 +49,7 @@ impl Default for AiConfig {
             model: "gpt-4o-mini".to_string(),
             api_key_env: "OPENAI_API_KEY".to_string(),
             max_tokens: 2000,
+            language: "English".to_string(),
         }
     }
 }
@@ -59,6 +62,7 @@ impl From<&crate::config::PluginGargoServerAiConfig> for AiConfig {
             model: c.model.clone(),
             api_key_env: c.api_key_env.clone(),
             max_tokens: c.max_tokens,
+            language: c.language.clone(),
         }
     }
 }
@@ -70,12 +74,18 @@ pub fn diff_hash(diff_text: &str) -> String {
     format!("{:016x}", hasher.finish())
 }
 
-const SYSTEM_PROMPT: &str = "You are a senior code reviewer. Summarise the given \
-unified git diff for a teammate who is about to review the pull request. Be \
-concise. Cover: (1) the overall purpose of the change in one or two sentences, \
-(2) the key changes as a short bullet list grouped by area/file, and (3) any \
-risks or things a reviewer should look at closely. Use Markdown. Do not restate \
-the diff line by line.";
+/// Build the system prompt, instructing the model to answer in `language`.
+fn system_prompt(language: &str) -> String {
+    format!(
+        "You are a senior code reviewer. Summarise the given unified git diff for \
+a teammate who is about to review the pull request. Be concise. Cover: (1) the \
+overall purpose of the change in one or two sentences, (2) the key changes as a \
+short bullet list grouped by area/file, and (3) any risks or things a reviewer \
+should look at closely. Use Markdown. Do not restate the diff line by line. \
+Write the entire response in {language} (keep code identifiers, file paths, and \
+branch names verbatim)."
+    )
+}
 
 /// Call the configured provider to summarise `diff_text`.
 ///
@@ -104,7 +114,7 @@ fn generate_openai(
         "model": config.model,
         "max_tokens": config.max_tokens,
         "messages": [
-            { "role": "system", "content": SYSTEM_PROMPT },
+            { "role": "system", "content": system_prompt(&config.language) },
             { "role": "user", "content": diff_text },
         ],
     });

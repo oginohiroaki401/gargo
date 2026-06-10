@@ -83,6 +83,9 @@ pub struct PluginGargoServerAiConfig {
     pub api_key_env: String,
     /// Upper bound on generated tokens for one summary.
     pub max_tokens: u32,
+    /// Natural language the summary is written in, e.g. `English`,
+    /// `Japanese`/`日本語`. Passed verbatim into the prompt.
+    pub language: String,
 }
 
 impl Default for PluginGargoServerAiConfig {
@@ -93,6 +96,7 @@ impl Default for PluginGargoServerAiConfig {
             model: "gpt-4o-mini".to_string(),
             api_key_env: "OPENAI_API_KEY".to_string(),
             max_tokens: 2000,
+            language: "English".to_string(),
         }
     }
 }

@@ -651,3 +651,55 @@ body.col-resizing iframe { pointer-events: none; }
   .panes.compare, .panes.status, .panes.search { grid-template-columns: 46% 100%; overflow-x: auto; }
   #app-version { display: none; }
 }
+
+/* AI diff summary panel (compare page, above the changed-file list). */
+.ai-summary {
+  margin: 8px 10px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+.ai-summary-title {
+  padding: 5px 10px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.ai-summary-body {
+  padding: 8px 12px;
+  max-height: 320px;
+  overflow: auto;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.ai-summary-body h1, .ai-summary-body h2, .ai-summary-body h3 {
+  font-size: 13px;
+  margin: 10px 0 4px;
+  color: var(--text);
+}
+.ai-summary-body h1:first-child,
+.ai-summary-body h2:first-child,
+.ai-summary-body h3:first-child { margin-top: 0; }
+.ai-summary-body p { margin: 4px 0; }
+.ai-summary-body ul, .ai-summary-body ol { margin: 4px 0; padding-left: 18px; }
+.ai-summary-body li { margin: 2px 0; }
+.ai-summary-body code {
+  background: rgba(175, 184, 193, 0.2);
+  padding: 0.15em 0.35em;
+  border-radius: 4px;
+}
+.ai-summary-loading, .ai-summary-error, .ai-summary-meta {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.ai-summary-error { color: var(--red); }
+.ai-summary-meta {
+  padding: 4px 12px 8px;
+  font-size: 10.5px;
+  color: var(--muted);
+}

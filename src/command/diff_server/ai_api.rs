@@ -50,11 +50,11 @@ pub(crate) async fn handle_api_ai_summary_request(
     };
 
     if diff.trim().is_empty() {
-        return ok_json(serde_json::json!({
-            "summary": "_No changes between the selected branches._",
-            "model": state.ai_config.model,
-            "cached": false,
-        }));
+        return summary_response(
+            "_No changes between the selected branches._",
+            &state.ai_config.model,
+            false,
+        );
     }
 
     if diff.len() > MAX_DIFF_BYTES {
@@ -68,7 +68,9 @@ pub(crate) async fn handle_api_ai_summary_request(
     }
 
     let repo_key = state.repo_key();
-    let content_hash = ai_summary::diff_hash(&diff);
+    // Fold the output language into the hash so changing it invalidates the
+    // cache (otherwise a stale English summary would be returned for Japanese).
+    let content_hash = ai_summary::diff_hash(&format!("{}\u{0}{}", state.ai_config.language, diff));
     let model = state.ai_config.model.clone();
 
     // Cache hit: never re-bill an unchanged comparison.
@@ -80,11 +82,7 @@ pub(crate) async fn handle_api_ai_summary_request(
         &content_hash,
         &model,
     ) {
-        return ok_json(serde_json::json!({
-            "summary": summary,
-            "model": model,
-            "cached": true,
-        }));
+        return summary_response(&summary, &model, true);
     }
 
     // Miss: call the provider on the blocking pool (ureq is blocking).
@@ -111,9 +109,18 @@ pub(crate) async fn handle_api_ai_summary_request(
         &summary,
     );
 
+    summary_response(&summary, &model, false)
+}
+
+/// Build a success response carrying both the raw Markdown summary and the
+/// server-rendered HTML (via the shared comrak config) so the WASM client can
+/// inject it directly without a client-side Markdown parser.
+fn summary_response(summary: &str, model: &str, cached: bool) -> Response {
+    let html = crate::command::gargo_preview_server::render_markdown(summary);
     ok_json(serde_json::json!({
         "summary": summary,
+        "summary_html": html,
         "model": model,
-        "cached": false,
+        "cached": cached,
     }))
 }
