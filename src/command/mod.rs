@@ -1,3 +1,4 @@
+pub mod ai_summary;
 pub mod app_shell;
 pub mod async_runtime;
 pub mod commit_log_runtime;

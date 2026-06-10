@@ -39,6 +39,8 @@ pub enum GargoServerCommand {
         repo_root: PathBuf,
         /// Explicit port to bind; `None` requests an OS-assigned ephemeral port.
         port: Option<u16>,
+        /// Non-secret AI diff-summary settings from config.
+        ai_config: crate::command::ai_summary::AiConfig,
     },
     Stop,
     OpenRoute {
@@ -114,9 +116,11 @@ impl GargoServerWorker {
     fn run(mut self) {
         loop {
             match self.command_rx.recv() {
-                Ok(GargoServerCommand::Start { repo_root, port }) => {
-                    self.handle_start(repo_root, port)
-                }
+                Ok(GargoServerCommand::Start {
+                    repo_root,
+                    port,
+                    ai_config,
+                }) => self.handle_start(repo_root, port, ai_config),
                 Ok(GargoServerCommand::Stop) => self.handle_stop(),
                 Ok(GargoServerCommand::OpenRoute { route }) => self.handle_open_route(route),
                 Ok(GargoServerCommand::SetActivePath { rel_path }) => {
@@ -135,7 +139,12 @@ impl GargoServerWorker {
         }
     }
 
-    fn handle_start(&mut self, repo_root: PathBuf, port: Option<u16>) {
+    fn handle_start(
+        &mut self,
+        repo_root: PathBuf,
+        port: Option<u16>,
+        ai_config: crate::command::ai_summary::AiConfig,
+    ) {
         if self.server_shutdown_tx.is_some() {
             let _ = self.event_tx.send(GargoServerEvent::Error(
                 "Server already running".to_string(),
@@ -206,6 +215,8 @@ impl GargoServerWorker {
             project_root: repo_root.clone(),
             viewed: ViewedStore::open(),
             diff_cache: diff_cache.clone(),
+            ai_config,
+            ai_store: crate::command::ai_summary::AiSummaryStore::open(),
         });
         let github_state = Arc::new(GargoServerState {
             repo_root,
@@ -525,6 +536,10 @@ async fn run_server(
         .route(
             "/api/compare/context",
             get(diff_server::handle_api_compare_context_request),
+        )
+        .route(
+            "/api/ai/summary",
+            get(diff_server::handle_api_ai_summary_request),
         )
         .route("/split", get(diff_server::handle_split_request))
         .with_state(diff_state);

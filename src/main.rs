@@ -72,10 +72,15 @@ fn main() {
 }
 
 fn run_server(repo_root: PathBuf, open_browser: bool, port: Option<u16>) -> Result<(), String> {
+    let ai_config = (&Config::load().plugin.gargo_server.ai).into();
     let handle = GargoServerHandle::new()?;
     handle
         .command_tx
-        .send(GargoServerCommand::Start { repo_root, port })
+        .send(GargoServerCommand::Start {
+            repo_root,
+            port,
+            ai_config,
+        })
         .map_err(|e| format!("Failed to send start command: {e}"))?;
 
     loop {

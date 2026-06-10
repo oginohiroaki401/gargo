@@ -13,6 +13,7 @@ pub struct GargoServerPlugin {
     handle: Option<GargoServerHandle>,
     project_root: PathBuf,
     auto_open_browser: bool,
+    ai_config: crate::command::ai_summary::AiConfig,
     server_port: Option<u16>,
     root_url: Option<String>,
     is_running: bool,
@@ -53,6 +54,7 @@ impl GargoServerPlugin {
             handle,
             project_root: project_root.to_path_buf(),
             auto_open_browser: config.plugin.gargo_server.auto_open_browser,
+            ai_config: (&config.plugin.gargo_server.ai).into(),
             server_port: None,
             root_url: None,
             is_running: false,
@@ -247,6 +249,7 @@ impl Plugin for GargoServerPlugin {
                 handle.command_tx.send(GargoServerCommand::Start {
                     repo_root: self.project_root.clone(),
                     port: None,
+                    ai_config: self.ai_config.clone(),
                 })
             }
             "server.stop_gargo" | "server.stop_github" => {

@@ -8,8 +8,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::command::ai_summary::{AiConfig, AiSummaryStore};
 use crate::command::diff_viewed::ViewedStore;
 
+mod ai_api;
 mod compare_api;
 mod git_ops;
 mod render;
@@ -18,6 +20,7 @@ mod status_api;
 mod templates;
 mod validation;
 
+pub(crate) use ai_api::*;
 pub(crate) use compare_api::*;
 pub(crate) use git_ops::*;
 pub(crate) use render::*;
@@ -32,6 +35,10 @@ pub(crate) struct DiffServerState {
     pub(crate) viewed: ViewedStore,
     /// In-memory cache of rendered immutable (compare/commit) file diffs.
     pub(crate) diff_cache: Arc<DiffRenderCache>,
+    /// Non-secret AI settings (the API key is read from the environment).
+    pub(crate) ai_config: AiConfig,
+    /// On-disk cache of generated AI diff summaries, keyed by content hash.
+    pub(crate) ai_store: AiSummaryStore,
 }
 
 impl DiffServerState {
