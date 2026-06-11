@@ -1973,6 +1973,7 @@ const PANE_DEFAULTS = {
   history: [25, 25, 50],
   compare: [34, 66],
   status: [34, 66],
+  search: [34, 66],
 };
 
 function loadPaneSizes(kind, count) {
@@ -3855,7 +3856,7 @@ window.addEventListener("beforeunload", event => {
 // resizable desktop layout and the stacked mobile layout swap cleanly (an
 // inline grid-template would otherwise pin the desktop columns on a narrow tab).
 window.matchMedia("(max-width: 800px)").addEventListener("change", () => {
-  if (["history", "compare", "status"].includes(state.component)) {
+  if (["history", "compare", "status", "search"].includes(state.component)) {
     switchComponent(state.component);
   }
 });
