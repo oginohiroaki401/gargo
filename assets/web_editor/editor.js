@@ -2254,6 +2254,11 @@ function applyPaneTemplate(panesEl, sizes) {
 // resets that boundary to the default split.
 function installPaneResizers(panesEl, kind) {
   if (!panesEl) return;
+  // Only the diff layouts in PANE_DEFAULTS are resizable. Other pane-based views
+  // (e.g. the Search view) keep their CSS-defined widths — applying resizers
+  // there would override the CSS with a 50/50 fallback and inject dividers the
+  // view never had.
+  if (!PANE_DEFAULTS[kind]) return;
   const panes = [...panesEl.querySelectorAll(":scope > .pane")];
   if (panes.length < 2) return;
   // Below this width the CSS switches to a stacked/scrolling layout; leave it.

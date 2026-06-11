@@ -11,9 +11,10 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Query, State};
+use axum::http::HeaderMap;
 use axum::response::Response;
 
-use super::{DiffServerState, bad_request, ok_json, parse_compare_branches};
+use super::{DiffServerState, bad_request, forbid_cross_site, ok_json, parse_compare_branches};
 use crate::command::ai_summary;
 use crate::command::diff_viewed::PAGE_COMPARE;
 
@@ -23,11 +24,19 @@ use crate::command::diff_viewed::PAGE_COMPARE;
 /// - `{ "enabled": false }` when AI summaries are turned off in config,
 /// - `{ "error": "<message>" }` for a recoverable problem (key missing, diff
 ///   too large, provider error) — the page shows it inline,
-/// - `{ "summary": "<markdown>", "model": "...", "cached": <bool> }` on success.
+/// - `{ "summary": "<markdown>", "summary_html": "<html>", "model": "...",
+///   "cached": <bool> }` on success (`summary_html` is the server-rendered,
+///   XSS-safe HTML the client injects directly).
 pub(crate) async fn handle_api_ai_summary_request(
     State(state): State<Arc<DiffServerState>>,
+    headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
+    // GET is trivially triggerable cross-origin (`<img>`/`fetch`), so guard the
+    // billed endpoint against CSRF / wallet-DoS before any work.
+    if let Some(resp) = forbid_cross_site(&headers) {
+        return resp;
+    }
     if !state.ai_config.enabled {
         return ok_json(serde_json::json!({ "enabled": false }));
     }
@@ -37,18 +46,10 @@ pub(crate) async fn handle_api_ai_summary_request(
         Err(resp) => return resp,
     };
 
-    // `base...compare` unified diff via in-process gix (no subprocess).
-    let repo_root = state.project_root.clone();
-    let (base_c, compare_c) = (base.clone(), compare.clone());
-    let diff = tokio::task::spawn_blocking(move || {
-        crate::command::git_backend::compare_diff_text(&repo_root, &base_c, &compare_c, None)
-    })
-    .await
-    .ok()
-    .flatten();
-    let diff = match diff {
-        Some(output) => output,
-        None => return bad_request("invalid base/compare ref"),
+    // `base...compare` unified diff via in-process gix (no subprocess), cached.
+    let diff = match compare_diff_or_400(&state, &base, &compare).await {
+        Ok(diff) => diff,
+        Err(resp) => return resp,
     };
 
     if diff.trim().is_empty() {
@@ -114,11 +115,41 @@ pub(crate) async fn handle_api_ai_summary_request(
     summary_response(&summary, &model, false)
 }
 
+/// Fetch the `base...compare` unified diff for the AI endpoints, served from a
+/// short-TTL in-memory cache when available (so a multi-turn chat doesn't rerun
+/// the gix diff every turn). On a bad ref pair, returns the `400` response the
+/// caller should surface directly. The heavy gix work runs on the blocking pool.
+async fn compare_diff_or_400(
+    state: &Arc<DiffServerState>,
+    base: &str,
+    compare: &str,
+) -> Result<String, Response> {
+    if let Some(diff) = state.cached_compare_diff(base, compare) {
+        return Ok(diff);
+    }
+    let repo_root = state.project_root.clone();
+    let (base_c, compare_c) = (base.to_string(), compare.to_string());
+    let diff = tokio::task::spawn_blocking(move || {
+        crate::command::git_backend::compare_diff_text(&repo_root, &base_c, &compare_c, None)
+    })
+    .await
+    .ok()
+    .flatten();
+    match diff {
+        Some(output) => {
+            state.store_compare_diff(base, compare, &output);
+            Ok(output)
+        }
+        None => Err(bad_request("invalid base/compare ref")),
+    }
+}
+
 /// Build a success response carrying both the raw Markdown summary and the
-/// server-rendered HTML (via the shared comrak config) so the WASM client can
-/// inject it directly without a client-side Markdown parser.
+/// server-rendered HTML so the WASM client can inject it directly without a
+/// client-side Markdown parser. The summary is untrusted model output, so it
+/// is rendered with the HTML-escaping (untrusted) comrak config to prevent XSS.
 fn summary_response(summary: &str, model: &str, cached: bool) -> Response {
-    let html = crate::command::gargo_preview_server::render_markdown(summary);
+    let html = crate::command::gargo_preview_server::render_markdown_untrusted(summary);
     ok_json(serde_json::json!({
         "summary": summary,
         "summary_html": html,
@@ -145,8 +176,13 @@ pub(crate) struct ChatRequest {
 /// grounding context server-side.
 pub(crate) async fn handle_api_ai_chat_request(
     State(state): State<Arc<DiffServerState>>,
+    headers: HeaderMap,
     Json(req): Json<ChatRequest>,
 ) -> Response {
+    // Guard the billed endpoint against cross-site POSTs (CSRF / wallet-DoS).
+    if let Some(resp) = forbid_cross_site(&headers) {
+        return resp;
+    }
     if !state.ai_config.enabled {
         return ok_json(serde_json::json!({ "enabled": false }));
     }
@@ -164,17 +200,9 @@ pub(crate) async fn handle_api_ai_chat_request(
         return bad_request("no messages");
     }
 
-    let repo_root = state.project_root.clone();
-    let (base_c, compare_c) = (base.clone(), compare.clone());
-    let diff = tokio::task::spawn_blocking(move || {
-        crate::command::git_backend::compare_diff_text(&repo_root, &base_c, &compare_c, None)
-    })
-    .await
-    .ok()
-    .flatten();
-    let diff = match diff {
-        Some(output) => output,
-        None => return bad_request("invalid base/compare ref"),
+    let diff = match compare_diff_or_400(&state, &base, &compare).await {
+        Ok(diff) => diff,
+        Err(resp) => return resp,
     };
 
     if diff.len() > state.ai_config.max_diff_bytes {
@@ -200,7 +228,8 @@ pub(crate) async fn handle_api_ai_chat_request(
         Err(_) => return ok_json(serde_json::json!({ "error": "chat task failed" })),
     };
 
-    let reply_html = crate::command::gargo_preview_server::render_markdown(&reply);
+    // Untrusted model output: render with HTML escaping to prevent XSS.
+    let reply_html = crate::command::gargo_preview_server::render_markdown_untrusted(&reply);
     ok_json(serde_json::json!({
         "reply": reply,
         "reply_html": reply_html,

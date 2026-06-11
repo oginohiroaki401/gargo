@@ -744,4 +744,48 @@ auto_open_browser = false
         .unwrap();
         assert!(!cfg.plugin.gargo_server.auto_open_browser);
     }
+
+    #[test]
+    fn test_gargo_server_ai_config_parses_custom_values() {
+        // Every [plugin.gargo_server.ai] key must bind. A serde rename or field
+        // typo would silently fall back to the default and (e.g.) leave AI
+        // disabled or reset max_diff_bytes with no signal — this locks that down.
+        let cfg: Config = toml::from_str(
+            r#"
+[plugin.gargo_server.ai]
+enabled = true
+provider = "openai"
+model = "gpt-4o"
+api_key_env = "MY_KEY"
+max_tokens = 1234
+max_diff_bytes = 99999
+language = "Japanese"
+"#,
+        )
+        .unwrap();
+        let ai = &cfg.plugin.gargo_server.ai;
+        assert!(ai.enabled);
+        assert_eq!(ai.provider, "openai");
+        assert_eq!(ai.model, "gpt-4o");
+        assert_eq!(ai.api_key_env, "MY_KEY");
+        assert_eq!(ai.max_tokens, 1234);
+        assert_eq!(ai.max_diff_bytes, 99999);
+        assert_eq!(ai.language, "Japanese");
+    }
+
+    #[test]
+    fn test_gargo_server_ai_config_defaults_disabled() {
+        // The privacy/billing contract: with no [plugin.gargo_server.ai] block,
+        // the feature must be OFF and the documented defaults must hold, so an
+        // existing config never starts sending diffs to a provider after upgrade.
+        let cfg: Config = toml::from_str("").unwrap();
+        let ai = &cfg.plugin.gargo_server.ai;
+        assert!(!ai.enabled, "AI must default to disabled (opt-in)");
+        assert_eq!(ai.provider, "openai");
+        assert_eq!(ai.model, "gpt-4o-mini");
+        assert_eq!(ai.api_key_env, "OPENAI_API_KEY");
+        assert_eq!(ai.max_tokens, 2000);
+        assert_eq!(ai.max_diff_bytes, 250_000);
+        assert_eq!(ai.language, "English");
+    }
 }

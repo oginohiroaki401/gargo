@@ -1799,11 +1799,12 @@ pub(crate) async fn handle_file_display(
     Html(html)
 }
 
-/// Render markdown to HTML with GFM support
-pub(crate) fn render_markdown(text: &str) -> String {
-    use comrak::{ComrakOptions, markdown_to_html};
-
-    let mut options = ComrakOptions::default();
+/// Shared GFM options. `allow_raw_html` toggles `unsafe_`: when `false`,
+/// comrak escapes raw HTML in the source and neutralizes dangerous link
+/// schemes (`javascript:`, `vbscript:`, `data:` …), which is what makes the
+/// untrusted renderer safe.
+fn markdown_options(allow_raw_html: bool) -> comrak::ComrakOptions {
+    let mut options = comrak::ComrakOptions::default();
     options.extension.strikethrough = true;
     options.extension.tagfilter = true;
     options.extension.table = true;
@@ -1813,9 +1814,28 @@ pub(crate) fn render_markdown(text: &str) -> String {
     options.extension.header_ids = Some("".to_string());
     options.extension.footnotes = false;
     options.extension.description_lists = false;
-    options.render.unsafe_ = true; // Allow HTML in markdown
+    options.render.unsafe_ = allow_raw_html;
+    options
+}
 
-    render_mermaid_blocks(&markdown_to_html(text, &options))
+/// Render markdown to HTML with GFM support.
+///
+/// Raw HTML in the source is passed through (`unsafe_`), so this is ONLY safe
+/// for **trusted** content (repo files, READMEs). For model/user output use
+/// [`render_markdown_untrusted`] instead.
+pub(crate) fn render_markdown(text: &str) -> String {
+    use comrak::markdown_to_html;
+    render_mermaid_blocks(&markdown_to_html(text, &markdown_options(true)))
+}
+
+/// Render markdown from an **untrusted** source (AI model output, user input).
+///
+/// Raw HTML is escaped and unsafe link schemes are neutralized by comrak, so
+/// the result is safe to inject into the DOM. Mermaid post-processing is
+/// deliberately skipped to keep this path to a single audited transform.
+pub(crate) fn render_markdown_untrusted(text: &str) -> String {
+    use comrak::markdown_to_html;
+    markdown_to_html(text, &markdown_options(false))
 }
 
 /// Rewrite relative `href` / `src` attributes in rendered markdown HTML so they
@@ -2111,6 +2131,48 @@ pub fn register(registry: &mut CommandRegistry) {
             )))
         }),
     });
+}
+
+#[cfg(test)]
+mod markdown_safety_tests {
+    use super::*;
+
+    #[test]
+    fn untrusted_renderer_escapes_raw_html_and_unsafe_links() {
+        // The XSS boundary for AI/model output: raw HTML must be escaped and
+        // `javascript:` link schemes neutralized, so nothing executes when the
+        // result is injected into the DOM.
+        let html = render_markdown_untrusted(
+            "<img src=x onerror=alert(1)> and [click](javascript:alert(2))",
+        );
+        assert!(!html.contains("<img"), "raw <img> must be escaped: {html}");
+        assert!(
+            !html.contains("onerror=alert"),
+            "event handler leaked: {html}"
+        );
+        assert!(
+            !html.contains("href=\"javascript:"),
+            "javascript: scheme must be neutralized: {html}"
+        );
+    }
+
+    #[test]
+    fn untrusted_renderer_still_renders_safe_markdown() {
+        let html = render_markdown_untrusted("**bold** and `code`");
+        assert!(html.contains("<strong>bold</strong>"));
+        assert!(html.contains("<code>code</code>"));
+    }
+
+    #[test]
+    fn trusted_renderer_still_passes_raw_html_through() {
+        // Repo READMEs intentionally allow embedded HTML; guard against the
+        // refactor accidentally locking that down.
+        let html = render_markdown("<div class=\"note\">hi</div>");
+        assert!(
+            html.contains("<div class=\"note\">"),
+            "trusted HTML dropped: {html}"
+        );
+    }
 }
 
 #[cfg(test)]

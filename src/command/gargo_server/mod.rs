@@ -217,6 +217,7 @@ impl GargoServerWorker {
             diff_cache: diff_cache.clone(),
             ai_config,
             ai_store: crate::command::ai_summary::AiSummaryStore::open(),
+            ai_diff_cache: Default::default(),
         });
         let github_state = Arc::new(GargoServerState {
             repo_root,

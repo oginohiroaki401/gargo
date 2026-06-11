@@ -384,6 +384,23 @@ The LSP plugin spawns language server processes and communicates over stdin/stdo
 
 Diff computation runs as a Tokio task to avoid blocking rendering.
 
+#### AI diff summary & chat (opt-in)
+
+The compare page can generate an AI summary of a `base...compare` diff and
+answer follow-up questions about it ("Ask AI"). Both are served by the gargo
+server:
+
+- `GET /api/ai/summary?base=<ref>&compare=<ref>` — one-shot Markdown summary.
+- `POST /api/ai/chat` — a conversation grounded in the same diff.
+
+The feature is **disabled by default** — no diff is sent anywhere until you opt
+in via `[plugin.gargo_server.ai]` (see Configuration). The API key is read from
+the environment (never stored in config). Summaries are cached in SQLite keyed
+by diff content hash + model, so an unchanged comparison is billed at most once.
+Model output is rendered to HTML server-side with HTML escaping (no raw HTML /
+`javascript:` links), and the billed endpoints reject cross-site browser
+requests.
+
 ## Plugin System (plugin/)
 
 Plugins implement the `Plugin` trait:
@@ -433,6 +450,19 @@ GitHub Preview plugin still detaches follow mode when browser navigation moves t
 - `[theme]` -- preset, capture overrides, and UI color overrides
 - `[lsp]` -- language server definitions
 - `[plugins]` -- enabled plugins
+- `[plugin.gargo_server.ai]` -- AI diff summary / chat for the compare page
+  (disabled by default):
+  - `enabled` (bool, default `false`) -- master switch; nothing is sent to a
+    provider until this is `true`
+  - `provider` (default `"openai"`) -- only `openai` is implemented
+  - `model` (default `"gpt-4o-mini"`)
+  - `api_key_env` (default `"OPENAI_API_KEY"`) -- env var the API key is read
+    from at request time (the key is never written to config)
+  - `max_tokens` (default `2000`) -- upper bound on generated tokens
+  - `max_diff_bytes` (default `250000`) -- diffs larger than this are refused
+    rather than truncated
+  - `language` (default `"English"`) -- natural language for the output, e.g.
+    `"Japanese"`
 
 Runtime command toggles:
 - `config.toggle_debug` flips `debug`

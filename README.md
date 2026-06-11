@@ -84,6 +84,26 @@ wasm32-unknown-unknown`) and `wasm-bindgen-cli` at the exact version of the
 `wasm-bindgen` crate in `Cargo.lock`. If the bundle is missing, `cargo build`
 still succeeds and the editor's asset routes report "wasm not built".
 
+#### AI diff summary & chat (optional)
+
+The compare page can produce an AI summary of a diff and answer questions about
+it ("Ask AI"). It is **off by default** and sends nothing to a provider until you
+opt in. Enable it under `[plugin.gargo_server.ai]` in
+`~/.config/gargo/config.toml` and provide the API key via the environment:
+
+```toml
+[plugin.gargo_server.ai]
+enabled = true
+# model = "gpt-4o-mini"    # default
+# language = "Japanese"    # default "English"
+```
+
+```bash
+export OPENAI_API_KEY=sk-...   # read at request time; never stored in config
+```
+
+See `docs/README.md` (Configuration) for the full list of keys.
+
 ## Basic keys
 
 - `i`: enter insert mode

@@ -504,3 +504,39 @@ enabled = ["diff_ui", "gargo_preview", "gargo_server"]
         1
     );
 }
+
+#[test]
+fn ai_endpoints_report_disabled_by_default() {
+    // The opt-in / privacy contract: with the default AiConfig (enabled = false,
+    // which is what `start_server` passes), neither AI endpoint may run a git
+    // diff or call a provider — both must short-circuit with `{enabled:false}`.
+    let repo_dir = setup_repo();
+    let repo = repo_dir.path();
+    let handle = GargoServerHandle::new().expect("server handle");
+    let Some(port) = start_server(repo, &handle) else {
+        return;
+    };
+    let base_url = format!("http://127.0.0.1:{port}");
+
+    // GET /api/ai/summary (the retry also gates on the server being ready).
+    let summary = get_json_with_retry(&format!(
+        "{base_url}/api/ai/summary?base=master&compare=feature"
+    ));
+    assert_eq!(summary["enabled"], false);
+    assert!(summary["summary"].is_null(), "no summary when disabled");
+
+    // POST /api/ai/chat — a well-formed body must still be rejected as disabled
+    // before any provider call. (Json is extracted before the handler runs, so
+    // the body must deserialize even though the request is refused.)
+    let chat: serde_json::Value = ureq::post(&format!("{base_url}/api/ai/chat"))
+        .send_json(serde_json::json!({
+            "base": "master",
+            "compare": "feature",
+            "messages": [{ "role": "user", "content": "hi" }],
+        }))
+        .expect("post chat")
+        .into_json()
+        .expect("json response");
+    assert_eq!(chat["enabled"], false);
+    assert!(chat["reply"].is_null(), "no reply when disabled");
+}

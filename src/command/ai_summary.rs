@@ -21,6 +21,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, Result};
 
+/// Most recent chat turns forwarded to the provider. Older turns are dropped so
+/// a long session can't grow token cost/latency without bound.
+const MAX_CHAT_HISTORY: usize = 24;
+
 /// Non-secret AI settings threaded from `config.toml` to the server thread.
 ///
 /// `Clone`/`Debug` so it can ride inside [`crate::command::gargo_server`]'s
@@ -41,15 +45,10 @@ pub struct AiConfig {
 
 impl Default for AiConfig {
     fn default() -> Self {
-        Self {
-            enabled: false,
-            provider: "openai".to_string(),
-            model: "gpt-4o-mini".to_string(),
-            api_key_env: "OPENAI_API_KEY".to_string(),
-            max_tokens: 2000,
-            max_diff_bytes: 250_000,
-            language: "English".to_string(),
-        }
+        // Keep a single source of truth for the default values: they live on
+        // `PluginGargoServerAiConfig` (the config-file type) and are derived
+        // here via `From`, so the two structs can never drift apart.
+        Self::from(&crate::config::PluginGargoServerAiConfig::default())
     }
 }
 
@@ -154,7 +153,15 @@ pub fn generate_chat(
                 "role": "system",
                 "content": chat_system_prompt(&config.language, diff_text),
             })];
-            for m in messages {
+            // Bound the forwarded history: every turn re-sends the whole
+            // conversation plus the diff system prompt, so an unbounded session
+            // grows token cost/latency without limit. Keep only the most recent
+            // turns (the diff, not old chatter, is the important grounding).
+            let recent = messages
+                .len()
+                .checked_sub(MAX_CHAT_HISTORY)
+                .map_or(messages, |start| &messages[start..]);
+            for m in recent {
                 // Only forward known roles so a malformed client can't inject
                 // arbitrary message types.
                 let role = match m.role.as_str() {
@@ -174,6 +181,21 @@ pub fn generate_chat(
     }
 }
 
+/// Shared HTTP agent for provider calls, built once with explicit timeouts so a
+/// hung provider can't pin a blocking-pool thread indefinitely (the pool is
+/// shared with git diffs and file I/O). Reusing one agent also keeps the TLS
+/// connection warm across calls instead of a fresh handshake per request.
+fn http_agent() -> &'static ureq::Agent {
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(10))
+            .timeout_read(Duration::from_secs(60))
+            .timeout_write(Duration::from_secs(30))
+            .build()
+    })
+}
+
 /// Low-level OpenAI Chat Completions call shared by summary and chat.
 fn call_openai(
     api_key: &str,
@@ -187,7 +209,8 @@ fn call_openai(
         "messages": messages,
     });
 
-    let response = ureq::post("https://api.openai.com/v1/chat/completions")
+    let response = http_agent()
+        .post("https://api.openai.com/v1/chat/completions")
         .set("Authorization", &format!("Bearer {api_key}"))
         .set("Content-Type", "application/json")
         .send_json(body);
