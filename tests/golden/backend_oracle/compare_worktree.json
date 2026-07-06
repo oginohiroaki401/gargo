@@ -1,0 +1,33 @@
+{
+  "base": "master",
+  "compare": "WORKTREE",
+  "files": [
+    {
+      "additions": 1,
+      "binary": false,
+      "deletions": 0,
+      "old_path": null,
+      "path": "added.rs",
+      "status": "added",
+      "viewed": false
+    },
+    {
+      "additions": 1,
+      "binary": false,
+      "deletions": 0,
+      "old_path": null,
+      "path": "src/lib.rs",
+      "status": "modified",
+      "viewed": false
+    },
+    {
+      "additions": 1,
+      "binary": false,
+      "deletions": 0,
+      "old_path": null,
+      "path": "untracked.txt",
+      "status": "added",
+      "viewed": false
+    }
+  ]
+}

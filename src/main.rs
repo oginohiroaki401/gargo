@@ -33,9 +33,15 @@ fn main() {
             }
         }
         gargo::cli::CliMode::Server => {
+            let config = Config::load();
             let start = cli.path.as_deref();
             let repo_root = gargo::project::find_project_root(start);
-            if let Err(e) = run_server(repo_root, cli.open_browser(), cli.port) {
+            // CLI `--host` overrides the configured host.
+            let host = cli
+                .host
+                .clone()
+                .unwrap_or_else(|| config.plugin.gargo_server.host.clone());
+            if let Err(e) = run_server(repo_root, cli.open_browser(), cli.port, host) {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
             }
@@ -71,15 +77,19 @@ fn main() {
     }
 }
 
-fn run_server(repo_root: PathBuf, open_browser: bool, port: Option<u16>) -> Result<(), String> {
-    let ai_config = (&Config::load().plugin.gargo_server.ai).into();
+fn run_server(
+    repo_root: PathBuf,
+    open_browser: bool,
+    port: Option<u16>,
+    host: String,
+) -> Result<(), String> {
     let handle = GargoServerHandle::new()?;
     handle
         .command_tx
         .send(GargoServerCommand::Start {
             repo_root,
             port,
-            ai_config,
+            host: Some(host),
         })
         .map_err(|e| format!("Failed to send start command: {e}"))?;
 

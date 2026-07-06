@@ -13,6 +13,17 @@ use axum::{
 use crate::command::diff_viewed::PAGE_COMPARE;
 use crate::diff_render::{DiffFile, content_hash_of, parse_unified_diff};
 
+/// Sentinel `compare` value meaning "the live working tree" (HEAD plus
+/// uncommitted, dirty, and untracked changes) rather than a resolvable ref.
+/// The editor offers it as the default compare target and renders it as
+/// "HEAD (working tree)". It passes `parse_branch_name` as a plain identifier.
+pub(crate) const WORKTREE_REF: &str = "WORKTREE";
+
+/// Whether `compare` selects the live working tree instead of a committed ref.
+fn is_worktree(compare: &str) -> bool {
+    compare == WORKTREE_REF
+}
+
 pub(crate) async fn handle_api_compare_context_request(
     State(state): State<Arc<DiffServerState>>,
     Query(params): Query<HashMap<String, String>>,
@@ -25,8 +36,11 @@ pub(crate) async fn handle_api_compare_context_request(
         Some(p) => p,
         None => return bad_request(format!("invalid path: {}", path_raw)),
     };
+    // The worktree sentinel reads context lines straight from the on-disk file
+    // (`None`), every other ref via `<ref>:<path>`.
     let git_ref = match params.get("ref") {
-        Some(v) if !v.is_empty() => v.as_str(),
+        Some(v) if is_worktree(v) => None,
+        Some(v) if !v.is_empty() => Some(v.as_str()),
         _ => return bad_request("missing `ref` query parameter"),
     };
     let start = match parse_usize_param(&params, "start") {
@@ -37,7 +51,7 @@ pub(crate) async fn handle_api_compare_context_request(
         Ok(v) => v,
         Err(e) => return bad_request(e),
     };
-    match read_file_range_at_ref(&state.project_root, Some(git_ref), &path, start, end).await {
+    match read_file_range_at_ref(&state.project_root, git_ref, &path, start, end).await {
         Ok(lines) => ok_json(serde_json::json!({ "lines": lines })),
         Err(e) => bad_request(e),
     }
@@ -91,6 +105,9 @@ pub(crate) async fn handle_api_branches_request(
         "branches": list.branches,
         "remotes": list.remotes,
         "info": info,
+        // Sentinel the editor uses as the default compare target: the live
+        // working tree (HEAD + uncommitted/dirty/untracked).
+        "worktree": WORKTREE_REF,
     }))
 }
 
@@ -133,11 +150,16 @@ pub(crate) async fn handle_api_compare_request(
         Err(resp) => return resp,
     };
 
-    // In-process gix `base...compare` diff (no `git diff` subprocess).
+    // In-process gix `base...compare` diff (no `git diff` subprocess). The
+    // worktree sentinel diffs `base` against the live working tree instead.
     let repo_root = state.project_root.clone();
     let (base_c, compare_c) = (base.clone(), compare.clone());
     let diff = tokio::task::spawn_blocking(move || {
-        crate::command::git_backend::compare_diff_text(&repo_root, &base_c, &compare_c, None)
+        if is_worktree(&compare_c) {
+            crate::command::git_backend::compare_worktree_diff_text(&repo_root, &base_c, None)
+        } else {
+            crate::command::git_backend::compare_diff_text(&repo_root, &base_c, &compare_c, None)
+        }
     })
     .await
     .ok()
@@ -176,7 +198,11 @@ pub(crate) async fn load_compare_diff_file(
         path.to_string(),
     );
     let diff = tokio::task::spawn_blocking(move || {
-        crate::command::git_backend::compare_diff_text(&root, &base, &compare, Some(&path))
+        if is_worktree(&compare) {
+            crate::command::git_backend::compare_worktree_diff_text(&root, &base, Some(&path))
+        } else {
+            crate::command::git_backend::compare_diff_text(&root, &base, &compare, Some(&path))
+        }
     })
     .await
     .map_err(|e| e.to_string())?
@@ -208,6 +234,16 @@ pub(crate) async fn handle_api_compare_file_request(
     let cache = state.diff_cache.clone();
     let (base_c, compare_c, path_c) = (base.clone(), compare.clone(), path.clone());
     let result = tokio::task::spawn_blocking(move || -> Option<serde_json::Value> {
+        // The worktree side is mutable, so it can't be content-addressed by OID;
+        // render it fresh on every request and skip the cache entirely.
+        if is_worktree(&compare_c) {
+            let diff = crate::command::git_backend::compare_worktree_diff_text(
+                &root,
+                &base_c,
+                Some(&path_c),
+            )?;
+            return Some(file_diff_json_from_text(&diff, &path_c, "modified"));
+        }
         let oids = crate::command::git_backend::resolve_oids(&root, &[&base_c, &compare_c])?;
         let key = format!("cmp\u{1f}{}\u{1f}{}\u{1f}{}", oids[0], oids[1], path_c);
         if let Some(hit) = cache.get(&key) {

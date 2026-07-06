@@ -1,7 +1,7 @@
 
 
 
-                   gargo v0.2.0
+                  gargo v0.2.11
                /tmp/gargo-test-root
              Press i to start editing
  NOR [scratch]                           [1/1] 1:1

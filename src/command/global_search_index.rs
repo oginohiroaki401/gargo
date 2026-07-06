@@ -101,6 +101,17 @@ pub fn search_repo_limited(
     let Ok(candidates) = index.lookup(query) else {
         return Vec::new();
     };
+    search_candidates(repo, query, max_results, per_file_max, candidates, || false)
+}
+
+fn search_candidates(
+    repo: &GlobalIndexedRepo,
+    query: &str,
+    max_results: usize,
+    per_file_max: usize,
+    candidates: Vec<String>,
+    cancelled: impl Fn() -> bool,
+) -> Vec<GlobalSearchHit> {
     let regex = match RegexBuilder::new(&regex::escape(query))
         .case_insensitive(true)
         .build()
@@ -111,6 +122,9 @@ pub fn search_repo_limited(
 
     let mut hits = Vec::new();
     for rel_path in candidates {
+        if cancelled() {
+            break;
+        }
         let full_path = repo.root.join(&rel_path);
         let Ok(content) = std::fs::read_to_string(&full_path) else {
             continue;
@@ -141,6 +155,40 @@ pub fn search_repo_limited(
     }
 
     hits
+}
+
+pub fn refresh_repo_with_files(root: &Path, files: Vec<String>) -> rusqlite::Result<()> {
+    let mut index = RepoIndex::open(root)?;
+    index.refresh_with_files(files)
+}
+
+pub fn search_repo_cached_limited_cancelled<F>(
+    repo: &GlobalIndexedRepo,
+    query: &str,
+    max_results: usize,
+    per_file_max: usize,
+    cancelled: F,
+) -> Vec<GlobalSearchHit>
+where
+    F: Fn() -> bool,
+{
+    if query.chars().count() < 3 || max_results == 0 || per_file_max == 0 || cancelled() {
+        return Vec::new();
+    }
+    let Ok(index) = RepoIndex::open(&repo.root) else {
+        return Vec::new();
+    };
+    let Ok(candidates) = index.lookup(query) else {
+        return Vec::new();
+    };
+    search_candidates(
+        repo,
+        query,
+        max_results,
+        per_file_max,
+        candidates,
+        cancelled,
+    )
 }
 
 struct RepoIndex {
@@ -192,7 +240,15 @@ impl RepoIndex {
     }
 
     fn refresh(&mut self) -> rusqlite::Result<()> {
-        let current_files = collect_repo_files(&self.root);
+        self.refresh_with_files(collect_repo_files(&self.root))
+    }
+
+    fn refresh_with_files(&mut self, mut current_files: Vec<String>) -> rusqlite::Result<()> {
+        for file in &mut current_files {
+            *file = file.replace('\\', "/");
+        }
+        current_files.sort();
+        current_files.dedup();
         let current_set: HashSet<&str> = current_files.iter().map(String::as_str).collect();
 
         let mut known_stmt = self
@@ -307,6 +363,10 @@ impl RepoIndex {
 }
 
 fn insert_postings(conn: &Connection, file_id: i64, path: &Path) -> rusqlite::Result<()> {
+    const MAX_INDEX_FILE_BYTES: u64 = 2 * 1024 * 1024;
+    if std::fs::metadata(path).is_ok_and(|metadata| metadata.len() > MAX_INDEX_FILE_BYTES) {
+        return Ok(());
+    }
     let Ok(content) = std::fs::read(path) else {
         return Ok(());
     };
@@ -399,6 +459,7 @@ fn disambiguate_repo_names(roots: &[PathBuf]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn trigrams_are_ascii_case_folded_and_deduped() {
@@ -417,5 +478,21 @@ mod tests {
         ];
         let names = disambiguate_repo_names(&roots);
         assert_eq!(names, vec!["work/gargo", "home/gargo"]);
+    }
+
+    #[test]
+    fn cached_search_uses_supplied_index_without_rescanning() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("indexed.txt"), "unique needle\n").unwrap();
+        refresh_repo_with_files(dir.path(), vec!["indexed.txt".to_string()]).unwrap();
+        std::fs::write(dir.path().join("not-indexed.txt"), "unique needle\n").unwrap();
+
+        let repo = GlobalIndexedRepo {
+            root: dir.path().to_path_buf(),
+            display_name: "test".to_string(),
+        };
+        let hits = search_repo_cached_limited_cancelled(&repo, "needle", 10, 10, || false);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].rel_path, "indexed.txt");
     }
 }

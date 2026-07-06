@@ -24,7 +24,10 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::command::gargo_server::{FileEntry, GargoServerState};
+use crate::command::gargo_server::{
+    ChildGargoServer, FileEntry, GargoServerCommand, GargoServerEvent, GargoServerHandle,
+    GargoServerState,
+};
 
 /// The browser application: a keyboard-driven code and Git browser. Its Explorer
 /// editor and the read-only previews used by History, Compare, and Status share
@@ -124,6 +127,11 @@ pub(crate) async fn handle_api_file(
 struct FilesResponse {
     files: Vec<String>,
     entries: Vec<FileEntryResponse>,
+    ready: bool,
+    search_ready: bool,
+    truncated: bool,
+    total: usize,
+    next_offset: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -137,82 +145,77 @@ struct FileEntryResponse {
     opened: u64,
 }
 
-/// How long a cached `/api/files` listing stays fresh. The editor fires this on
-/// every Cmd+P open, so a short TTL collapses navigation bursts into one
-/// `git ls-files` while still picking up out-of-editor changes quickly;
-/// in-editor mutations invalidate immediately via `fs_generation`.
-const FILES_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(2);
+#[derive(Deserialize, Default)]
+pub(crate) struct FilesQuery {
+    offset: Option<usize>,
+    limit: Option<usize>,
+    /// When set, force a fresh workspace rescan before paging so files created
+    /// outside the editor (by the agent or the terminal) appear. The picker
+    /// sends this on open; subsequent pagination requests omit it.
+    refresh: Option<u8>,
+}
 
-/// Invalidate the `/api/files` cache after an in-editor change that adds or
-/// removes paths, so the next Cmd+P reflects it without waiting for the TTL.
+/// Schedule a shared index refresh after an in-editor filesystem change.
 fn bump_fs_generation(state: &GargoServerState) {
     state
         .fs_generation
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    state.workspace_index.request_refresh();
 }
 
 /// List the repository's files for the editor's Cmd+P picker — the same set the
 /// terminal file picker uses (`git ls-files` when in a repo, else a filtered
 /// directory walk; see [`crate::project::collect_files`]).
 ///
-/// Backed by a short-lived cache ([`FILES_CACHE_TTL`]) keyed on a generation
-/// counter so repeated opens don't each spawn `git`.
-pub(crate) async fn handle_api_files(State(state): State<Arc<GargoServerState>>) -> Response {
-    let generation = state
-        .fs_generation
-        .load(std::sync::atomic::Ordering::Relaxed);
-
-    // Fast path: return the cached listing if it's the current generation and
-    // still within the TTL.
-    if let Ok(guard) = state.files_cache.lock()
-        && let Some((cached_gen, cached_at, files, entries)) = guard.as_ref()
-        && *cached_gen == generation
-        && cached_at.elapsed() < FILES_CACHE_TTL
-    {
-        return files_response(files.clone(), entries.clone());
+/// The shared index publishes partial batches while it scans. New clients page
+/// through those batches; legacy callers without pagination wait briefly for a
+/// complete snapshot and retain the old all-files response shape.
+pub(crate) async fn handle_api_files(
+    State(state): State<Arc<GargoServerState>>,
+    Query(query): Query<FilesQuery>,
+) -> Response {
+    if query.refresh.unwrap_or(0) != 0 {
+        // Trigger a rescan and wait until a generation newer than the one we
+        // started from has been published, so the response reflects files
+        // created since the last scan. Bounded so a huge repo can't hang the
+        // request — the picker keeps showing its cached list until this returns.
+        let before = state.workspace_index.generation();
+        state.workspace_index.request_refresh();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while (state.workspace_index.generation() == before || !state.workspace_index.is_ready())
+            && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    } else if query.limit.is_none() {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !state.workspace_index.is_ready() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
     }
 
-    // Miss: `collect_files` shells out to git synchronously, so run it off the
-    // async runtime to avoid blocking other requests.
-    let repo_root = state.repo_root.clone();
-    let files = tokio::task::spawn_blocking(move || crate::project::collect_files(&repo_root))
-        .await
-        .unwrap_or_default();
-    let entries = collect_file_entries(&state.repo_root, files.clone()).await;
-
-    if let Ok(mut guard) = state.files_cache.lock() {
-        *guard = Some((
-            generation,
-            std::time::Instant::now(),
-            files.clone(),
-            entries.clone(),
-        ));
-    }
-    files_response(files, entries)
+    let page = state
+        .workspace_index
+        .page(query.offset.unwrap_or(0), query.limit);
+    files_response(
+        page.entries,
+        page.ready,
+        page.search_ready,
+        page.truncated,
+        page.total,
+        page.next_offset,
+    )
 }
 
-async fn collect_file_entries(repo_root: &Path, files: Vec<String>) -> Vec<FileEntry> {
-    let root = repo_root.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let changed = crate::command::git_backend::status_map(&root);
-        let opens =
-            crate::command::recent_projects::RecentProjectsStore::new().get_file_open_times(&root);
-        files
-            .into_iter()
-            .map(|path| {
-                let full = root.join(&path);
-                let mtime = mtime_ms(&full);
-                let is_changed = changed.contains_key(&path);
-                let opened = opens.get(&path).copied().unwrap_or(0).max(0) as u64;
-                (path, mtime, is_changed, opened)
-            })
-            .collect::<Vec<_>>()
-    })
-    .await
-    .unwrap_or_default()
-}
-
-fn files_response(files: Vec<String>, entries: Vec<FileEntry>) -> Response {
+fn files_response(
+    entries: Vec<FileEntry>,
+    ready: bool,
+    search_ready: bool,
+    truncated: bool,
+    total: usize,
+    next_offset: Option<usize>,
+) -> Response {
+    let files = entries.iter().map(|entry| entry.0.clone()).collect();
     let entries = entries
         .into_iter()
         .map(|(path, mtime, changed, opened)| FileEntryResponse {
@@ -222,7 +225,15 @@ fn files_response(files: Vec<String>, entries: Vec<FileEntry>) -> Response {
             opened,
         })
         .collect();
-    ok_json(&FilesResponse { files, entries })
+    ok_json(&FilesResponse {
+        files,
+        entries,
+        ready,
+        search_ready,
+        truncated,
+        total,
+        next_offset,
+    })
 }
 
 #[derive(Serialize)]
@@ -276,6 +287,7 @@ struct RepoInfoResponse {
     root: String,
     /// Running gargo version, for the header version label.
     version: String,
+    git: bool,
 }
 
 /// Repository identity for the editor header and the file "open" menu: owner,
@@ -293,6 +305,7 @@ pub(crate) async fn handle_api_repo_info(State(state): State<Arc<GargoServerStat
         remote_url,
         root: state.repo_root.display().to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
+        git: state.workspace_index.is_git(),
     })
 }
 
@@ -355,6 +368,7 @@ struct SearchResponse {
     hits: Vec<SearchHitDto>,
     /// True when more hits existed than `max` (results were capped).
     truncated: bool,
+    indexing: bool,
 }
 
 /// Project-wide text search for the editor's Cmd+Shift+F overlay. Reuses the
@@ -374,17 +388,40 @@ pub(crate) async fn handle_api_search(
     const PER_FILE_MAX: usize = 50;
     let max = if q.max == 0 { DEFAULT_MAX } else { q.max }.min(HARD_MAX);
 
+    if !state.workspace_index.is_search_ready() {
+        return ok_json(&SearchResponse {
+            hits: Vec::new(),
+            truncated: false,
+            indexing: true,
+        });
+    }
+
     let repo = crate::command::global_search_index::GlobalIndexedRepo {
         root: state.repo_root.clone(),
         display_name: String::new(),
     };
-    // Ask for one extra so we can tell whether results were truncated.
-    let mut hits = crate::command::global_search_index::search_repo_limited(
-        &repo,
-        &q.q,
-        max + 1,
-        PER_FILE_MAX,
-    );
+    let query = q.q;
+    let generation = state
+        .search_generation
+        .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+        + 1;
+    let search_state = state.clone();
+    let mut hits = tokio::task::spawn_blocking(move || {
+        crate::command::global_search_index::search_repo_cached_limited_cancelled(
+            &repo,
+            &query,
+            max + 1,
+            PER_FILE_MAX,
+            || {
+                search_state
+                    .search_generation
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    != generation
+            },
+        )
+    })
+    .await
+    .unwrap_or_default();
     let truncated = hits.len() > max;
     hits.truncate(max);
 
@@ -398,7 +435,11 @@ pub(crate) async fn handle_api_search(
         })
         .collect();
 
-    ok_json(&SearchResponse { hits, truncated })
+    ok_json(&SearchResponse {
+        hits,
+        truncated,
+        indexing: false,
+    })
 }
 
 #[derive(Deserialize)]
@@ -627,6 +668,11 @@ pub(crate) async fn handle_api_git_gutter(
     State(state): State<Arc<GargoServerState>>,
     Json(req): Json<GitGutterRequest>,
 ) -> Response {
+    if !state.workspace_index.is_git() {
+        return ok_json(&GitGutterResponse {
+            lines: std::collections::HashMap::new(),
+        });
+    }
     let Some(full) = resolve_in_repo(&state.repo_root, &req.path) else {
         return bad_request("invalid path");
     };
@@ -901,6 +947,117 @@ pub(crate) async fn handle_api_fs_reveal(
         Ok(_) => ok_json(&serde_json::json!({ "ok": true })),
         Err(e) => bad_request(format!("cannot reveal: {e}")),
     }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct OpenServerRequest {
+    path: String,
+}
+
+#[derive(Serialize)]
+struct OpenServerResponse {
+    url: String,
+    root: String,
+    reused: bool,
+}
+
+/// Start or reuse a gargo server rooted at a selected workspace directory.
+pub(crate) async fn handle_api_server_open(
+    State(state): State<Arc<GargoServerState>>,
+    Json(req): Json<OpenServerRequest>,
+) -> Response {
+    let Some(candidate) = resolve_in_repo(&state.repo_root, &req.path) else {
+        return bad_request("invalid path");
+    };
+    let Ok(candidate) = std::fs::canonicalize(candidate) else {
+        return bad_request("path does not exist");
+    };
+    let canonical_root =
+        std::fs::canonicalize(&state.repo_root).unwrap_or_else(|_| state.repo_root.clone());
+    if !candidate.starts_with(&canonical_root) {
+        return bad_request("path escapes server root");
+    }
+    if !candidate.is_dir() {
+        return bad_request("path is not a directory");
+    }
+
+    let discovered_root = crate::project::find_project_root(Some(&candidate));
+    let discovered_root = std::fs::canonicalize(&discovered_root).unwrap_or(discovered_root);
+    let target_root = if discovered_root.starts_with(&canonical_root) {
+        discovered_root
+    } else {
+        candidate
+    };
+    if target_root == canonical_root {
+        return ok_json(&OpenServerResponse {
+            url: format!("http://127.0.0.1:{}/", state.port),
+            root: target_root.display().to_string(),
+            reused: true,
+        });
+    }
+
+    if let Ok(children) = state.child_servers.lock()
+        && let Some(child) = children.get(&target_root)
+    {
+        return ok_json(&OpenServerResponse {
+            url: child.url.clone(),
+            root: target_root.display().to_string(),
+            reused: true,
+        });
+    }
+
+    let root_for_start = target_root.clone();
+    let started =
+        tokio::task::spawn_blocking(move || -> Result<(GargoServerHandle, String), String> {
+            let handle = GargoServerHandle::new()?;
+            handle
+                .command_tx
+                .send(GargoServerCommand::Start {
+                    repo_root: root_for_start,
+                    port: None,
+                    host: None,
+                })
+                .map_err(|e| format!("failed to start child server: {e}"))?;
+            match handle
+                .event_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+            {
+                Ok(GargoServerEvent::Started { root_url, .. }) => Ok((handle, root_url)),
+                Ok(GargoServerEvent::Error(error)) => Err(error),
+                Ok(event) => Err(format!("unexpected child server event: {event:?}")),
+                Err(error) => Err(format!("child server did not start: {error}")),
+            }
+        })
+        .await;
+
+    let (handle, url) = match started {
+        Ok(Ok(started)) => started,
+        Ok(Err(error)) => return bad_request(error),
+        Err(error) => return bad_request(format!("failed to join child server startup: {error}")),
+    };
+
+    let child = ChildGargoServer {
+        url: url.clone(),
+        _handle: handle,
+    };
+    if let Ok(mut children) = state.child_servers.lock() {
+        if let Some(existing) = children.get(&target_root) {
+            return ok_json(&OpenServerResponse {
+                url: existing.url.clone(),
+                root: target_root.display().to_string(),
+                reused: true,
+            });
+        }
+        children.insert(target_root.clone(), child);
+    } else {
+        return bad_request("failed to retain child server");
+    }
+
+    ok_json(&OpenServerResponse {
+        url,
+        root: target_root.display().to_string(),
+        reused: false,
+    })
 }
 
 #[cfg(target_os = "macos")]

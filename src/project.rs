@@ -91,7 +91,7 @@ pub fn discover_sub_repos(project_root: &Path) -> Vec<PathBuf> {
     repos
 }
 
-fn has_git_marker(dir: &Path) -> bool {
+pub fn has_git_marker(dir: &Path) -> bool {
     let dot_git = dir.join(".git");
     dot_git.is_dir() || dot_git.is_file()
 }

@@ -754,6 +754,76 @@ pub(crate) fn compare_diff_text(
     ))
 }
 
+/// `git diff <base>` against the current working tree: every file whose content
+/// differs between `base` and the on-disk worktree, covering committed changes
+/// since `base` as well as staged, unstaged, and untracked edits. `None` if the
+/// repo can't be opened or `base` can't resolve.
+///
+/// Unlike [`compare_diff_text`] (tree-to-tree) the right-hand side is the live
+/// worktree, so the result reflects uncommitted/dirty/untracked state. To avoid
+/// reading every tracked file from disk, only paths that differ `base..HEAD`
+/// (committed) or `HEAD/index..worktree` (status) are considered; a candidate
+/// whose base blob already matches the on-disk bytes is skipped.
+pub(crate) fn compare_worktree_diff_text(
+    root: &Path,
+    base: &str,
+    only_path: Option<&str>,
+) -> Option<String> {
+    let repo = shared_repo(root)?.to_thread_local();
+    let work_dir = repo.workdir()?.to_path_buf();
+    let base_id = repo.rev_parse_single(base.as_bytes().as_bstr()).ok()?;
+    let base_tree = repo.find_commit(base_id).ok()?.tree().ok()?;
+
+    // Union of candidate paths: committed changes `base..HEAD` plus anything the
+    // worktree reports as changed/staged/untracked. Unchanged files never get read.
+    let mut paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    if let Ok(head_id) = repo.rev_parse_single("HEAD".as_bytes().as_bstr())
+        && let Some(head_tree) = repo.find_commit(head_id).ok().and_then(|c| c.tree().ok())
+        && let Ok(changes) = repo.diff_tree_to_tree(Some(&base_tree), Some(&head_tree), None)
+    {
+        for change in &changes {
+            paths.insert(change_sort_key(change));
+        }
+    }
+    if let Some((changed, staged)) = status_files(root) {
+        for entry in changed {
+            paths.insert(entry.path);
+        }
+        for entry in staged {
+            paths.insert(entry.path);
+        }
+    }
+
+    let mut out = String::new();
+    for path in paths {
+        if let Some(only) = only_path
+            && path != only
+        {
+            continue;
+        }
+        let old = tree_blob_bytes(&repo, &base_tree, &path);
+        // Worktree side: the live file, or `None` when it has been removed.
+        let new = std::fs::read(work_dir.join(&path)).ok();
+        if old == new {
+            continue;
+        }
+        let kind = match (&old, &new) {
+            (None, Some(_)) => FileChangeKind::Added,
+            (Some(_), None) => FileChangeKind::Deleted,
+            _ => FileChangeKind::Modified,
+        };
+        append_file_diff(
+            &mut out,
+            &path,
+            &path,
+            &old.unwrap_or_default(),
+            &new.unwrap_or_default(),
+            kind,
+        );
+    }
+    Some(out)
+}
+
 pub(crate) fn file_diff_text(root: &Path, path: &str, staged: bool) -> Option<String> {
     let repo = shared_repo(root)?.to_thread_local();
     let old = if staged {
@@ -829,6 +899,17 @@ fn blob_bytes(repo: &Repository, id: gix::ObjectId) -> Vec<u8> {
     repo.find_object(id)
         .map(|o| o.detach().data)
         .unwrap_or_default()
+}
+
+/// Raw bytes of a regular-file blob at `path` within `tree`, or `None` when the
+/// path is absent or not a blob (directory/submodule). Used to read the base
+/// side of a worktree comparison without resolving a `<ref>:<path>` revspec.
+fn tree_blob_bytes(repo: &Repository, tree: &gix::Tree<'_>, path: &str) -> Option<Vec<u8>> {
+    let entry = tree.lookup_entry_by_path(Path::new(path)).ok()??;
+    match entry.mode().kind() {
+        EntryKind::Blob | EntryKind::BlobExecutable => Some(blob_bytes(repo, entry.object_id())),
+        _ => None,
+    }
 }
 
 fn staged_entries(repo: &Repository, index: &gix::index::File) -> Vec<GitFileEntry> {

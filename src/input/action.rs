@@ -198,6 +198,7 @@ pub enum ProjectAction {
     ChangeProjectRoot(String),
     SwitchToRecentProject(String),
     SwitchGitBranch(String),
+    GitPush,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

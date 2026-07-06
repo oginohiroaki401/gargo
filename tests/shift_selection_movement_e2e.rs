@@ -99,6 +99,38 @@ fn visual_ctrl_shift_right_extends_word_and_delete_selection_removes_it() {
 }
 
 #[test]
+fn insert_shift_left_selects_then_backspace_deletes_whole_selection() {
+    let (_tmp, file, mut app) = app_with_text("insert_shift_backspace.txt", "abcdef");
+    let mut state = KeyState::Normal;
+
+    // Enter Insert mode and move the cursor to end of line.
+    app.dispatch_action(Action::Core(CoreAction::ChangeMode(Mode::Insert)));
+    app.dispatch_action(Action::Core(CoreAction::MoveToLineEnd));
+
+    // Shift+Left three times selects "def".
+    for _ in 0..3 {
+        dispatch_key(
+            &mut app,
+            &mut state,
+            Mode::Insert,
+            shift_arrow(KeyCode::Left),
+        );
+    }
+
+    // Backspace deletes the whole selection, not just one char.
+    dispatch_key(
+        &mut app,
+        &mut state,
+        Mode::Insert,
+        KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+    );
+    app.dispatch_action(Action::App(AppAction::Buffer(BufferAction::Save)));
+
+    let saved = fs::read_to_string(&file).expect("read saved file");
+    assert_eq!(saved, "abc");
+}
+
+#[test]
 fn normal_shift_right_then_right_moves_from_new_cursor_edge() {
     let (_tmp, file, mut app) = app_with_text("normal_shift_cursor_edge.txt", "abcd");
     let mut state = KeyState::Normal;

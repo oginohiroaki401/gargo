@@ -601,9 +601,18 @@
         if (finderFiles === null) {
             finderList.innerHTML = "<li>Loading…</li>";
             try {
-                const resp = await fetch("/api/files");
-                const data = await resp.json();
-                finderFiles = data.files || [];
+                finderFiles = [];
+                let offset = 0;
+                for (;;) {
+                    const resp = await fetch("/api/files?offset=" + offset + "&limit=5000");
+                    const data = await resp.json();
+                    finderFiles.push(...(data.files || []));
+                    offset = Number(data.next_offset ?? finderFiles.length);
+                    if (data.ready && offset >= Number(data.total || 0)) break;
+                    if (!(data.files || []).length) {
+                        await new Promise(resolve => setTimeout(resolve, 200));
+                    }
+                }
             } catch (_) {
                 finderFiles = [];
             }

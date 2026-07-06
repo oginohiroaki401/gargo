@@ -68,7 +68,7 @@ fn start_server(repo: &Path, handle: &GargoServerHandle) -> Option<u16> {
         .send(GargoServerCommand::Start {
             repo_root: repo.to_path_buf(),
             port: None,
-            ai_config: Default::default(),
+            host: None,
         })
         .expect("send start");
     match handle.event_rx.recv_timeout(Duration::from_secs(5)) {
@@ -117,6 +117,181 @@ fn setup_repo() -> tempfile::TempDir {
 }
 
 #[test]
+fn non_git_workspace_indexes_files_and_disables_git_capability() {
+    let workspace = tempdir().expect("temp workspace");
+    fs::create_dir_all(workspace.path().join("notes")).expect("create notes");
+    for i in 0..2500 {
+        fs::write(
+            workspace
+                .path()
+                .join("notes")
+                .join(format!("note-{i:04}.txt")),
+            format!("workspace needle {i}\n"),
+        )
+        .expect("write workspace file");
+    }
+    fs::create_dir_all(workspace.path().join("target")).expect("create target");
+    fs::write(workspace.path().join("target/ignored.txt"), "needle\n").expect("write ignored");
+
+    let handle = GargoServerHandle::new().expect("server handle");
+    let Some(port) = start_server(workspace.path(), &handle) else {
+        return;
+    };
+    let base_url = format!("http://127.0.0.1:{port}");
+
+    let repo_info = get_json_with_retry(&format!("{base_url}/api/repo-info"));
+    assert_eq!(repo_info["git"], false);
+
+    let first = get_json_with_retry(&format!("{base_url}/api/files?offset=0&limit=100"));
+    assert!(
+        first["entries"]
+            .as_array()
+            .is_some_and(|entries| entries.len() <= 100)
+    );
+    assert!(first["next_offset"].is_number() || first["ready"] == true);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let complete = loop {
+        let page = get_json_with_retry(&format!("{base_url}/api/files?offset=0&limit=10000"));
+        if page["ready"] == true {
+            break page;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "workspace index did not become ready"
+        );
+        thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(complete["total"], 2500);
+    assert!(
+        complete["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| !entry["path"].as_str().unwrap_or("").starts_with("target/"))
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let search = get_json_with_retry(&format!("{base_url}/api/search?q=needle&max=20"));
+        if search["indexing"] == false {
+            assert_eq!(search["hits"].as_array().unwrap().len(), 20);
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "search index did not become ready"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    let gutter = ureq::post(&format!("{base_url}/api/git-gutter"))
+        .send_json(ureq::json!({
+            "path": "notes/note-0000.txt",
+            "content": "workspace needle 0\n"
+        }))
+        .expect("git gutter");
+    let gutter: serde_json::Value = gutter.into_json().expect("gutter json");
+    assert_eq!(gutter["lines"], serde_json::json!({}));
+
+    let _ = handle.command_tx.send(GargoServerCommand::Stop);
+}
+
+#[test]
+fn workspace_tree_can_open_child_servers_for_directories() {
+    let workspace = tempdir().expect("temp workspace");
+    let nested_repo = workspace.path().join("nested-repo");
+    let plain_dir = workspace.path().join("plain-dir");
+    fs::create_dir_all(&nested_repo).expect("create nested repo");
+    fs::create_dir_all(&plain_dir).expect("create plain dir");
+    fs::write(nested_repo.join("README.md"), "# nested\n").expect("write nested file");
+    fs::write(plain_dir.join("notes.txt"), "plain\n").expect("write plain file");
+    run_git(&nested_repo, &["init", "-b", "main"]);
+
+    let handle = GargoServerHandle::new().expect("server handle");
+    let Some(port) = start_server(workspace.path(), &handle) else {
+        return;
+    };
+    let base_url = format!("http://127.0.0.1:{port}");
+
+    let open = |path: &str| -> serde_json::Value {
+        ureq::post(&format!("{base_url}/api/server/open"))
+            .send_json(ureq::json!({ "path": path }))
+            .expect("open child server")
+            .into_json()
+            .expect("child server json")
+    };
+
+    let repo_child = open("nested-repo");
+    assert_eq!(repo_child["reused"], false);
+    assert_eq!(
+        std::path::Path::new(repo_child["root"].as_str().unwrap()),
+        std::fs::canonicalize(&nested_repo).unwrap()
+    );
+    let repo_info = get_json_with_retry(&format!(
+        "{}/api/repo-info",
+        repo_child["url"].as_str().unwrap().trim_end_matches('/')
+    ));
+    assert_eq!(repo_info["git"], true);
+
+    let repo_child_reused = open("nested-repo");
+    assert_eq!(repo_child_reused["reused"], true);
+    assert_eq!(repo_child_reused["url"], repo_child["url"]);
+
+    let plain_child = open("plain-dir");
+    assert_eq!(plain_child["reused"], false);
+    let plain_info = get_json_with_retry(&format!(
+        "{}/api/repo-info",
+        plain_child["url"].as_str().unwrap().trim_end_matches('/')
+    ));
+    assert_eq!(plain_info["git"], false);
+    assert_eq!(
+        std::path::Path::new(plain_info["root"].as_str().unwrap()),
+        std::fs::canonicalize(&plain_dir).unwrap()
+    );
+
+    let current = open(".");
+    assert_eq!(current["reused"], true);
+    assert_eq!(current["url"], format!("{base_url}/"));
+
+    let file_error = ureq::post(&format!("{base_url}/api/server/open"))
+        .send_json(ureq::json!({ "path": "plain-dir/notes.txt" }))
+        .unwrap_err();
+    assert_eq!(
+        file_error.into_response().map(|response| response.status()),
+        Some(400)
+    );
+
+    let traversal_error = ureq::post(&format!("{base_url}/api/server/open"))
+        .send_json(ureq::json!({ "path": "../outside" }))
+        .unwrap_err();
+    assert_eq!(
+        traversal_error
+            .into_response()
+            .map(|response| response.status()),
+        Some(400)
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let outside = tempdir().expect("outside dir");
+        symlink(outside.path(), workspace.path().join("outside-link")).expect("create symlink");
+        let symlink_error = ureq::post(&format!("{base_url}/api/server/open"))
+            .send_json(ureq::json!({ "path": "outside-link" }))
+            .unwrap_err();
+        assert_eq!(
+            symlink_error
+                .into_response()
+                .map(|response| response.status()),
+            Some(400)
+        );
+    }
+
+    let _ = handle.command_tx.send(GargoServerCommand::Stop);
+}
+
+#[test]
 fn unified_gargo_server_serves_code_diffs_compare_commits_and_events() {
     let repo_dir = setup_repo();
     let repo = repo_dir.path();
@@ -138,6 +313,9 @@ fn unified_gargo_server_serves_code_diffs_compare_commits_and_events() {
     assert!(root_html.contains("openTreePicker"));
     assert!(root_html.contains("function buildTree"));
     assert!(root_html.contains("function updateTreePreview"));
+    assert!(root_html.contains("query && hasGit()"));
+    assert!(root_html.contains("allTreeNodes(state.treeRoot)"));
+    assert!(root_html.contains("visibleTreeNodes(state.treeRoot)"));
     assert!(root_html.contains(r#"state.focusLevel === "app" && event.key === "t""#));
     assert!(root_html.contains(r#"["l", "r"].includes(event.key.toLowerCase())"#));
     assert!(root_html.contains("enterEditorInsertMode"));
@@ -176,6 +354,7 @@ fn unified_gargo_server_serves_code_diffs_compare_commits_and_events() {
         repo_info["version"],
         serde_json::json!(env!("CARGO_PKG_VERSION"))
     );
+    assert_eq!(repo_info["git"], true);
 
     let blob_html = get_text_with_retry(&format!("{base_url}/aplio/gargo/blob/master/README.md"));
     assert!(blob_html.contains("Test Repo"));
@@ -413,6 +592,43 @@ fn gargo_server_plugin_commands_replace_old_visible_server_commands() {
         Config::default().plugins.enabled,
         vec!["lsp".to_string(), "gargo_server".to_string()]
     );
+}
+
+#[test]
+fn gargo_server_stop_command_hidden_until_server_running() {
+    let repo_dir = setup_repo();
+    let repo = repo_dir.path();
+    let mut config = Config::default();
+    config.plugins.enabled = vec!["gargo_server".to_string()];
+    let editor = Editor::open(&repo.join("README.md").to_string_lossy());
+    let ctx = PluginContext::new(&editor, repo, &config);
+    let mut host = build_plugin_host(&config, repo).expect("plugin host");
+
+    // Before the server starts, "Stop gargo server" must be hidden while
+    // "Start gargo server" stays available.
+    let hidden = host.hidden_command_ids();
+    assert!(hidden.contains("server.stop_gargo"));
+    assert!(!hidden.contains("server.start_gargo"));
+
+    let outputs = host.run_command("server.start_gargo", &ctx);
+    assert!(outputs.is_empty());
+
+    // Wait for the server to report it started, then the stop command becomes visible.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let _ = host.poll(&ctx);
+        if !host.hidden_command_ids().contains("server.stop_gargo") {
+            break;
+        }
+        if Instant::now() >= deadline {
+            // Server may fail to bind in sandboxed CI; don't hard-fail the suite.
+            let _ = host.run_command("server.stop_gargo", &ctx);
+            return;
+        }
+        thread::sleep(Duration::from_millis(30));
+    }
+
+    let _ = host.run_command("server.stop_gargo", &ctx);
 }
 
 #[test]

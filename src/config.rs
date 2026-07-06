@@ -60,50 +60,9 @@ pub struct PluginConfig {
 #[serde(default)]
 pub struct PluginGargoServerConfig {
     pub auto_open_browser: bool,
-    /// AI diff-summary settings for the diff/compare pages.
-    pub ai: PluginGargoServerAiConfig,
-}
-
-/// AI-powered diff summary settings (`[plugin.gargo_server.ai]`).
-///
-/// The API key is never stored here; it is read at request time from the
-/// environment variable named by [`Self::api_key_env`] (default
-/// `OPENAI_API_KEY`). Disabled by default so the server makes no outbound
-/// network calls unless the user opts in.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
-pub struct PluginGargoServerAiConfig {
-    /// Master switch. When false the `/api/ai/*` endpoints report disabled.
-    pub enabled: bool,
-    /// Provider id. Only `"openai"` is currently implemented.
-    pub provider: String,
-    /// Model id, e.g. `gpt-4o-mini` (low cost) or `gpt-4o` (higher quality).
-    pub model: String,
-    /// Name of the environment variable holding the API key.
-    pub api_key_env: String,
-    /// Upper bound on generated tokens for one summary.
-    pub max_tokens: u32,
-    /// Largest diff (bytes) sent to the model. Diffs above this are refused
-    /// rather than silently truncated. Roughly 3–4 bytes per token, so the
-    /// default (~250 KB ≈ 70K tokens) stays well inside a 128K context window.
-    pub max_diff_bytes: usize,
-    /// Natural language the summary is written in, e.g. `English`,
-    /// `Japanese`/`日本語`. Passed verbatim into the prompt.
-    pub language: String,
-}
-
-impl Default for PluginGargoServerAiConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            provider: "openai".to_string(),
-            model: "gpt-4o-mini".to_string(),
-            api_key_env: "OPENAI_API_KEY".to_string(),
-            max_tokens: 2000,
-            max_diff_bytes: 250_000,
-            language: "English".to_string(),
-        }
-    }
+    /// Host/IP the server binds to. Defaults to `127.0.0.1` (localhost only);
+    /// set to `0.0.0.0` to accept connections from other machines.
+    pub host: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -243,7 +202,7 @@ impl Default for PluginGargoServerConfig {
     fn default() -> Self {
         Self {
             auto_open_browser: true,
-            ai: PluginGargoServerAiConfig::default(),
+            host: "127.0.0.1".to_string(),
         }
     }
 }

@@ -27,7 +27,7 @@ fn start_server(repo: &Path, handle: &GargoServerHandle) -> Option<u16> {
         .send(GargoServerCommand::Start {
             repo_root: repo.to_path_buf(),
             port: None,
-            ai_config: Default::default(),
+            host: None,
         })
         .expect("send start");
     match handle.event_rx.recv_timeout(Duration::from_secs(5)) {

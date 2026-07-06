@@ -94,6 +94,12 @@ impl<'a> PluginContext<'a> {
 pub trait Plugin: Send {
     fn id(&self) -> &str;
     fn commands(&self) -> &[PluginCommandSpec];
+    /// Ids of commands that should be hidden from the command palette given the
+    /// plugin's current runtime state. Registered commands stay runnable (so old
+    /// keybindings keep working); they are merely filtered out of the picker.
+    fn hidden_command_ids(&self) -> Vec<String> {
+        Vec::new()
+    }
     fn on_command(&mut self, command_id: &str, ctx: &PluginContext) -> Vec<PluginOutput>;
     fn on_event(&mut self, event: &PluginEvent, ctx: &PluginContext) -> Vec<PluginOutput>;
     fn poll(&mut self, ctx: &PluginContext) -> Vec<PluginOutput>;

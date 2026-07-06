@@ -39,8 +39,8 @@ pub enum GargoServerCommand {
         repo_root: PathBuf,
         /// Explicit port to bind; `None` requests an OS-assigned ephemeral port.
         port: Option<u16>,
-        /// Non-secret AI diff-summary settings from config.
-        ai_config: crate::command::ai_summary::AiConfig,
+        /// Host/IP to bind; `None` defaults to `127.0.0.1` (localhost only).
+        host: Option<String>,
     },
     Stop,
     OpenRoute {
@@ -112,6 +112,16 @@ struct GargoServerWorker {
     port: Option<u16>,
 }
 
+/// Map a bind host to a host usable in a browser-facing URL. Wildcard bind
+/// addresses aren't connectable, so report a loopback address instead.
+fn url_host_for_bind(bind_host: &str) -> String {
+    match bind_host {
+        "0.0.0.0" => "127.0.0.1".to_string(),
+        "::" | "[::]" => "[::1]".to_string(),
+        other => other.to_string(),
+    }
+}
+
 impl GargoServerWorker {
     fn run(mut self) {
         loop {
@@ -119,8 +129,8 @@ impl GargoServerWorker {
                 Ok(GargoServerCommand::Start {
                     repo_root,
                     port,
-                    ai_config,
-                }) => self.handle_start(repo_root, port, ai_config),
+                    host,
+                }) => self.handle_start(repo_root, port, host),
                 Ok(GargoServerCommand::Stop) => self.handle_stop(),
                 Ok(GargoServerCommand::OpenRoute { route }) => self.handle_open_route(route),
                 Ok(GargoServerCommand::SetActivePath { rel_path }) => {
@@ -139,12 +149,7 @@ impl GargoServerWorker {
         }
     }
 
-    fn handle_start(
-        &mut self,
-        repo_root: PathBuf,
-        port: Option<u16>,
-        ai_config: crate::command::ai_summary::AiConfig,
-    ) {
+    fn handle_start(&mut self, repo_root: PathBuf, port: Option<u16>, host: Option<String>) {
         if self.server_shutdown_tx.is_some() {
             let _ = self.event_tx.send(GargoServerEvent::Error(
                 "Server already running".to_string(),
@@ -152,7 +157,9 @@ impl GargoServerWorker {
             return;
         }
 
-        let bind_addr = format!("127.0.0.1:{}", port.unwrap_or(0));
+        let bind_host = host.unwrap_or_else(|| "127.0.0.1".to_string());
+        let url_host = url_host_for_bind(&bind_host);
+        let bind_addr = format!("{}:{}", bind_host, port.unwrap_or(0));
         let listener = match self
             .tokio_runtime
             .block_on(tokio::net::TcpListener::bind(&bind_addr))
@@ -184,7 +191,7 @@ impl GargoServerWorker {
         let url_ctx = self
             .tokio_runtime
             .block_on(gargo_preview_server::resolve_repo_url_context(&repo_root));
-        let root_url = format!("http://127.0.0.1:{port}/");
+        let root_url = format!("http://{url_host}:{port}/");
 
         let bridge_tx = bridge_preview_events(self.event_tx.clone());
         let preview_state = Arc::new(Mutex::new(PreviewServerState {
@@ -219,11 +226,17 @@ impl GargoServerWorker {
             ai_store: crate::command::ai_summary::AiSummaryStore::open(),
             ai_diff_cache: Default::default(),
         });
+        let is_git = crate::project::has_git_marker(&repo_root);
+        let workspace_index =
+            crate::command::workspace_index::WorkspaceIndex::new(repo_root.clone(), is_git);
         let github_state = Arc::new(GargoServerState {
             repo_root,
-            files_cache: std::sync::Mutex::new(None),
+            port,
             fs_generation: std::sync::atomic::AtomicU64::new(0),
+            search_generation: std::sync::atomic::AtomicU64::new(0),
             diff_cache,
+            workspace_index,
+            child_servers: std::sync::Mutex::new(std::collections::HashMap::new()),
         });
 
         self.tokio_runtime.spawn(async move {
@@ -409,22 +422,26 @@ fn bridge_preview_events(
 /// the last time the file was opened in gargo (CLI or web editor), 0 if never.
 pub(crate) type FileEntry = (String, u64, bool, u64);
 
-/// A cached `/api/files` listing: `(generation, cached_at, files, entries)`,
-/// reused while the generation matches and the entry is within the TTL.
-type FilesCache = (u64, std::time::Instant, Vec<String>, Vec<FileEntry>);
-
-#[derive(Debug)]
 pub(crate) struct GargoServerState {
     pub(crate) repo_root: PathBuf,
-    /// Short-lived cache for the `/api/files` listing (`git ls-files`), which the
-    /// editor hits on every Cmd+P open.
-    pub(crate) files_cache: std::sync::Mutex<Option<FilesCache>>,
-    /// Bumped by filesystem-mutating editor handlers (create/rename/delete/save)
-    /// so `files_cache` is invalidated immediately rather than waiting for the TTL.
+    pub(crate) port: u16,
+    /// Bumped by filesystem-mutating editor handlers.
     pub(crate) fs_generation: std::sync::atomic::AtomicU64,
+    /// Incremented for each search request so superseded work stops early.
+    pub(crate) search_generation: std::sync::atomic::AtomicU64,
     /// In-memory cache of rendered immutable (commit) file diffs, shared with the
     /// compare endpoint's `DiffServerState`.
     pub(crate) diff_cache: Arc<diff_server::DiffRenderCache>,
+    /// Shared, incrementally published file and search index.
+    pub(crate) workspace_index: Arc<crate::command::workspace_index::WorkspaceIndex>,
+    /// Child servers opened from workspace directories, keyed by canonical root.
+    pub(crate) child_servers:
+        std::sync::Mutex<std::collections::HashMap<PathBuf, ChildGargoServer>>,
+}
+
+pub(crate) struct ChildGargoServer {
+    pub(crate) url: String,
+    pub(crate) _handle: GargoServerHandle,
 }
 
 async fn run_server(
@@ -601,6 +618,7 @@ async fn run_server(
         .route("/api/fs/rename", post(editor::handle_api_fs_rename))
         .route("/api/fs/delete", post(editor::handle_api_fs_delete))
         .route("/api/fs/reveal", post(editor::handle_api_fs_reveal))
+        .route("/api/server/open", post(editor::handle_api_server_open))
         .route("/api/highlight", post(editor::handle_api_highlight))
         .route("/api/symbols", post(editor::handle_api_symbols))
         .route("/api/git-gutter", post(editor::handle_api_git_gutter))

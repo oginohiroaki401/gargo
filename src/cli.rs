@@ -34,6 +34,12 @@ pub struct Cli {
     #[arg(long, requires = "server", conflicts_with_all = ["check", "update"])]
     pub port: Option<u16>,
 
+    /// Host/IP for the HTTP server to bind (server mode only). Overrides the
+    /// `plugin.gargo_server.host` config value. Use `0.0.0.0` to accept
+    /// connections from other machines. Defaults to `127.0.0.1`.
+    #[arg(long, requires = "server", conflicts_with_all = ["check", "update"])]
+    pub host: Option<String>,
+
     /// Optional file or directory to open.
     #[arg(value_name = "PATH", conflicts_with_all = ["check", "update"])]
     pub path: Option<PathBuf>,
@@ -101,6 +107,25 @@ mod tests {
             .expect("parse --server --port 8080");
         assert_eq!(cli.mode(), CliMode::Server);
         assert_eq!(cli.port, Some(8080));
+    }
+
+    #[test]
+    fn parses_server_host_flag() {
+        let cli = Cli::try_parse_from(["gargo", "--server", "--host", "0.0.0.0"])
+            .expect("parse --server --host 0.0.0.0");
+        assert_eq!(cli.mode(), CliMode::Server);
+        assert_eq!(cli.host.as_deref(), Some("0.0.0.0"));
+    }
+
+    #[test]
+    fn rejects_host_without_server() {
+        let err = Cli::try_parse_from(["gargo", "--host", "0.0.0.0"])
+            .expect_err("--host requires --server");
+        let message = err.to_string();
+        assert!(
+            message.contains("following required") || message.contains("cannot be used"),
+            "unexpected clap error: {message}"
+        );
     }
 
     #[test]

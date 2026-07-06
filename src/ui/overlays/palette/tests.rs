@@ -1219,7 +1219,13 @@ fn command_history_sorts_by_last_used() {
 
     // Test: Empty query WITH history should sort by last-used
     let config = Config::default();
-    let candidates = Palette::filter_commands(&registry, "", Some(&history), &config);
+    let candidates = Palette::filter_commands(
+        &registry,
+        "",
+        Some(&history),
+        &config,
+        &std::collections::HashSet::new(),
+    );
 
     // Most recent first: Open, Quit, Save, then alphabetically: Unused
     assert_eq!(candidates.len(), 4);
@@ -1259,7 +1265,13 @@ fn command_history_alphabetical_without_history() {
 
     // Test: Empty query WITHOUT history should sort alphabetically
     let config = Config::default();
-    let candidates = Palette::filter_commands(&registry, "", None, &config);
+    let candidates = Palette::filter_commands(
+        &registry,
+        "",
+        None,
+        &config,
+        &std::collections::HashSet::new(),
+    );
 
     assert_eq!(candidates.len(), 3);
     assert_eq!(candidates[0].label, "Aaa First");
@@ -1307,7 +1319,13 @@ fn command_history_fuzzy_search_overrides_history() {
 
     // Test: Query "save" should match by fuzzy score, not history
     let config = Config::default();
-    let candidates = Palette::filter_commands(&registry, "save", Some(&history), &config);
+    let candidates = Palette::filter_commands(
+        &registry,
+        "save",
+        Some(&history),
+        &config,
+        &std::collections::HashSet::new(),
+    );
 
     // Only "Save File" should match
     assert_eq!(candidates.len(), 1);
@@ -1332,9 +1350,72 @@ fn command_history_graceful_degradation() {
 
     // Test with None history (should not crash, just use alphabetical)
     let config = Config::default();
-    let candidates = Palette::filter_commands(&registry, "", None, &config);
+    let candidates = Palette::filter_commands(
+        &registry,
+        "",
+        None,
+        &config,
+        &std::collections::HashSet::new(),
+    );
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].label, "Test Command");
+}
+
+#[test]
+fn reload_query_matches_refresh_buffer_via_alias() {
+    let mut registry = CommandRegistry::new();
+    crate::command::registry::register_builtins(&mut registry);
+
+    let config = Config::default();
+    let candidates = Palette::filter_commands(
+        &registry,
+        "reload buffer",
+        None,
+        &config,
+        &std::collections::HashSet::new(),
+    );
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.label == "Refresh Buffer from Disk"),
+        "typing 'reload buffer' should reach the refresh command via its alias"
+    );
+}
+
+#[test]
+fn hidden_command_ids_are_excluded_from_candidates() {
+    use crate::command::registry::{CommandEntry, CommandRegistry};
+
+    let mut registry = CommandRegistry::new();
+    registry.register(CommandEntry {
+        id: "server.start_gargo".into(),
+        label: "Start gargo server".into(),
+        category: None,
+        action: Box::new(|_ctx| crate::command::registry::CommandEffect::None),
+    });
+    registry.register(CommandEntry {
+        id: "server.stop_gargo".into(),
+        label: "Stop gargo server".into(),
+        category: None,
+        action: Box::new(|_ctx| crate::command::registry::CommandEffect::None),
+    });
+
+    let config = Config::default();
+    let mut hidden = std::collections::HashSet::new();
+    hidden.insert("server.stop_gargo".to_string());
+
+    let candidates = Palette::filter_commands(&registry, "gargo", None, &config, &hidden);
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.label == "Start gargo server")
+    );
+    assert!(
+        !candidates
+            .iter()
+            .any(|candidate| candidate.label == "Stop gargo server"),
+        "hidden command should not appear in palette candidates"
+    );
 }
 
 #[test]
@@ -1347,7 +1428,13 @@ fn command_labels_for_config_toggles_are_dynamic() {
         show_line_number: true,
         ..Config::default()
     };
-    let candidates = Palette::filter_commands(&registry, "", None, &config);
+    let candidates = Palette::filter_commands(
+        &registry,
+        "",
+        None,
+        &config,
+        &std::collections::HashSet::new(),
+    );
     let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
     assert!(labels.contains(&"Show Debug"));
     assert!(labels.contains(&"Hide Line Number"));
@@ -1357,7 +1444,13 @@ fn command_labels_for_config_toggles_are_dynamic() {
         show_line_number: false,
         ..Config::default()
     };
-    let candidates = Palette::filter_commands(&registry, "", None, &config);
+    let candidates = Palette::filter_commands(
+        &registry,
+        "",
+        None,
+        &config,
+        &std::collections::HashSet::new(),
+    );
     let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
     assert!(labels.contains(&"Hide Debug"));
     assert!(labels.contains(&"Show Line Number"));

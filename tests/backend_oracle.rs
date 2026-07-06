@@ -112,7 +112,7 @@ fn start_gargo_server(repo: &Path, handle: &GargoServerHandle) -> Option<u16> {
         .send(GargoServerCommand::Start {
             repo_root: repo.to_path_buf(),
             port: None,
-            ai_config: Default::default(),
+            host: None,
         })
         .expect("send gargo start");
     match handle.event_rx.recv_timeout(Duration::from_secs(5)) {
@@ -252,6 +252,18 @@ fn backend_oracle_read_endpoints() {
         "compare_file",
         get_json_with_retry(&format!(
             "{g}/api/compare/file?base=master&compare=feature&path=src/lib.rs"
+        )),
+    );
+    // Worktree compare: `base` against the live working tree, so the unstaged
+    // src/lib.rs edit, the staged added.rs, and untracked.txt all appear.
+    assert_golden(
+        "compare_worktree",
+        get_json_with_retry(&format!("{g}/api/compare?base=master&compare=WORKTREE")),
+    );
+    assert_golden(
+        "compare_worktree_file",
+        get_json_with_retry(&format!(
+            "{g}/api/compare/file?base=master&compare=WORKTREE&path=src/lib.rs"
         )),
     );
 

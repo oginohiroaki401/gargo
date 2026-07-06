@@ -179,12 +179,22 @@ impl App {
             }
             CoreAction::DeleteForward => {
                 self.queue_insert_edit_jump_line();
-                self.editor.active_buffer_mut().delete_forward();
+                let buf = self.editor.active_buffer_mut();
+                // An active selection (e.g. shift+cursor in Insert mode) is
+                // deleted whole rather than just the char under the cursor.
+                if buf.delete_active_selection().is_none() {
+                    buf.delete_forward();
+                }
                 self.editor.mark_highlights_dirty();
             }
             CoreAction::DeleteBackward => {
                 self.queue_insert_edit_jump_line();
-                self.editor.active_buffer_mut().delete_backward();
+                let buf = self.editor.active_buffer_mut();
+                // An active selection (e.g. shift+cursor in Insert mode) is
+                // deleted whole rather than just the char before the cursor.
+                if buf.delete_active_selection().is_none() {
+                    buf.delete_backward();
+                }
                 self.editor.mark_highlights_dirty();
             }
             CoreAction::KillLine => {
@@ -194,16 +204,19 @@ impl App {
             }
             CoreAction::InsertNewline => {
                 self.queue_insert_edit_jump_line();
+                self.replace_active_selection_on_insert();
                 self.editor
                     .insert_newline_with_indent(self.config.tab_width);
             }
             CoreAction::InsertChar(c) => {
                 self.queue_insert_edit_jump_line();
+                self.replace_active_selection_on_insert();
                 self.editor.active_buffer_mut().insert_char(c);
                 self.editor.mark_highlights_dirty();
             }
             CoreAction::InsertText(text) => {
                 self.queue_insert_edit_jump_line();
+                self.replace_active_selection_on_insert();
                 let t0 = std::time::Instant::now();
                 self.editor.active_buffer_mut().paste(&text);
                 let insert_elapsed = t0.elapsed();
@@ -739,6 +752,17 @@ impl App {
             self.queue_active_doc_git_refresh(true);
         }
         false
+    }
+
+    /// When typing in Insert mode with an active selection (e.g. created via
+    /// shift+arrow), replace the selection: delete the selected text first so the
+    /// typed character/text lands where the selection was, rather than appending
+    /// at the cursor while leaving the selection intact.
+    fn replace_active_selection_on_insert(&mut self) {
+        if self.editor.active_buffer().has_selection() {
+            self.editor.active_buffer_mut().delete_active_selection();
+            self.editor.mark_highlights_dirty();
+        }
     }
 
     fn add_cursor_to_search_match(&mut self, next: bool) {

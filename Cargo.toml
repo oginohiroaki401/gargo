@@ -1,6 +1,6 @@
 [package]
 name = "gargo"
-version = "0.2.6"
+version = "0.2.15"
 edition = "2024"
 
 [lib]
@@ -21,7 +21,7 @@ crossterm = "0.29"
 clap = { version = "4.5", features = ["derive"] }
 toml = "0.9"
 streaming-iterator = "0.1"
-tokio = { version = "1", features = ["rt-multi-thread", "process", "io-util", "sync", "net", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "process", "io-util", "sync", "net", "fs", "time"] }
 axum = "0.8"
 # Blocking HTTP client for outbound AI provider calls (diff summaries).
 ureq = { version = "2", features = ["json"] }

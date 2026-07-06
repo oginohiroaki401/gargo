@@ -10,8 +10,13 @@ impl Palette {
         if self.input.text.starts_with('>') {
             self.mode = PaletteMode::Command;
             let query = self.input.text[1..].trim_start();
-            self.candidates =
-                Self::filter_commands(registry, query, self.command_history.as_deref(), config);
+            self.candidates = Self::filter_commands(
+                registry,
+                query,
+                self.command_history.as_deref(),
+                config,
+                &self.hidden_command_ids,
+            );
         } else if self.input.text.starts_with('@') {
             self.mode = PaletteMode::SymbolPicker;
             let query = self.input.text[1..].to_string();
@@ -41,12 +46,16 @@ impl Palette {
         query: &str,
         history: Option<&CommandHistory>,
         config: &Config,
+        hidden_command_ids: &HashSet<String>,
     ) -> Vec<ScoredCandidate> {
         let mut scored: Vec<ScoredCandidate> = registry
             .commands()
             .iter()
             .enumerate()
             .filter_map(|(i, entry)| {
+                if hidden_command_ids.contains(&entry.id) {
+                    return None;
+                }
                 let display_label = command_display_label(entry, config);
                 if query.is_empty() {
                     return Some(ScoredCandidate {
@@ -57,11 +66,23 @@ impl Palette {
                         preview_lines: command_preview_lines(entry, &display_label),
                     });
                 }
-                fuzzy_match(&display_label, query).map(|(score, positions)| ScoredCandidate {
+                // Match against the visible label, then against any aliases.
+                // Alias matches contribute no highlight positions (those index
+                // into the displayed label, not the alias text).
+                let label_match = fuzzy_match(&display_label, query);
+                let alias_match = command_aliases(entry)
+                    .iter()
+                    .filter_map(|alias| fuzzy_match(alias, query).map(|(score, _)| (score, None)));
+                let best = label_match
+                    .map(|(score, positions)| (score, Some(positions)))
+                    .into_iter()
+                    .chain(alias_match)
+                    .max_by_key(|(score, _)| *score);
+                best.map(|(score, positions)| ScoredCandidate {
                     kind: CandidateKind::Command(i),
                     label: display_label.clone(),
                     score,
-                    match_positions: positions,
+                    match_positions: positions.unwrap_or_default(),
                     preview_lines: command_preview_lines(entry, &display_label),
                 })
             })

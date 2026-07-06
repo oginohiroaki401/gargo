@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::plugin::types::{Plugin, PluginCommandSpec, PluginContext, PluginEvent, PluginOutput};
 
@@ -29,6 +29,15 @@ impl PluginHost {
 
     pub fn command_specs(&self) -> &[PluginCommandSpec] {
         &self.command_specs
+    }
+
+    /// Command ids that should currently be hidden from the command palette,
+    /// aggregated across all plugins based on their live runtime state.
+    pub fn hidden_command_ids(&self) -> HashSet<String> {
+        self.plugins
+            .iter()
+            .flat_map(|plugin| plugin.hidden_command_ids())
+            .collect()
     }
 
     pub fn run_command(&mut self, command_id: &str, ctx: &PluginContext) -> Vec<PluginOutput> {

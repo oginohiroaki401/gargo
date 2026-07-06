@@ -61,6 +61,7 @@ impl Palette {
             reference_highlight_cache: HashMap::new(),
             lang_registry_owned: None,
             command_history,
+            hidden_command_ids: HashSet::new(),
             global_search_unsaved_buffers: Vec::new(),
             global_search_entries: Vec::new(),
             global_search_request_tx: None,
@@ -124,6 +125,7 @@ impl Palette {
             reference_highlight_cache: HashMap::new(),
             lang_registry_owned: Some(LanguageRegistry::new()),
             command_history: None,
+            hidden_command_ids: HashSet::new(),
             global_search_unsaved_buffers: Vec::new(),
             global_search_entries: Vec::new(),
             global_search_request_tx: None,
@@ -200,6 +202,7 @@ impl Palette {
             reference_highlight_cache: HashMap::new(),
             lang_registry_owned: None,
             command_history: None,
+            hidden_command_ids: HashSet::new(),
             global_search_unsaved_buffers: Vec::new(),
             global_search_entries: Vec::new(),
             global_search_request_tx: None,
@@ -279,6 +282,7 @@ impl Palette {
             reference_highlight_cache: HashMap::new(),
             lang_registry_owned: None,
             command_history: None,
+            hidden_command_ids: HashSet::new(),
             global_search_unsaved_buffers: Vec::new(),
             global_search_entries: Vec::new(),
             global_search_request_tx: None,
@@ -357,6 +361,7 @@ impl Palette {
             reference_highlight_cache: HashMap::new(),
             lang_registry_owned: None,
             command_history: None,
+            hidden_command_ids: HashSet::new(),
             global_search_unsaved_buffers: Vec::new(),
             global_search_entries: Vec::new(),
             global_search_request_tx: None,
@@ -442,6 +447,7 @@ impl Palette {
             reference_highlight_cache: HashMap::new(),
             lang_registry_owned: None,
             command_history: None,
+            hidden_command_ids: HashSet::new(),
             global_search_unsaved_buffers: Vec::new(),
             global_search_entries: Vec::new(),
             global_search_request_tx: None,
@@ -518,6 +524,7 @@ impl Palette {
             reference_highlight_cache: HashMap::new(),
             lang_registry_owned: None,
             command_history: None,
+            hidden_command_ids: HashSet::new(),
             global_search_unsaved_buffers: Vec::new(),
             global_search_entries: Vec::new(),
             global_search_request_tx: None,
@@ -594,6 +601,7 @@ impl Palette {
             reference_highlight_cache: HashMap::new(),
             lang_registry_owned: None,
             command_history: None,
+            hidden_command_ids: HashSet::new(),
             global_search_unsaved_buffers: Vec::new(),
             global_search_entries: Vec::new(),
             global_search_request_tx: None,
@@ -616,6 +624,13 @@ impl Palette {
 
     pub fn set_input(&mut self, input: String) {
         self.input.set_text(input);
+    }
+
+    /// Hide the given command ids from the command-palette candidate list.
+    /// Used to suppress commands that are irrelevant in the current app state
+    /// (e.g. "Stop gargo server" while the server is not running).
+    pub fn set_hidden_command_ids(&mut self, ids: HashSet<String>) {
+        self.hidden_command_ids = ids;
     }
 
     pub fn new_global_search(
@@ -673,6 +688,7 @@ impl Palette {
             reference_highlight_cache: HashMap::new(),
             lang_registry_owned: None,
             command_history: None,
+            hidden_command_ids: HashSet::new(),
             global_search_unsaved_buffers: unsaved_buffers,
             global_search_entries: Vec::new(),
             global_search_request_tx: Some(search_req_tx),

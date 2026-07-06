@@ -269,6 +269,18 @@ pub(super) fn command_display_label(
     }
 }
 
+/// Extra search terms a command should match in the palette beyond its visible
+/// label. Lets users find a command by an alternate name (e.g. typing "reload"
+/// to reach "Refresh Buffer from Disk").
+pub(super) fn command_aliases(
+    entry: &crate::command::registry::CommandEntry,
+) -> &'static [&'static str] {
+    match entry.id.as_str() {
+        "buffer.refresh" => &["Reload Buffer from Disk"],
+        _ => &[],
+    }
+}
+
 pub(super) fn command_preview_lines(
     entry: &crate::command::registry::CommandEntry,
     display_label: &str,

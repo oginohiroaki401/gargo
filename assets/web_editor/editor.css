@@ -266,6 +266,8 @@ body.col-resizing iframe { pointer-events: none; }
   color: var(--muted);
 }
 .code-toolbar .path { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.code-toolbar .path.clickable { cursor: pointer; }
+.code-toolbar .path.clickable:hover { color: var(--accent); text-decoration: underline; }
 .code-toolbar .grow { flex: 1; }
 .code-toolbar .dirty { color: var(--yellow); }
 .code-body { min-height: calc(100% - 31px); }

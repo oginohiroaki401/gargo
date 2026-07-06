@@ -31,6 +31,7 @@ const commitSubmit = document.getElementById("commit-submit");
 const commitCancel = document.getElementById("commit-cancel");
 
 const COMPONENTS = ["explorer", "history", "compare", "status", "search"];
+const GIT_COMPONENTS = new Set(["history", "compare", "status"]);
 const state = {
   component: "explorer",
   connected: true,
@@ -39,6 +40,9 @@ const state = {
   gPending: false,
   files: [],
   fileEntries: [],
+  fileIndexReady: false,
+  fileIndexLoading: false,
+  fileRefreshing: false,
   currentFile: "",
   fileContent: "",
   fileBaseContent: "",
@@ -58,6 +62,7 @@ const state = {
   historyPollTimer: null,
   refs: [],
   refInfo: {},
+  refUsedAt: null,      // ref -> last-picked unix seconds (hydrated from localStorage)
   commit: null,
   compareBase: "",
   compareTarget: "",
@@ -191,7 +196,7 @@ const HELP_SECTIONS = [
       ["j / k", "Move"],
       ["h / l", "Collapse / expand"],
       ["Enter", "Open"],
-      ["⌥Enter / ⌘Enter", "Open in new tab"],
+      ["⌥Enter / ⌘Enter", "File: new tab · directory: new server"],
       ["/", "Filter"],
       ["J / K", "Scroll preview"],
     ],
@@ -200,14 +205,18 @@ const HELP_SECTIONS = [
 
 const COMMANDS = [
   { label: "Switch to Explorer", hint: "g e", run: () => switchComponent("explorer") },
-  { label: "Switch to History", hint: "g h", run: () => switchComponent("history") },
-  { label: "Switch to Compare", hint: "g c", run: () => switchComponent("compare") },
-  { label: "Switch to Status", hint: "g s", run: () => switchComponent("status") },
+  { label: "Switch to History", hint: "g h", git: true, run: () => switchComponent("history") },
+  { label: "Switch to Compare", hint: "g c", git: true, run: () => switchComponent("compare") },
+  { label: "Switch to Status", hint: "g s", git: true, run: () => switchComponent("status") },
   { label: "Switch to Search", hint: "g f", run: () => switchComponent("search") },
   { label: "Open file tree", hint: "t", run: () => openTreePicker() },
   { label: "Save current file", hint: "Cmd+S", run: () => saveCurrentFile() },
   { label: "Refresh current component", hint: "r", run: () => refreshComponent() },
   { label: "Search project", hint: "Cmd+Shift+F", run: () => switchComponent("search") },
+  { label: "Copy relative path", run: () => copyTargetPath("rel") },
+  { label: "Copy absolute path", run: () => copyTargetPath("abs") },
+  { label: "Copy GitHub URL (default branch)", git: true, run: () => copyTargetPath("github-default") },
+  { label: "Copy GitHub URL (current branch)", git: true, run: () => copyTargetPath("github-branch") },
   { label: "Show keybindings", hint: "?", run: () => toggleHelp() },
 ];
 
@@ -269,6 +278,23 @@ async function loadRepoInfo() {
   renderRepoLink();
   renderVersion();
   updateTitle();
+  applyCapabilities();
+}
+
+function hasGit() {
+  return state.repoInfo?.git !== false;
+}
+
+function availableComponents() {
+  return COMPONENTS.filter(component => hasGit() || !GIT_COMPONENTS.has(component));
+}
+
+function applyCapabilities() {
+  document.querySelectorAll("[data-component]").forEach(button => {
+    button.hidden = !hasGit() && GIT_COMPONENTS.has(button.dataset.component);
+  });
+  repoBranch.hidden = !hasGit() || !state.repoInfo?.branch;
+  if (!hasGit() && GIT_COMPONENTS.has(state.component)) switchComponent("explorer");
 }
 
 function renderVersion() {
@@ -366,7 +392,7 @@ function updateFocusChrome() {
 }
 
 async function switchComponent(component) {
-  if (!COMPONENTS.includes(component)) return;
+  if (!availableComponents().includes(component)) return;
   stopStatusPolling();
   stopHistoryPolling();
   state.component = component;
@@ -402,10 +428,80 @@ function listHtml(items, selected, row) {
 }
 
 async function ensureFiles() {
-  if (state.files.length) return;
-  const data = await api("/api/files");
-  state.files = data.files || [];
-  state.fileEntries = data.entries || state.files.map(path => ({ path, mtime: 0, opened: 0, changed: false }));
+  if (state.fileIndexReady || state.fileIndexLoading) return;
+  state.fileIndexLoading = true;
+  try {
+    const offset = state.fileEntries.length;
+    const data = await api(`/api/files?${new URLSearchParams({ offset: String(offset), limit: "2000" })}`);
+    const entries = data.entries || (data.files || []).map(path => ({
+      path, mtime: 0, opened: 0, changed: false,
+    }));
+    state.fileEntries.push(...entries);
+    state.files.push(...entries.map(entry => entry.path));
+    state.fileIndexReady = Boolean(data.ready) && state.fileEntries.length >= Number(data.total || 0);
+    if (data.truncated) notify("Workspace file index reached its 200,000 file limit");
+  } finally {
+    state.fileIndexLoading = false;
+  }
+  if (!state.fileIndexReady) setTimeout(loadMoreFiles, 200);
+}
+
+async function loadMoreFiles() {
+  if (state.fileIndexReady || state.fileIndexLoading) return;
+  try {
+    await ensureFiles();
+    if (state.popup === "quick" && state.quickMode === "files") {
+      state.quickFiles = quickFileItems();
+      state.popupItems = state.quickFiles;
+      filterPopup();
+    } else if (state.popup === "tree") {
+      state.treeRoot = buildTree(state.fileEntries);
+      filterPopup();
+    }
+  } catch (_) {
+    setTimeout(loadMoreFiles, 500);
+  }
+}
+
+// Re-index in the background so files created since the last open — by the
+// agent, the terminal, or another tab — show up in the picker. `refresh=1`
+// makes the backend rescan the workspace before responding. We page the fresh
+// list into a temp array and swap atomically, so the picker keeps showing the
+// current list (no flicker / empty flash) until the new one is fully loaded.
+async function refreshFiles() {
+  if (state.fileRefreshing) return;
+  state.fileRefreshing = true;
+  try {
+    const fresh = [];
+    let offset = 0;
+    for (let page = 0; page < 200; page++) {
+      const params = { offset: String(offset), limit: "2000" };
+      if (page === 0) params.refresh = "1";
+      const data = await api(`/api/files?${new URLSearchParams(params)}`);
+      const entries = data.entries || (data.files || []).map(path => ({
+        path, mtime: 0, opened: 0, changed: false,
+      }));
+      fresh.push(...entries);
+      const done = Boolean(data.ready) && fresh.length >= Number(data.total || 0);
+      if (done || entries.length === 0) break;
+      offset = fresh.length;
+    }
+    state.fileEntries = fresh;
+    state.files = fresh.map(entry => entry.path);
+    state.fileIndexReady = true;
+    if (state.popup === "quick" && state.quickMode === "files") {
+      state.quickFiles = quickFileItems();
+      state.popupItems = state.quickFiles;
+      filterPopup();
+    } else if (state.popup === "tree") {
+      state.treeRoot = buildTree(state.fileEntries);
+      filterPopup();
+    }
+  } catch (_) {
+    // Keep the existing list on failure — a stale picker beats an empty one.
+  } finally {
+    state.fileRefreshing = false;
+  }
 }
 
 async function renderExplorer() {
@@ -645,10 +741,14 @@ async function saveCurrentFile() {
 
 async function renderCodeSurface(container, options) {
   container.innerHTML = `<div class="code-surface">
-    <div class="code-toolbar"><span class="path">${escapeHtml(options.path || "Preview")}</span>
+    <div class="code-toolbar"><span class="path${options.path ? " clickable" : ""}"${options.path ? ` title="Click to copy path"` : ""}>${escapeHtml(options.path || "Preview")}</span>
       <span class="grow"></span><span class="dirty"></span>
       ${options.editable ? `<span class="editor-mode"></span><span>i/Enter edit · Esc app focus · Cmd+S save</span>` : `<span>read only</span>`}
     </div><div class="code-body"></div></div>`;
+  if (options.path) {
+    container.querySelector(".code-toolbar .path")
+      ?.addEventListener("click", () => copyText(options.path));
+  }
   const body = container.querySelector(".code-body");
   if (options.diffHtml !== undefined) {
     body.innerHTML = `<div class="diff-preview">${options.diffHtml || `<div class="empty">No diff</div>`}</div>`;
@@ -1551,7 +1651,66 @@ function onReplaceKeyDown(e) {
 // Intercept keys on the textarea. Add-cursor chords (⌥⌘ + arrows) work whether or
 // not multi-cursor is active yet; everything else only matters once it is. Runs
 // before the window handler (which it stops for Escape so the editor isn't exited).
+// Indent (Tab) / outdent (Shift+Tab) in insert mode. A plain Tab at a caret
+// inserts one tab through the native pipeline (keeps the input event + undo);
+// with a selection — or Shift+Tab — every covered line is indented/outdented.
+function editorIndent(outdent) {
+  const input = app.querySelector(".editor-input");
+  if (!input || input.readOnly) return;
+  const value = input.value;
+  const selStart = input.selectionStart;
+  const selEnd = input.selectionEnd;
+  if (!outdent && selStart === selEnd) {
+    document.execCommand("insertText", false, "\t");
+    return;
+  }
+  // Expand to whole lines, then indent/outdent each and keep the selection over
+  // the same text so a repeated Tab keeps compounding on the block.
+  const blockStart = value.lastIndexOf("\n", selStart - 1) + 1;
+  const nextNl = value.indexOf("\n", selEnd);
+  const blockEnd = nextNl === -1 ? value.length : nextNl;
+  const lines = value.slice(blockStart, blockEnd).split("\n");
+  let firstDelta = 0;
+  let totalDelta = 0;
+  const rewritten = lines.map((line, i) => {
+    let delta;
+    let out;
+    if (outdent) {
+      let cut = 0;
+      if (line.startsWith("\t")) cut = 1;
+      else while (cut < line.length && cut < EDITOR_TAB && line[cut] === " ") cut++;
+      out = line.slice(cut);
+      delta = -cut;
+    } else {
+      out = line.length ? "\t" + line : line; // don't indent blank lines
+      delta = out.length - line.length;
+    }
+    if (i === 0) firstDelta = delta;
+    totalDelta += delta;
+    return out;
+  });
+  input.value = value.slice(0, blockStart) + rewritten.join("\n") + value.slice(blockEnd);
+  input.setSelectionRange(
+    Math.max(blockStart, selStart + firstDelta),
+    selEnd + totalDelta,
+  );
+  repaintEditorAfterEdit();
+  editorHistoryPush(false);
+}
+
 function onEditorKeyDown(event) {
+  // Tab indents instead of moving focus off the textarea. In app focus Tab means
+  // "next pane"; in insert mode we want a literal tab (or a block indent).
+  if (event.key === "Tab" && !event.metaKey && !event.ctrlKey && !event.altKey
+      && !event.target.readOnly) {
+    event.preventDefault();
+    if (state.multiRanges.length >= 2) {
+      if (!event.shiftKey) applyMultiEdit((sel, r) => ({ from: r.start, to: r.end, text: "\t" }));
+    } else {
+      editorIndent(event.shiftKey);
+    }
+    return;
+  }
   // Multi-cursor add actions — seed from the native caret on first use.
   if ((event.metaKey || event.ctrlKey) && event.altKey
       && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
@@ -1824,7 +1983,7 @@ async function renderHistory() {
   await renderDiffView({
     kind: "history",
     title: "History",
-    hint: `<span><span class="key">j/k</span> select · <span class="key">J/K</span> changed files · <span class="key">l/Tab</span> right · <span class="key">h/Esc</span> left</span>`,
+    hint: `<span><span class="key">j/k</span> select · <span class="key">J/K</span> changed files · <span class="key">l/Tab</span> right · <span class="key">h/Esc</span> left · <span class="key">o</span> edit · <span class="key">O</span> menu</span>`,
     panes: [
       {
         title: "Commit log", name: "commit log",
@@ -1890,13 +2049,55 @@ function isPreviewPaneFocused() {
   return count > 0 && state.pane === count - 1;
 }
 
+// Compare target sentinel: the live working tree (HEAD plus uncommitted, dirty,
+// and untracked changes). Sent verbatim as the `compare` query param; the server
+// backs it with `compare_worktree_diff_text` instead of a tree-to-tree diff.
+const WORKTREE_REF = "WORKTREE";
+const WORKTREE_LABEL = "HEAD (working tree)";
+
+// Friendly display name for a compare ref: the worktree sentinel reads as a
+// label, every other ref shows verbatim.
+function refLabel(ref) {
+  return ref === WORKTREE_REF ? WORKTREE_LABEL : ref;
+}
+
+// Last-picked timestamps (unix seconds) per ref, persisted so the ref picker can
+// rank recently-used branches first. Lazily hydrated from localStorage.
+function loadRefUsed() {
+  if (state.refUsedAt) return state.refUsedAt;
+  let map = {};
+  try {
+    const parsed = JSON.parse(localStorage.getItem("gargo:refUsed") || "null");
+    if (parsed && typeof parsed === "object") map = parsed;
+  } catch (_) { /* unavailable or malformed — start empty */ }
+  state.refUsedAt = map;
+  return map;
+}
+
+function recordRefUsed(ref) {
+  if (!ref || ref === WORKTREE_REF) return;
+  const map = loadRefUsed();
+  map[ref] = Math.floor(Date.now() / 1000);
+  try { localStorage.setItem("gargo:refUsed", JSON.stringify(map)); } catch (_) {}
+}
+
+// Recency score for ordering ref suggestions: the more recent of when the branch
+// was last picked here and when it last received a commit (its tip's time).
+function refRecencyKey(ref) {
+  const used = Number(loadRefUsed()[ref] || 0);
+  const tip = Number(state.refInfo?.[ref]?.time || 0);
+  return Math.max(used, tip);
+}
+
 async function ensureRefs() {
   if (state.refs.length) return;
   const data = await api("/api/branches");
   state.refs = data.branches || [];
   state.refInfo = data.info || {};
   state.compareBase ||= data.default || data.current || state.refs[0] || "HEAD";
-  state.compareTarget ||= data.current || state.refs[1] || "HEAD";
+  // Default the compare side to the working tree so the screen opens on the
+  // user's uncommitted changes against the base branch.
+  state.compareTarget ||= data.worktree || WORKTREE_REF;
 }
 
 // Compact "time ago" for branch tips: seconds is a unix timestamp (author
@@ -1929,9 +2130,9 @@ async function renderCompare() {
         title: "Source · ref pair", name: "ref pair and changed files",
         body: `<div class="ref-form" id="ref-form">
           <label class="ref-label">Base</label>
-          <button type="button" class="ref-button" id="ref-base" aria-label="Base ref">${escapeHtml(state.compareBase) || "—"}</button>
+          <button type="button" class="ref-button" id="ref-base" aria-label="Base ref">${escapeHtml(refLabel(state.compareBase)) || "—"}</button>
           <label class="ref-label">Compare</label>
-          <button type="button" class="ref-button" id="ref-target" aria-label="Compare ref">${escapeHtml(state.compareTarget) || "—"}</button>
+          <button type="button" class="ref-button" id="ref-target" aria-label="Compare ref">${escapeHtml(refLabel(state.compareTarget)) || "—"}</button>
         </div>
         ${aiSummaryPanelHtml()}
         ${fileList(state.compareFiles, state.compareFile, { viewed: true })}`,
@@ -2152,30 +2353,64 @@ function applyChatSize() {
 // Fuzzy picker for the Compare base/compare refs (replaces the raw text inputs).
 // Lists known branches/tags/refs; a non-matching query offers a "use verbatim"
 // row so arbitrary commit refs still work.
+// One picker row for a branch/tag ref, carrying its tip metadata.
+function buildRefItem(which, ref, current) {
+  const tip = state.refInfo[ref];
+  const meta = tip && (tip.hash || tip.message || tip.time)
+    ? `${escapeHtml(tip.hash || "")}${tip.message ? ` · ${escapeHtml(String(tip.message).split("\n")[0])}` : ""}${tip.time ? ` · ${escapeHtml(relativeTime(tip.time))}` : ""}`
+    : "";
+  return {
+    // The current side's ref is also searchable by the word "current" so
+    // typing "current" + Enter re-picks it (matches the inline badge below).
+    label: ref, search: ref === current ? `${ref} current` : ref, cls: "ref-row",
+    run: () => applyRef(which, ref),
+    html: `<div class="stack"><div class="primary">${escapeHtml(ref)}${ref === current ? ` <span class="hint">current</span>` : ""}</div>`
+      + (meta ? `<span class="secondary">${meta}</span>` : "") + `</div>`,
+  };
+}
+
+// The working-tree pseudo-ref row (compare side only).
+function buildWorktreeItem(which, current) {
+  const isCurrent = current === WORKTREE_REF;
+  return {
+    label: WORKTREE_LABEL,
+    search: `${WORKTREE_LABEL} head working tree worktree uncommitted dirty untracked`,
+    cls: "ref-row",
+    run: () => applyRef(which, WORKTREE_REF),
+    html: `<div class="stack"><div class="primary">${escapeHtml(WORKTREE_LABEL)}${isCurrent ? ` <span class="hint">current</span>` : ""}</div>`
+      + `<span class="secondary">includes uncommitted, dirty &amp; untracked changes</span></div>`,
+  };
+}
+
 async function openRefPicker(which) {
   await ensureRefs();
   state.refPickerWhich = which;
   const current = which === "base" ? state.compareBase : state.compareTarget;
-  const items = state.refs.map(ref => {
-    const tip = state.refInfo[ref];
-    const meta = tip && (tip.hash || tip.message || tip.time)
-      ? `${escapeHtml(tip.hash || "")}${tip.message ? ` · ${escapeHtml(String(tip.message).split("\n")[0])}` : ""}${tip.time ? ` · ${escapeHtml(relativeTime(tip.time))}` : ""}`
-      : "";
-    return {
-      // The current side's ref is also searchable by the word "current" so
-      // typing "current" + Enter re-picks it (matches the inline badge below).
-      label: ref, search: ref === current ? `${ref} current` : ref, cls: "ref-row",
-      run: () => applyRef(which, ref),
-      html: `<div class="stack"><div class="primary">${escapeHtml(ref)}${ref === current ? ` <span class="hint">current</span>` : ""}</div>`
-        + (meta ? `<span class="secondary">${meta}</span>` : "") + `</div>`,
-    };
-  });
+  const items = state.refs.map(ref => buildRefItem(which, ref, current));
+  // The working-tree option only makes sense on the compare side; offer it at
+  // the top so the default (uncommitted changes vs base) is one keystroke away.
+  const worktree = which === "target" ? buildWorktreeItem(which, current) : null;
+  if (worktree) items.unshift(worktree);
+
+  // Suggestion list shown while the input is empty or still holds the initial
+  // value: the working-tree row (compare side) plus the three most recent
+  // branches by max(last-used, last-commit). Typing anything switches to the
+  // full fuzzy list below. Must be set before showPopup() (which calls
+  // filterPopup() with an empty query).
+  const ranked = [...state.refs]
+    .sort((a, b) => refRecencyKey(b) - refRecencyKey(a))
+    .slice(0, 3)
+    .map(ref => buildRefItem(which, ref, current));
+  state.refSuggest = worktree ? [worktree, ...ranked] : ranked;
+  state.refPickerInitial = current === WORKTREE_REF ? "" : (current || "");
+
   showPopup("ref", which === "base" ? "Select base ref" : "Select compare ref",
     items, "Filter branches, tags, refs…");
   // Default the input to the side's existing ref (selected, so typing replaces
   // it) — Enter without edits keeps the old value, matching the picker's intent.
+  // The worktree sentinel has no typeable ref name, so start empty (full list).
   if (current) {
-    popupInput.value = current;
+    popupInput.value = current === WORKTREE_REF ? "" : current;
     popupInput.select();
     filterPopup();
   }
@@ -2184,13 +2419,19 @@ async function openRefPicker(which) {
 async function applyRef(which, ref) {
   ref = String(ref || "").trim();
   if (!ref) return;
+  // Remember when this ref was picked so the suggestion list can rank it.
+  recordRefUsed(ref);
   // Picking a ref equal to the other one would diff a ref against itself; swap
   // instead so the old value of the picked side moves to the other side.
   if (which === "base") {
     if (ref === state.compareTarget) state.compareTarget = state.compareBase;
     state.compareBase = ref;
   } else {
-    if (ref === state.compareBase) state.compareBase = state.compareTarget;
+    // Swap to avoid diffing a ref against itself — but never move the worktree
+    // sentinel into the base slot (it isn't a resolvable ref on that side).
+    if (ref === state.compareBase && state.compareTarget !== WORKTREE_REF) {
+      state.compareBase = state.compareTarget;
+    }
     state.compareTarget = ref;
   }
   state.compareFiles = [];
@@ -2535,11 +2776,15 @@ async function moveSelectionTo(index) {
     state.historyFile = Math.max(0, Math.min(index, (state.historyData?.files || []).length - 1));
     await renderHistory();
   } else if (state.component === "compare" && state.pane === 0) {
+    // The file set is already in state, so move the selection in place rather
+    // than rebuilding the whole view. A full renderCompare() reset scrollTop to
+    // 0 and then snapped it back via scrollIntoView, which jumped the list on
+    // every click; toggling the selected row leaves the scroll position alone.
     state.compareFile = Math.max(0, Math.min(index, state.compareFiles.length - 1));
-    await renderCompare();
-    // renderCompare() rebuilds the pane, resetting scrollTop — keep the newly
-    // selected file row visible (e.g. when clicked while scrolled down).
-    app.querySelector('.pane[data-pane="0"] .list li.selected')?.scrollIntoView({ block: "nearest" });
+    const pane0 = app.querySelector('.pane[data-pane="0"]');
+    pane0?.querySelector("li.selected")?.classList.remove("selected");
+    pane0?.querySelector(`li[data-index="${state.compareFile}"]`)?.classList.add("selected");
+    await loadCurrentDiffPreview();
   } else if (state.component === "status" && state.pane === 0) {
     // j/k between files: the file set is already in state (and a 1.5s poller
     // keeps it fresh), so don't re-fetch /api/status or rebuild the whole view.
@@ -2741,8 +2986,18 @@ async function toggleCompareViewed() {
       }),
     });
     file.viewed = Boolean(data.viewed);
-    await renderCompare();
-    setFocus("pane", 0);
+    // Update the checkbox in place. A full renderCompare() would rebuild the
+    // pane and reset the file-list scrollTop, jumping the list back to the top.
+    const box = app.querySelector(
+      `.pane[data-pane="0"] li[data-index="${state.compareFile}"] .viewed-box`);
+    if (box) {
+      box.classList.toggle("checked", file.viewed);
+      box.title = file.viewed ? "Viewed" : "Not viewed";
+      box.textContent = file.viewed ? "[x]" : "[ ]";
+    } else {
+      await renderCompare();
+      setFocus("pane", 0);
+    }
   } catch (error) {
     notify(`Viewed toggle failed: ${error.message}`);
   }
@@ -2754,10 +3009,32 @@ function openFileInNewTab(path) {
   window.open(`/editor?path=${encodeURIComponent(path)}`, "_blank");
 }
 
-function openTreeSelectionInNewTab() {
+async function openTreeSelectionInNewTab() {
   const node = state.popupFiltered[state.popupIndex]?.node;
-  if (!node || node.type !== "file") return;
-  openFileInNewTab(node.path);
+  if (!node) return;
+  if (node.type === "file") {
+    openFileInNewTab(node.path);
+    return;
+  }
+
+  const childTab = window.open("", "_blank");
+  if (!childTab) {
+    notify("Browser blocked the new tab");
+    return;
+  }
+  childTab.document.title = `Starting gargo · ${node.path}`;
+  childTab.document.body.textContent = `Starting gargo server for ${node.path}…`;
+  try {
+    const data = await api("/api/server/open", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: node.path }),
+    });
+    childTab.location.replace(data.url);
+  } catch (error) {
+    childTab.close();
+    notify(`Cannot start server for ${node.path}: ${error.message}`);
+  }
 }
 
 async function openSelectedDiffFileInEditor() {
@@ -2766,6 +3043,8 @@ async function openSelectedDiffFileInEditor() {
     file = state.statusFiles[state.statusFile];
   } else if (state.component === "compare" && state.pane === 0) {
     file = state.compareFiles[state.compareFile];
+  } else if (state.component === "history") {
+    file = state.historyData?.files?.[state.historyFile];
   }
   if (!file) return;
   try {
@@ -2780,6 +3059,7 @@ async function openSelectedDiffFileInEditor() {
 function openMenuTarget() {
   if (state.component === "status" && state.pane === 0) return state.statusFiles[state.statusFile]?.path || "";
   if (state.component === "compare" && state.pane === 0) return state.compareFiles[state.compareFile]?.path || "";
+  if (state.component === "history") return state.historyData?.files?.[state.historyFile]?.path || "";
   if (state.component === "search") return searchRowTarget(state.searchRows[state.searchSelected])?.path || "";
   if (state.component === "explorer") return state.currentFile || "";
   return "";
@@ -2787,6 +3067,22 @@ function openMenuTarget() {
 
 function githubBlobUrl(remote, branch, path) {
   return `${remote}/blob/${encodeURIComponent(branch)}/${path.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+// Copy a path/URL for the file the editor would open with `o`. Shared by the
+// `O` menu and the ⌘⇧P command palette. `kind`: rel | abs | github-default |
+// github-branch.
+function copyTargetPath(kind) {
+  const path = openMenuTarget();
+  if (!path) { notify("No file to act on"); return; }
+  const info = state.repoInfo || {};
+  if (kind === "rel") return copyText(path);
+  if (kind === "abs") return copyText(info.root ? `${info.root.replace(/\/$/, "")}/${path}` : path);
+  if (!info.remote_url) { notify("No GitHub remote configured"); return; }
+  const branch = kind === "github-branch"
+    ? (info.branch || info.default_branch || "main")
+    : (info.default_branch || "main");
+  return copyText(githubBlobUrl(info.remote_url, branch, path));
 }
 
 async function copyText(text) {
@@ -2826,12 +3122,14 @@ function openOpenMenu() {
   if (info.remote_url) {
     const def = info.default_branch || "main";
     actions.push({ key: "g", label: `Open on GitHub (${def})`, run: () => window.open(githubBlobUrl(info.remote_url, def, path), "_blank") });
+    actions.push({ key: "c", label: `Copy GitHub URL (${def})`, run: () => copyTargetPath("github-default") });
     if (info.branch && info.branch !== def) {
       actions.push({ key: "G", label: `Open on GitHub (${info.branch})`, run: () => window.open(githubBlobUrl(info.remote_url, info.branch, path), "_blank") });
+      actions.push({ key: "C", label: `Copy GitHub URL (${info.branch})`, run: () => copyTargetPath("github-branch") });
     }
   }
-  actions.push({ key: "r", label: "Copy relative path", run: () => copyText(path) });
-  actions.push({ key: "a", label: "Copy absolute path", run: () => copyText(info.root ? `${info.root.replace(/\/$/, "")}/${path}` : path) });
+  actions.push({ key: "r", label: "Copy relative path", run: () => copyTargetPath("rel") });
+  actions.push({ key: "a", label: "Copy absolute path", run: () => copyTargetPath("abs") });
   actions.push({ key: "y", label: "Copy whole content", run: () => copyFileContent(path) });
   showMenuPopup(`Open · ${path}`, actions);
 }
@@ -2995,16 +3293,31 @@ function filterPopup() {
     popupTitle.textContent = resolved.title;
     if (resolved.mode === "symbols" && !state.quickSymbolsLoaded) loadQuickSymbols();
   }
-  state.popupFiltered = query
-    ? state.popupItems
-      .map(item => ({ ...item, score: fuzzyScore(item.search || item.label, query) }))
-      .filter(item => item.score >= 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 300)
-    : state.popupItems.slice(0, 300);
+  // Ref picker, untouched input (empty or still the initial value): show the
+  // short recency-ranked suggestion list instead of the full ref list. Any real
+  // edit falls through to the normal fuzzy/empty handling below.
+  const refSuggest = state.popup === "ref"
+    && (query === "" || query === (state.refPickerInitial || ""));
+  if (refSuggest) {
+    state.popupFiltered = (state.refSuggest || []).slice(0, 300);
+    // Keep the initial value highlighted when it is among the suggestions, so
+    // Enter without edits still re-picks it; otherwise fall to the top suggestion.
+    const init = state.refPickerInitial || "";
+    const idx = state.popupFiltered.findIndex(it =>
+      it.label === init || (init === "" && it.label === WORKTREE_LABEL));
+    state.popupIndex = idx >= 0 ? idx : 0;
+  } else {
+    state.popupFiltered = query
+      ? state.popupItems
+        .map(item => ({ ...item, score: fuzzyScore(item.search || item.label, query) }))
+        .filter(item => item.score >= 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 300)
+      : state.popupItems.slice(0, 300);
+  }
   // Ref picker: a query that doesn't exactly name a known ref still resolves —
   // offer it verbatim so arbitrary commit/tag refs can be entered.
-  if (state.popup === "ref" && query && query.toLowerCase() !== "current"
+  if (!refSuggest && state.popup === "ref" && query && query.toLowerCase() !== "current"
       && !state.popupFiltered.some(item => item.label === query)) {
     const which = state.refPickerWhich;
     state.popupFiltered.unshift({
@@ -3030,6 +3343,26 @@ async function choosePopup(index = state.popupIndex) {
 // (⌘P / ⌘⇧P / ⌘@) land directly in the right mode.
 async function openQuickPicker(initial = "") {
   await ensureFiles();
+  state.quickFiles = quickFileItems();
+  state.quickCommands = COMMANDS
+    .filter(command => hasGit() || !command.git)
+    .sort((a, b) => a.label.localeCompare(b.label)).map(command => ({
+      label: command.label, hint: command.hint, run: command.run,
+    }));
+  state.quickSymbols = [];
+  state.quickSymbolsLoaded = false;
+  state.quickMode = "files";
+  showPopup("quick", "Files", [], state.fileIndexReady
+    ? "Search files · > commands · @ symbols"
+    : "Indexing workspace · partial results · > commands · @ symbols");
+  if (initial) { popupInput.value = initial; filterPopup(); }
+  // Already showing the cached list; kick off a background rescan (no await) so
+  // files created since the last open appear without blocking the picker. Skip
+  // while the first full load is still in flight — that already fetches fresh.
+  if (state.fileIndexReady) refreshFiles();
+}
+
+function quickFileItems() {
   // Empty-query order: changed files first, then by recency — the more recent of
   // the file's mtime and the last time it was opened in gargo (CLI or web editor).
   const recency = entry => Math.max(Number(entry.mtime || 0), Number(entry.opened || 0));
@@ -3038,19 +3371,11 @@ async function openQuickPicker(initial = "") {
     || recency(b) - recency(a)
     || a.path.localeCompare(b.path)
   );
-  state.quickFiles = entries.map(entry => ({
+  return entries.map(entry => ({
     label: entry.path,
     hint: entry.changed ? "changed" : "",
     run: () => openFile(entry.path),
   }));
-  state.quickCommands = [...COMMANDS].sort((a, b) => a.label.localeCompare(b.label)).map(command => ({
-    label: command.label, hint: command.hint, run: command.run,
-  }));
-  state.quickSymbols = [];
-  state.quickSymbolsLoaded = false;
-  state.quickMode = "files";
-  showPopup("quick", "Files", [], "Search files · > commands · @ symbols");
-  if (initial) { popupInput.value = initial; filterPopup(); }
 }
 
 function resolveQuickMode(raw) {
@@ -3089,7 +3414,12 @@ async function openTreePicker() {
     const parts = state.currentFile.split("/");
     for (let i = 1; i < parts.length; i++) state.treeExpanded.add(parts.slice(0, i).join("/"));
   }
-  showPopup("tree", "Explorer", treePopupItems(""), "Filter tree");
+  showPopup(
+    "tree",
+    "Explorer",
+    treePopupItems(""),
+    "Enter open · Alt/Cmd+Enter file tab or directory server",
+  );
   if (state.currentFile) {
     const index = state.popupFiltered.findIndex(item => item.node?.path === state.currentFile);
     if (index >= 0) {
@@ -3099,6 +3429,10 @@ async function openTreePicker() {
       updateTreePreview();
     }
   }
+  // Already showing the cached tree; rescan in the background (no await) so files
+  // created since the last open appear. refreshFiles() rebuilds the tree when it
+  // lands. Skip while the first full load is still in flight (it fetches fresh).
+  if (state.fileIndexReady) refreshFiles();
 }
 
 function buildTree(entries) {
@@ -3149,7 +3483,12 @@ function visibleTreeNodes(node, output = []) {
 
 function treePopupItems(query) {
   if (!state.treeRoot) return [];
-  const nodes = query ? allTreeNodes(state.treeRoot) : visibleTreeNodes(state.treeRoot);
+  // Git repos keep the existing project-wide tree search. A non-git workspace
+  // can be very large, so `/` filters only the rows currently visible through
+  // the expansion state instead of searching every collapsed descendant.
+  const nodes = query && hasGit()
+    ? allTreeNodes(state.treeRoot)
+    : visibleTreeNodes(state.treeRoot);
   return nodes.map(node => {
     const expanded = node.type === "dir" && state.treeExpanded.has(node.path);
     const indent = query ? 0 : node.depth;
@@ -3254,8 +3593,7 @@ function resolvePrompt(value) {
 }
 
 // POST a JSON body to one of the /api/fs/* mutation endpoints, then refresh the
-// file listing and rebuild the tree so the change shows immediately. `ensureFiles`
-// caches on `state.files`, so clear it to force a refetch.
+// file listing and rebuild the tree so the change shows immediately.
 async function fsMutate(endpoint, body) {
   await api(endpoint, {
     method: "POST",
@@ -3263,6 +3601,8 @@ async function fsMutate(endpoint, body) {
     body: JSON.stringify(body),
   });
   state.files = [];
+  state.fileEntries = [];
+  state.fileIndexReady = false;
   await ensureFiles();
   state.treeRoot = buildTree(state.fileEntries);
   if (state.popup === "tree") filterPopup();
@@ -3470,6 +3810,13 @@ async function runGlobalSearch() {
   try {
     const data = await api(`/api/search?${new URLSearchParams({ q: query, max: "500" })}`);
     if (token !== state.searchToken || state.component !== "search") return;
+    if (data.indexing) {
+      if (results) results.innerHTML = `<div class="loading">Indexing workspace…</div>`;
+      setTimeout(() => {
+        if (token === state.searchToken && state.component === "search") runGlobalSearch();
+      }, 500);
+      return;
+    }
     state.searchHits = data.hits || [];
     state.searchCollapsed = new Set();
     state.searchRows = buildSearchRows();
@@ -3628,7 +3975,7 @@ function highlightExcerpt(excerpt, col, qlen) {
 }
 
 popupInput.addEventListener("input", filterPopup);
-popupInput.addEventListener("keydown", event => {
+popupInput.addEventListener("keydown", async event => {
   if (state.popup === "prompt") {
     if (event.key === "Enter") { event.preventDefault(); resolvePrompt(popupInput.value.trim() || null); }
     else if (event.key === "Escape") { event.preventDefault(); resolvePrompt(null); }
@@ -3662,14 +4009,14 @@ popupInput.addEventListener("keydown", event => {
     }
   } else if (event.key === "Enter" && state.popup === "tree" && (event.altKey || event.metaKey)) {
     event.preventDefault();
-    openTreeSelectionInNewTab();
+    await openTreeSelectionInNewTab();
   } else if (event.key === "Enter") {
     event.preventDefault();
     choosePopup();
   }
 });
 
-popup.addEventListener("keydown", event => {
+popup.addEventListener("keydown", async event => {
   if (state.popup === "menu") { handleMenuKey(event); return; }
   if (state.popup === "confirm") {
     if (event.key === "Enter") { event.preventDefault(); resolvePrompt(true); }
@@ -3710,7 +4057,7 @@ popup.addEventListener("keydown", event => {
     movePopupSelection(-1);
   } else if (event.key === "Enter" && (event.altKey || event.metaKey)) {
     event.preventDefault();
-    openTreeSelectionInNewTab();
+    await openTreeSelectionInNewTab();
   } else if (event.key === "l" || event.key === "ArrowRight" || event.key === "Enter") {
     event.preventDefault();
     choosePopup();
@@ -4048,6 +4395,11 @@ window.addEventListener("keydown", async event => {
     await moveHistoryFile(-1);
     return;
   }
+  if (state.component === "history" && event.key === "o") {
+    event.preventDefault();
+    await openSelectedDiffFileInEditor();
+    return;
+  }
   if (state.component === "compare" && (event.key === "B" || event.key === "C")) {
     event.preventDefault();
     await openRefPicker(event.key === "B" ? "base" : "target");
@@ -4147,7 +4499,7 @@ window.matchMedia("(max-width: 800px)").addEventListener("change", () => {
 
 async function boot() {
   try {
-    loadRepoInfo();
+    await loadRepoInfo();
     checkForUpdate();
     setInterval(heartbeat, 4000);
     const last = await api("/api/last-file").catch(() => ({ path: null }));
@@ -4164,7 +4516,7 @@ async function boot() {
       : location.pathname.includes("/commits") || location.pathname.includes("/commit/") ? "history"
       : "explorer";
     const requested = location.hash.slice(1) || pathComponent;
-    await switchComponent(COMPONENTS.includes(requested) ? requested : "explorer");
+    await switchComponent(availableComponents().includes(requested) ? requested : "explorer");
     const fileParam = new URLSearchParams(location.search).get("path");
     if (fileParam) {
       await openFile(fileParam)

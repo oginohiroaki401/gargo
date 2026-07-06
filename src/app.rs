@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::sync::mpsc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use std::rc::Rc;
@@ -102,6 +103,30 @@ struct GitCommitBufferState {
     commit_editmsg_path: PathBuf,
 }
 
+/// Result of finalizing a git commit message buffer on close: the status-bar
+/// message to show, plus whether a commit actually landed (so the caller can
+/// refresh git state only on success).
+struct GitCommitOutcome {
+    message: String,
+    committed: bool,
+}
+
+impl GitCommitOutcome {
+    fn committed(message: String) -> Self {
+        Self {
+            message,
+            committed: true,
+        }
+    }
+
+    fn aborted(message: String) -> Self {
+        Self {
+            message,
+            committed: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CountBehavior {
     Repeat,
@@ -189,6 +214,12 @@ pub struct App {
     /// the left button goes down inside a buffer pane; consumed by
     /// `Action::BufferDrag` events until the button is released.
     drag_anchor: Option<(usize, usize)>,
+    /// Background `git push` plumbing (lazygit-style, non-blocking): the worker
+    /// thread sends its final status-bar message over `git_push_tx`, drained in
+    /// `poll_git_push`. `git_push_in_flight` guards against overlapping pushes.
+    git_push_tx: mpsc::Sender<String>,
+    git_push_rx: mpsc::Receiver<String>,
+    git_push_in_flight: bool,
 }
 
 impl App {
@@ -227,6 +258,7 @@ impl App {
 
         let command_history = Rc::new(CommandHistory::new(&project_root));
         let recent_projects = RecentProjectsStore::new();
+        let (git_push_tx, git_push_rx) = mpsc::channel();
 
         let mut app = Self {
             editor,
@@ -274,6 +306,9 @@ impl App {
             last_term_rows: 40,
             expand_chain: None,
             drag_anchor: None,
+            git_push_tx,
+            git_push_rx,
+            git_push_in_flight: false,
         };
         app.start_lazy_file_index_prefetch_if_possible();
         app.start_git_index_prefetch_if_possible();
@@ -745,6 +780,25 @@ impl App {
         self.queue_file_index_refresh();
     }
 
+    /// Re-index every time a file/command/symbol/search picker opens so files
+    /// created since the last open — by the agent, the terminal, or the editor
+    /// itself — show up. The picker renders the cached `file_list` immediately;
+    /// `poll_file_index_runtime` swaps in the fresh list and refreshes the open
+    /// palette once the background scan completes. The runtime coalesces
+    /// overlapping refreshes, so re-queueing while one is in flight is cheap.
+    ///
+    /// Unlike [`Self::ensure_file_index_started_if_needed`] (used by the
+    /// high-frequency markdown link hover, which only needs the index to
+    /// exist), this always rescans — callers are explicit user gestures.
+    ///
+    /// Re-queueing while a scan is already in flight is intentional: the
+    /// runtime coalesces requests and reruns after the current pass, so the
+    /// rescan that lands is guaranteed to have started after this call and
+    /// therefore sees the just-created file.
+    fn refresh_file_index_for_picker(&mut self) {
+        self.queue_file_index_refresh();
+    }
+
     fn refresh_file_index_consumers(&mut self) {
         if let Some(palette) = self.compositor.palette_mut() {
             palette.set_file_entries(self.file_list.clone());
@@ -862,6 +916,43 @@ impl App {
 
         if should_refresh_git_index {
             self.queue_git_index_refresh_if_idle();
+        }
+    }
+
+    /// Kick off a non-blocking `git push` on a worker thread (lazygit-style).
+    /// The result is reported in the status bar via `poll_git_push`.
+    fn spawn_git_push(&mut self) {
+        if self.git_push_in_flight {
+            self.editor.message = Some("git push: already in progress".to_string());
+            return;
+        }
+        let repo_root = self.active_buffer_repo_root();
+        let tx = self.git_push_tx.clone();
+        if std::thread::Builder::new()
+            .name("gargo-git-push".to_string())
+            .spawn(move || {
+                let result = crate::command::git::git_push_in(Some(&repo_root));
+                let message = match result {
+                    Ok(message) => message,
+                    Err(err) => err,
+                };
+                let _ = tx.send(message);
+            })
+            .is_err()
+        {
+            self.editor.message = Some("git push: failed to start".to_string());
+            return;
+        }
+        self.git_push_in_flight = true;
+        self.editor.message = Some("git push: pushing...".to_string());
+    }
+
+    /// Drain finished background `git push` results and surface them in the
+    /// status bar.
+    fn poll_git_push(&mut self) {
+        while let Ok(message) = self.git_push_rx.try_recv() {
+            self.git_push_in_flight = false;
+            self.editor.message = Some(message);
         }
     }
 
@@ -1133,20 +1224,31 @@ impl App {
     ) -> Result<ClosedBufferInfo, String> {
         let closing_doc_id = self.editor.active_buffer().id;
         let closing_path = self.editor.active_buffer().file_path.clone();
-        let commit_message = self.finalize_git_commit_buffer_on_close(closing_doc_id);
-        let force_close = force || commit_message.is_some();
+        let commit_outcome = self.finalize_git_commit_buffer_on_close(closing_doc_id);
+        let force_close = force || commit_outcome.is_some();
         if !force_close {
             self.editor.close_active_buffer()?;
         } else {
             self.editor.force_close_active_buffer();
         }
-        if let Some(message) = commit_message {
-            self.editor.message = Some(message);
+        let committed = commit_outcome
+            .as_ref()
+            .is_some_and(|outcome| outcome.committed);
+        if let Some(outcome) = commit_outcome {
+            self.editor.message = Some(outcome.message);
         }
         let replacement_id = self.editor.active_buffer().id;
         self.compositor
             .replace_window_buffer_refs(closing_doc_id, replacement_id);
         self.compositor.set_focused_buffer(replacement_id);
+        // A successful commit changes HEAD and the index, so refresh the git
+        // view, status gutters, and active-doc diff state to reflect the new
+        // state immediately rather than waiting for the next poll.
+        if committed {
+            self.queue_git_index_refresh();
+            self.queue_git_status_refresh(true);
+            self.queue_active_doc_git_refresh(true);
+        }
         Ok(ClosedBufferInfo {
             doc_id: closing_doc_id,
             path: closing_path,
@@ -1163,7 +1265,7 @@ impl App {
             .retain(|buffer_id, _| self.editor.buffer_by_id(*buffer_id).is_some());
     }
 
-    fn finalize_git_commit_buffer_on_close(&mut self, doc_id: usize) -> Option<String> {
+    fn finalize_git_commit_buffer_on_close(&mut self, doc_id: usize) -> Option<GitCommitOutcome> {
         let state = self.git_commit_buffers.remove(&doc_id)?;
         let raw_message = self
             .editor
@@ -1178,19 +1280,24 @@ impl App {
             Ok(message) => message,
             Err(err) => {
                 let _ = std::fs::remove_file(&state.commit_editmsg_path);
-                return Some(format!("Commit aborted: {}", err));
+                return Some(GitCommitOutcome::aborted(format!(
+                    "Commit aborted: {}",
+                    err
+                )));
             }
         };
 
         if cleaned.trim().is_empty() {
             let _ = std::fs::remove_file(&state.commit_editmsg_path);
-            return Some("Commit aborted: empty commit message".to_string());
+            return Some(GitCommitOutcome::aborted(
+                "Commit aborted: empty commit message".to_string(),
+            ));
         }
 
         let payload = format!("{}\n", cleaned);
         if let Err(err) = std::fs::write(&state.commit_editmsg_path, payload) {
             let _ = std::fs::remove_file(&state.commit_editmsg_path);
-            return Some(format!("Commit failed: {}", err));
+            return Some(GitCommitOutcome::aborted(format!("Commit failed: {}", err)));
         }
 
         let result = crate::command::git::git_commit_with_message_file_in(
@@ -1199,8 +1306,8 @@ impl App {
         );
         let _ = std::fs::remove_file(&state.commit_editmsg_path);
         match result {
-            Ok(summary) => Some(summary),
-            Err(err) => Some(format!("Commit failed: {}", err)),
+            Ok(summary) => Some(GitCommitOutcome::committed(summary)),
+            Err(err) => Some(GitCommitOutcome::aborted(format!("Commit failed: {}", err))),
         }
     }
 
@@ -1947,6 +2054,7 @@ impl App {
 
             self.emit_plugin_event(PluginEvent::Tick);
             self.poll_plugins();
+            self.poll_git_push();
             self.poll_git_runtime();
             self.poll_git_index_runtime();
             self.poll_git_view_diff_runtime();
@@ -5278,6 +5386,41 @@ mod tests {
             app.editor.active_buffer().rope.len_chars(),
             before_len - selected_len
         );
+    }
+
+    #[test]
+    fn insert_typing_over_shift_selection_replaces_it() {
+        let mut app = test_app_with_text("hello world");
+        app.editor.mode = mode::Mode::Insert;
+        app.editor.active_buffer_mut().cursors[0] = 0;
+
+        // Shift+Right twice to select "he".
+        app.dispatch(Action::Core(CoreAction::ExtendRight));
+        app.dispatch(Action::Core(CoreAction::ExtendRight));
+        assert!(app.editor.active_buffer().has_selection());
+
+        // Typing a char replaces the selection rather than appending.
+        app.dispatch(Action::Core(CoreAction::InsertChar('X')));
+
+        assert!(!app.editor.active_buffer().has_selection());
+        assert_eq!(app.editor.active_buffer().rope.to_string(), "Xllo world");
+    }
+
+    #[test]
+    fn insert_text_over_shift_selection_replaces_it() {
+        let mut app = test_app_with_text("hello world");
+        app.editor.mode = mode::Mode::Insert;
+        app.editor.active_buffer_mut().cursors[0] = 0;
+
+        app.dispatch(Action::Core(CoreAction::ExtendRight));
+        app.dispatch(Action::Core(CoreAction::ExtendRight));
+        assert!(app.editor.active_buffer().has_selection());
+
+        // IME / pasted text (e.g. Japanese) also replaces the selection.
+        app.dispatch(Action::Core(CoreAction::InsertText("日本".to_string())));
+
+        assert!(!app.editor.active_buffer().has_selection());
+        assert_eq!(app.editor.active_buffer().rope.to_string(), "日本llo world");
     }
 
     #[test]

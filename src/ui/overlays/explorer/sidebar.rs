@@ -1496,7 +1496,13 @@ impl Explorer {
         } else if self.rename_active {
             format!("rename: {}", self.rename_input)
         } else if self.add_active {
-            format!("add: {} (end with / for dir)", self.add_input)
+            // Only show the hint while the field is empty; once the user types,
+            // the trailing hint would overflow the narrow sidebar.
+            if self.add_input.is_empty() {
+                "add: (end with / for dir)".to_string()
+            } else {
+                format!("add: {}", self.add_input)
+            }
         } else if self.delete_confirm_active {
             let label = self.selected_name().unwrap_or("item");
             format!("delete {}? [y/N]", label)
@@ -1512,7 +1518,9 @@ impl Explorer {
         } else if self.rename_active {
             format!("rename: {}", self.rename_input)
         } else if self.add_active {
-            format!("add: {} (end with / for dir)", self.add_input)
+            // Position the cursor right after the typed input, never after the
+            // (conditionally shown) hint text.
+            format!("add: {}", self.add_input)
         } else {
             String::new()
         };
