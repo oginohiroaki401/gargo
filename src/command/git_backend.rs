@@ -1450,6 +1450,16 @@ mod tests {
         let root = repo_root();
         let hashes = git_raw_stdout(&["log", "-n8", "--format=%H"]);
         for hash in hashes.lines() {
+            // `git show --format=` emits nothing for a merge commit (combined
+            // diff against all parents), whereas gix diffs against the first
+            // parent — the two are incomparable, so skip merges here.
+            if git_raw_stdout(&["show", "--no-patch", "--format=%P", hash])
+                .split_whitespace()
+                .count()
+                > 1
+            {
+                continue;
+            }
             let gix_text = commit_diff_text(&root, hash, None)
                 .unwrap_or_else(|| panic!("gix commit_diff_text none for {hash}"));
             let git_text = git_raw_stdout(&["show", "--format=", "--no-ext-diff", hash]);

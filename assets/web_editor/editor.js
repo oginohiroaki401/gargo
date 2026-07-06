@@ -2219,6 +2219,7 @@ const PANE_DEFAULTS = {
   history: [25, 25, 50],
   compare: [34, 66],
   status: [34, 66],
+  search: [34, 66],
 };
 
 function loadPaneSizes(kind, count) {
@@ -2254,10 +2255,9 @@ function applyPaneTemplate(panesEl, sizes) {
 // resets that boundary to the default split.
 function installPaneResizers(panesEl, kind) {
   if (!panesEl) return;
-  // Only the diff layouts in PANE_DEFAULTS are resizable. Other pane-based views
-  // (e.g. the Search view) keep their CSS-defined widths — applying resizers
-  // there would override the CSS with a 50/50 fallback and inject dividers the
-  // view never had.
+  // Only views listed in PANE_DEFAULTS are resizable. A kind without an entry
+  // would fall back to a 50/50 split that overrides its CSS widths and inject
+  // dividers it never had, so skip it rather than guess a default.
   if (!PANE_DEFAULTS[kind]) return;
   const panes = [...panesEl.querySelectorAll(":scope > .pane")];
   if (panes.length < 2) return;
@@ -4140,7 +4140,7 @@ window.addEventListener("beforeunload", event => {
 // resizable desktop layout and the stacked mobile layout swap cleanly (an
 // inline grid-template would otherwise pin the desktop columns on a narrow tab).
 window.matchMedia("(max-width: 800px)").addEventListener("change", () => {
-  if (["history", "compare", "status"].includes(state.component)) {
+  if (["history", "compare", "status", "search"].includes(state.component)) {
     switchComponent(state.component);
   }
 });

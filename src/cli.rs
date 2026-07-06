@@ -11,7 +11,7 @@ pub enum CliMode {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "gargo")]
+#[command(name = "gargo", version)]
 pub struct Cli {
     /// Check whether a newer version is available.
     #[arg(long, conflicts_with_all = ["update", "server"])]
@@ -122,6 +122,17 @@ mod tests {
         assert!(
             message.contains("following required") || message.contains("cannot be used"),
             "unexpected clap error: {message}"
+        );
+    }
+
+    #[test]
+    fn reports_version() {
+        let err =
+            Cli::try_parse_from(["gargo", "--version"]).expect_err("--version short-circuits");
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert!(
+            err.to_string().contains(env!("CARGO_PKG_VERSION")),
+            "version output should include the crate version, got: {err}"
         );
     }
 
