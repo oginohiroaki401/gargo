@@ -141,7 +141,9 @@ impl WorkspaceIndex {
         };
 
         let (files, truncated) = if self.is_git {
-            let files = crate::project::collect_files(&self.root);
+            // Reuses the status scan above — `collect_files` would otherwise
+            // run its own, doubling the wait before the picker has any files.
+            let files = crate::project::collect_files_with_status(&self.root, &changed);
             self.publish_paths(&files, &changed, &opens);
             (files, false)
         } else {

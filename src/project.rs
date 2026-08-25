@@ -140,8 +140,25 @@ pub fn collect_files(root: &Path) -> Vec<String> {
 }
 
 pub fn collect_files_with_filter(root: &Path, filter: FileFilter) -> Vec<String> {
+    collect_files_inner(root, filter, None)
+}
+
+/// [`collect_files`] for a caller that already scanned the working tree. The
+/// untracked half of a git file list otherwise costs a second full status walk.
+pub fn collect_files_with_status(
+    root: &Path,
+    status: &std::collections::HashMap<String, crate::command::git::GitFileStatus>,
+) -> Vec<String> {
+    collect_files_inner(root, FileFilter::default(), Some(status))
+}
+
+fn collect_files_inner(
+    root: &Path,
+    filter: FileFilter,
+    status: Option<&std::collections::HashMap<String, crate::command::git::GitFileStatus>>,
+) -> Vec<String> {
     if has_git_marker(root)
-        && let Some(files) = collect_files_git(root, filter)
+        && let Some(files) = collect_files_git(root, filter, status)
     {
         return files;
     }
@@ -182,8 +199,12 @@ pub fn has_git_marker(dir: &Path) -> bool {
 /// The git file list is unfiltered by construction (index entries plus
 /// untracked files), so the predicate is applied here — otherwise dotfiles
 /// would keep reaching the picker after the tree learned to hide them.
-fn collect_files_git(root: &Path, filter: FileFilter) -> Option<Vec<String>> {
-    let files = crate::command::git_backend::collect_files(root)?;
+fn collect_files_git(
+    root: &Path,
+    filter: FileFilter,
+    status: Option<&std::collections::HashMap<String, crate::command::git::GitFileStatus>>,
+) -> Option<Vec<String>> {
+    let files = crate::command::git_backend::collect_files_with_status(root, status)?;
     Some(
         files
             .into_iter()
@@ -215,7 +236,7 @@ fn collect_files_walk(dir: &Path, root: &Path, filter: FileFilter) -> Vec<String
 
         if path.is_dir() {
             if has_git_marker(&path) {
-                if let Some(git_files) = collect_files_git(&path, filter)
+                if let Some(git_files) = collect_files_git(&path, filter, None)
                     && let Ok(prefix) = path.strip_prefix(root)
                 {
                     let prefix_str = prefix.to_string_lossy();

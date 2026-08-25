@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use gix::bstr::ByteSlice;
-use gix::diff::Rewrites;
 use gix::dir::entry::Status;
 use gix::filter::plumbing::driver::apply::Delay;
 use gix::objs::tree::EntryKind;
@@ -36,15 +35,14 @@ pub fn status_map(project_root: &Path) -> HashMap<String, GitFileStatus> {
         return map;
     }
 
+    // Rename tracking is deliberately off. `gix` matches every deleted index
+    // entry against the whole untracked candidate set by *content*, so a repo
+    // with big untracked files pays a full read of all of them: a 7 GB
+    // scratch directory turned this call into 17s instead of 35ms. `git status`
+    // does not detect index->worktree renames either — it reports the pair as a
+    // deletion plus an untracked file, which is exactly what we fall back to.
     let status_platform = match repo.status(gix::progress::Discard) {
-        Ok(status) => status
-            .untracked_files(UntrackedFiles::Files)
-            .index_worktree_rewrites(Some(Rewrites {
-                copies: None,
-                percentage: Some(0.5),
-                limit: 1000,
-                ..Default::default()
-            })),
+        Ok(status) => status.untracked_files(UntrackedFiles::Files),
         Err(_) => return map,
     };
 
@@ -141,7 +139,13 @@ pub(crate) fn ignored_paths(root: &Path, candidates: &[(String, bool)]) -> HashS
 
 /// `git ls-files -t --cached --others --exclude-standard --deleted`, reduced to
 /// present tracked files plus ignored-filtered untracked files.
-pub(crate) fn collect_files(root: &Path) -> Option<Vec<String>> {
+/// Callers that already hold a [`status_map`] pass it in: the untracked half of
+/// the file list then comes straight out of it instead of costing a second
+/// worktree walk. `None` scans on demand.
+pub(crate) fn collect_files_with_status(
+    root: &Path,
+    status: Option<&HashMap<String, GitFileStatus>>,
+) -> Option<Vec<String>> {
     let repo = shared_repo(root)?.to_thread_local();
     let work_dir = repo.workdir()?.to_path_buf();
     let index = repo.index_or_load_from_head_or_empty().ok()?;
@@ -157,9 +161,17 @@ pub(crate) fn collect_files(root: &Path) -> Option<Vec<String>> {
         }
     }
 
-    for (path, status) in status_map(root) {
-        if status == GitFileStatus::Untracked {
-            files.insert(path);
+    let owned;
+    let status = match status {
+        Some(status) => status,
+        None => {
+            owned = status_map(root);
+            &owned
+        }
+    };
+    for (path, status) in status {
+        if *status == GitFileStatus::Untracked {
+            files.insert(path.clone());
         }
     }
 
@@ -178,16 +190,12 @@ pub(crate) fn status_files(root: &Path) -> Option<(Vec<GitFileEntry>, Vec<GitFil
     let mut staged = staged_entries(&repo, &index);
     let mut changed = Vec::new();
 
+    // No rename tracking here either, for the cost reason spelled out in
+    // `status_map`. A moved file lists as `D` plus `?` rather than `D` plus `A`.
     let status_platform = repo
         .status(gix::progress::Discard)
         .ok()?
-        .untracked_files(UntrackedFiles::Files)
-        .index_worktree_rewrites(Some(Rewrites {
-            copies: None,
-            percentage: Some(0.5),
-            limit: 1000,
-            ..Default::default()
-        }));
+        .untracked_files(UntrackedFiles::Files);
     let status_iter = status_platform.into_index_worktree_iter(Vec::new()).ok()?;
     for item in status_iter.flatten() {
         match item {
